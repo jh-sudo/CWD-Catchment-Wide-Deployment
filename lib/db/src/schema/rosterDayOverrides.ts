@@ -1,0 +1,37 @@
+import { pgTable, text, date, timestamp } from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
+import { z } from "zod/v4";
+import { officersTable } from "./officers";
+
+// Replaces roster-day-overrides.json (DayOverrideEvent).
+export const rosterDayOverridesTable = pgTable("roster_day_overrides", {
+  id: text("id").primaryKey(),
+  date: date("date").notNull(),
+  text: text("text").notNull(),
+  submittedBy: text("submitted_by").notNull(),
+  submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull(),
+});
+
+export const insertRosterDayOverrideSchema = createInsertSchema(rosterDayOverridesTable);
+export type InsertRosterDayOverride = z.infer<typeof insertRosterDayOverrideSchema>;
+export type RosterDayOverride = typeof rosterDayOverridesTable.$inferSelect;
+
+// Child table — DayOverrideEvent.applied[] is one-to-many.
+export const rosterDayOverrideApplicationsTable = pgTable("roster_day_override_applications", {
+  dayOverrideId: text("day_override_id")
+    .notNull()
+    .references(() => rosterDayOverridesTable.id),
+  officerId: text("officer_id")
+    .notNull()
+    .references(() => officersTable.id),
+  officerName: text("officer_name").notNull(),
+  duty: text("duty").notNull(),
+});
+
+export const insertRosterDayOverrideApplicationSchema = createInsertSchema(
+  rosterDayOverrideApplicationsTable,
+);
+export type InsertRosterDayOverrideApplication = z.infer<
+  typeof insertRosterDayOverrideApplicationSchema
+>;
+export type RosterDayOverrideApplication = typeof rosterDayOverrideApplicationsTable.$inferSelect;

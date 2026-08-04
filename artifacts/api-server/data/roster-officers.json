@@ -1,0 +1,506 @@
+[
+  {
+    "id": "bu1a",
+    "name": "Nash",
+    "unitCode": "BU1",
+    "vehicle": "GBL378Z",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 1,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu1b",
+    "name": "Farhan Y",
+    "unitCode": "BU1",
+    "vehicle": "GBL378Z",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 1,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu2a",
+    "name": "Effendy",
+    "unitCode": "BU2",
+    "vehicle": "GBL590B",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 2,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu2b",
+    "name": "Chuiguang",
+    "unitCode": "BU2",
+    "vehicle": "GBL590B",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 2,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu3a",
+    "name": "Faizal",
+    "unitCode": "BU3",
+    "vehicle": "GBL144G",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 3,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu3b",
+    "name": "Rabiul",
+    "unitCode": "BU3",
+    "vehicle": "GBL144G",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 3,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu4a",
+    "name": "Juraimi",
+    "unitCode": "BU4",
+    "vehicle": "",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 4,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu4b",
+    "name": "Rahim",
+    "unitCode": "BU4",
+    "vehicle": "",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 4,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu5a",
+    "name": "Azlan",
+    "unitCode": "BU5",
+    "vehicle": "GBL589G",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 5,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu5b",
+    "name": "Haziq",
+    "unitCode": "BU5",
+    "vehicle": "GBL589G",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 5,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj1a",
+    "name": "Suffi",
+    "unitCode": "PJ1",
+    "vehicle": "GBM7715H",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 6,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj1b",
+    "name": "Farhan O",
+    "unitCode": "PJ1",
+    "vehicle": "GBM7715H",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 6,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj2a",
+    "name": "Ben",
+    "unitCode": "PJ2",
+    "vehicle": "GBM7827T",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 7,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj2b",
+    "name": "Taufik",
+    "unitCode": "PJ2",
+    "vehicle": "GBM7827T",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 7,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj3a",
+    "name": "Matthew",
+    "unitCode": "PJ3",
+    "vehicle": "GBM7826X",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 8,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj3b",
+    "name": "Hilmi",
+    "unitCode": "PJ3",
+    "vehicle": "GBM7826X",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 8,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj4a",
+    "name": "Salim Y",
+    "unitCode": "PJ4",
+    "vehicle": "",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 9,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj4b",
+    "name": "Azriel",
+    "unitCode": "PJ4",
+    "vehicle": "",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 9,
+    "crewPosition": 2
+  },
+  {
+    "id": "wk1a",
+    "name": "Hizamy",
+    "unitCode": "WK1",
+    "vehicle": "GBM7787A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 10,
+    "crewPosition": 1
+  },
+  {
+    "id": "wk1b",
+    "name": "Shafizam",
+    "unitCode": "WK1",
+    "vehicle": "GBM7787A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 10,
+    "crewPosition": 2
+  },
+  {
+    "id": "wk2a",
+    "name": "Khairul",
+    "unitCode": "WK2",
+    "vehicle": "GBM7254X",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 11,
+    "crewPosition": 1
+  },
+  {
+    "id": "wk2b",
+    "name": "Saleh",
+    "unitCode": "WK2",
+    "vehicle": "GBM7254X",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 11,
+    "crewPosition": 2
+  },
+  {
+    "id": "wk3a",
+    "name": "Norhisam",
+    "unitCode": "WK3",
+    "vehicle": "GBM7413D",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 12,
+    "crewPosition": 1
+  },
+  {
+    "id": "wk3b",
+    "name": "Afiq",
+    "unitCode": "WK3",
+    "vehicle": "GBM7413D",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 12,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp1a",
+    "name": "Adli",
+    "unitCode": "CP1",
+    "vehicle": "GBK9949Y",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 13,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp1b",
+    "name": "Faiz",
+    "unitCode": "CP1",
+    "vehicle": "GBK9949Y",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 13,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp2a",
+    "name": "Salim M",
+    "unitCode": "CP2",
+    "vehicle": "GBL469U",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 14,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp2b",
+    "name": "Fitri",
+    "unitCode": "CP2",
+    "vehicle": "GBL469U",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 14,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp3a",
+    "name": "Farzlan",
+    "unitCode": "CP3",
+    "vehicle": "GBL548A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 15,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp3b",
+    "name": "Syafeeq",
+    "unitCode": "CP3",
+    "vehicle": "GBL548A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 15,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp4a",
+    "name": "Khamsani",
+    "unitCode": "CP4",
+    "vehicle": "GBK9731H",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 16,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp4b",
+    "name": "Qamarul",
+    "unitCode": "CP4",
+    "vehicle": "GBK9731H",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 16,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg1a",
+    "name": "Asyir",
+    "unitCode": "KG1",
+    "vehicle": "GBL723K",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 17,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg1b",
+    "name": "Syafiq",
+    "unitCode": "KG1",
+    "vehicle": "GBL723K",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 17,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg2a",
+    "name": "Nasri",
+    "unitCode": "KG2",
+    "vehicle": "GBL631S",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 18,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg2b",
+    "name": "Aliff",
+    "unitCode": "KG2",
+    "vehicle": "GBL631S",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 18,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg3a",
+    "name": "Adino",
+    "unitCode": "KG3",
+    "vehicle": "GBL485Y",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 19,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg3b",
+    "name": "Rizdwan",
+    "unitCode": "KG3",
+    "vehicle": "GBL485Y",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 19,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg4a",
+    "name": "Fadhli",
+    "unitCode": "KG4",
+    "vehicle": "",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 20,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg4b",
+    "name": "Amsyar",
+    "unitCode": "KG4",
+    "vehicle": "",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 20,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc21a",
+    "name": "Crew 1",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 21,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc21b",
+    "name": "Crew 2",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 21,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc22a",
+    "name": "Crew 3",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 22,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc22b",
+    "name": "Crew 4",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 22,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc23a",
+    "name": "Crew 5",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 23,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc23b",
+    "name": "Crew 6",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 23,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc24a",
+    "name": "Crew 7",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 24,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc24b",
+    "name": "Crew 8",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 24,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc25a",
+    "name": "Crew 9",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 25,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc25b",
+    "name": "Crew 10",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 25,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc26a",
+    "name": "Crew 11",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 26,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc26b",
+    "name": "Crew 12",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 26,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc27a",
+    "name": "Crew 13",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 27,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc27b",
+    "name": "Crew 14",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 27,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc28a",
+    "name": "Crew 15",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 28,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc28b",
+    "name": "Crew 16",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 28,
+    "crewPosition": 2
+  }
+]

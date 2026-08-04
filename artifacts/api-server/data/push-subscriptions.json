@@ -1,0 +1,14 @@
+[
+  {
+    "subscription": {
+      "endpoint": "https://example.com/push/test123",
+      "keys": {
+        "auth": "test",
+        "p256dh": "test"
+      }
+    },
+    "type": "crew",
+    "vehicleId": "CP4-SGA1234A",
+    "savedAt": "2026-04-27T03:53:04.048Z"
+  }
+]

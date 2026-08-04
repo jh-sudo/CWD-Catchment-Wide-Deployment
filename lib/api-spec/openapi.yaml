@@ -1,0 +1,880 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: deployments
+    description: Deployment coordination operations
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /deployments/state:
+    get:
+      operationId: getDeploymentState
+      tags: [deployments]
+      summary: Get current deployment state
+      description: Returns all preset locations, accepted entries, and vehicle positions
+      responses:
+        "200":
+          description: Current deployment state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentState"
+
+  /deployments/accept:
+    post:
+      operationId: acceptLocation
+      tags: [deployments]
+      summary: Accept / claim a preset location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptLocationRequest"
+      responses:
+        "200":
+          description: Location accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptLocationResponse"
+        "409":
+          description: Location already taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /deployments/position:
+    post:
+      operationId: updateVehiclePosition
+      tags: [deployments]
+      summary: Update vehicle GPS position
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePositionRequest"
+      responses:
+        "200":
+          description: Position updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /deployments/report:
+    get:
+      operationId: getDeploymentReport
+      tags: [deployments]
+      summary: Get deployment report text
+      responses:
+        "200":
+          description: Formatted deployment report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentReport"
+
+  /deployments/reset:
+    post:
+      operationId: resetDeployment
+      tags: [deployments]
+      summary: Reset all deployment data (manager only)
+      responses:
+        "200":
+          description: Deployment reset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /deployments/assign:
+    post:
+      operationId: assignCrew
+      tags: [deployments]
+      summary: Manager assigns a crew to a location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignCrewRequest"
+      responses:
+        "200":
+          description: Assignment created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /deployments/assignments/respond:
+    post:
+      operationId: respondToAssignment
+      tags: [deployments]
+      summary: Crew accepts or declines an assignment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignmentRespondRequest"
+      responses:
+        "200":
+          description: Response recorded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /deployments/locations:
+    get:
+      operationId: getLocations
+      tags: [deployments]
+      summary: Get all preset locations
+      responses:
+        "200":
+          description: List of preset locations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationsResponse"
+    post:
+      operationId: createLocation
+      tags: [deployments]
+      summary: Add a new preset location
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLocationRequest"
+      responses:
+        "200":
+          description: Location created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationResponse"
+        "409":
+          description: Location ID already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /deployments/locations/{id}:
+    put:
+      operationId: updateLocation
+      tags: [deployments]
+      summary: Update a preset location
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateLocationRequest"
+      responses:
+        "200":
+          description: Location updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LocationResponse"
+        "404":
+          description: Location not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteLocation
+      tags: [deployments]
+      summary: Delete a preset location
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Location deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "404":
+          description: Location not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /roster-plan/config:
+    get:
+      operationId: getRosterConfig
+      tags: [roster]
+      summary: Get current roster configuration
+      responses:
+        "200":
+          description: Current configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterConfig"
+    put:
+      operationId: updateRosterConfig
+      tags: [roster]
+      summary: Update roster configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RosterConfigInput"
+      responses:
+        "200":
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterConfig"
+
+  /roster-plan/officers:
+    get:
+      operationId: getRosterOfficers
+      tags: [roster]
+      summary: List all officers
+      responses:
+        "200":
+          description: List of officers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RosterOfficer"
+    post:
+      operationId: createRosterOfficer
+      tags: [roster]
+      summary: Create a new officer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RosterOfficerInput"
+      responses:
+        "200":
+          description: Officer created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterOfficer"
+
+  /roster-plan/officers/{id}:
+    put:
+      operationId: updateRosterOfficer
+      tags: [roster]
+      summary: Update an officer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RosterOfficerInput"
+      responses:
+        "200":
+          description: Officer updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterOfficer"
+    delete:
+      operationId: deleteRosterOfficer
+      tags: [roster]
+      summary: Deactivate an officer
+      description: Soft-delete — sets active=false rather than removing the row, since officer history (leave/override/swap/duty records) must be preserved.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Officer deactivated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /roster-plan/schedule:
+    get:
+      operationId: getRosterSchedule
+      tags: [roster]
+      summary: Get duty schedule for a week
+      parameters:
+        - name: date
+          in: query
+          description: Any date in the target week (ISO string, defaults to today)
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Weekly schedule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterScheduleResponse"
+
+  /roster-plan/swaps:
+    get:
+      operationId: getRosterSwaps
+      tags: [roster]
+      summary: List swap requests
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Swap requests
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RosterSwap"
+    post:
+      operationId: createRosterSwap
+      tags: [roster]
+      summary: Request a duty swap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RosterSwapInput"
+      responses:
+        "200":
+          description: Swap request created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterSwap"
+
+  /roster-plan/swaps/{id}:
+    put:
+      operationId: reviewRosterSwap
+      tags: [roster]
+      summary: Approve or reject a swap request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RosterSwapReviewInput"
+      responses:
+        "200":
+          description: Swap reviewed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RosterSwap"
+    delete:
+      operationId: deleteRosterSwap
+      tags: [roster]
+      summary: Delete a swap request
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Swap deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    PresetLocation:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        address:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+      required: [id, name, address, lat, lng]
+
+    DeploymentEntry:
+      type: object
+      properties:
+        locationId:
+          type: string
+        vehicleId:
+          type: string
+        vehicleNumber:
+          type: string
+        unitCode:
+          type: string
+        partner:
+          type: string
+        shift:
+          type: string
+        acceptedAt:
+          type: string
+        eta:
+          type: string
+        etaMinutes:
+          type: number
+        arrived:
+          type: boolean
+        arrivedAt:
+          type: string
+          nullable: true
+        weather:
+          type: string
+          nullable: true
+        fromRoad:
+          type: string
+          nullable: true
+      required: [locationId, vehicleId, vehicleNumber, unitCode, partner, shift, acceptedAt, eta, etaMinutes, arrived]
+
+    VehiclePosition:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+        vehicleNumber:
+          type: string
+        unitCode:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+        updatedAt:
+          type: string
+        acceptedLocationId:
+          type: string
+          nullable: true
+      required: [vehicleId, vehicleNumber, unitCode, lat, lng, updatedAt]
+
+    Assignment:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+        vehicleNumber:
+          type: string
+        unitCode:
+          type: string
+        locationId:
+          type: string
+        locationName:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+        assignedAt:
+          type: string
+        status:
+          type: string
+      required: [vehicleId, vehicleNumber, unitCode, locationId, locationName, lat, lng, assignedAt, status]
+
+    AssignCrewRequest:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+        locationId:
+          type: string
+        locationName:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+      required: [vehicleId, locationId, locationName, lat, lng]
+
+    AssignmentRespondRequest:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+        vehicleNumber:
+          type: string
+        unitCode:
+          type: string
+        partner:
+          type: string
+        shift:
+          type: string
+        accepted:
+          type: boolean
+        eta:
+          type: string
+        etaMinutes:
+          type: number
+        fromRoad:
+          type: string
+          nullable: true
+      required: [vehicleId, accepted]
+
+    DeploymentState:
+      type: object
+      properties:
+        deploymentDate:
+          type: string
+        presetLocations:
+          type: array
+          items:
+            $ref: "#/components/schemas/PresetLocation"
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/DeploymentEntry"
+        vehicles:
+          type: array
+          items:
+            $ref: "#/components/schemas/VehiclePosition"
+        assignments:
+          type: array
+          items:
+            $ref: "#/components/schemas/Assignment"
+      required: [deploymentDate, presetLocations, entries, vehicles, assignments]
+
+    AcceptLocationRequest:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+        vehicleNumber:
+          type: string
+        unitCode:
+          type: string
+        partner:
+          type: string
+        shift:
+          type: string
+        locationId:
+          type: string
+        eta:
+          type: string
+        etaMinutes:
+          type: number
+        fromRoad:
+          type: string
+          nullable: true
+      required: [vehicleId, vehicleNumber, unitCode, partner, shift, locationId, eta, etaMinutes]
+
+    AcceptLocationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        entry:
+          $ref: "#/components/schemas/DeploymentEntry"
+      required: [success, entry]
+
+    UpdatePositionRequest:
+      type: object
+      properties:
+        vehicleId:
+          type: string
+        vehicleNumber:
+          type: string
+        unitCode:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+        acceptedLocationId:
+          type: string
+          nullable: true
+      required: [vehicleId, vehicleNumber, unitCode, lat, lng]
+
+    DeploymentReport:
+      type: object
+      properties:
+        date:
+          type: string
+        lines:
+          type: array
+          items:
+            type: string
+        totalUnits:
+          type: number
+        summary:
+          type: string
+      required: [date, lines, totalUnits, summary]
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required: [success, message]
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required: [error, message]
+
+    CreateLocationRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        lat:
+          type: number
+        lng:
+          type: number
+      required: [name, address, lat, lng]
+
+    LocationResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        location:
+          $ref: "#/components/schemas/PresetLocation"
+      required: [success, location]
+
+    LocationsResponse:
+      type: object
+      properties:
+        locations:
+          type: array
+          items:
+            $ref: "#/components/schemas/PresetLocation"
+      required: [locations]
+
+    # ── Roster Plan schemas ───────────────────────────────────────────────────
+    RosterConfig:
+      type: object
+      properties:
+        teamCount:
+          type: integer
+          enum: [16, 20, 24, 28]
+        cycleStartDate:
+          type: string
+          description: ISO date string when cycle week 1 started (Monday)
+        currentWeek:
+          type: integer
+          description: Current week number within the cycle (1-based)
+      required: [teamCount, cycleStartDate, currentWeek]
+
+    RosterConfigInput:
+      type: object
+      properties:
+        teamCount:
+          type: integer
+          enum: [16, 20, 24, 28]
+        cycleStartDate:
+          type: string
+      required: [teamCount, cycleStartDate]
+
+    RosterOfficer:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        unitCode:
+          type: string
+          description: e.g. BU1, PJ2
+        vehicle:
+          type: string
+        catchment:
+          type: string
+        teamSlot:
+          type: integer
+          description: 1-based slot in the cycle (1 to teamCount)
+        crewPosition:
+          type: integer
+          description: 1 or 2 (two crew per team)
+        active:
+          type: boolean
+          description: Soft-delete flag. false means the officer was deactivated — excluded from future roster/PH generation but their history is kept.
+      required: [id, name, unitCode, vehicle, catchment, teamSlot, crewPosition, active]
+
+    RosterOfficerInput:
+      type: object
+      properties:
+        name:
+          type: string
+        unitCode:
+          type: string
+        vehicle:
+          type: string
+        catchment:
+          type: string
+        teamSlot:
+          type: integer
+        crewPosition:
+          type: integer
+        active:
+          type: boolean
+          description: Only used to reactivate a deactivated officer via PUT — not settable on create.
+
+    RosterDutyCell:
+      type: object
+      properties:
+        officerId:
+          type: string
+        date:
+          type: string
+        duty:
+          type: string
+          description: PD | DAY | ND | OFF | REST
+        override:
+          type: boolean
+      required: [officerId, date, duty, override]
+
+    RosterScheduleResponse:
+      type: object
+      properties:
+        weekLabel:
+          type: string
+        cycleWeek:
+          type: integer
+        startDate:
+          type: string
+        endDate:
+          type: string
+        officers:
+          type: array
+          items:
+            $ref: "#/components/schemas/RosterOfficer"
+        duties:
+          type: array
+          items:
+            $ref: "#/components/schemas/RosterDutyCell"
+      required: [weekLabel, cycleWeek, startDate, endDate, officers, duties]
+
+    RosterSwap:
+      type: object
+      properties:
+        id:
+          type: string
+        requesterId:
+          type: string
+        requesterName:
+          type: string
+        targetId:
+          type: string
+        targetName:
+          type: string
+        date:
+          type: string
+        requesterDuty:
+          type: string
+        targetDuty:
+          type: string
+        reason:
+          type: string
+        status:
+          type: string
+          description: PENDING | APPROVED | REJECTED
+        reviewerName:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+        reviewedAt:
+          type: ["string", "null"]
+      required: [id, requesterId, requesterName, targetId, targetName, date, requesterDuty, targetDuty, reason, status, createdAt]
+
+    RosterSwapInput:
+      type: object
+      properties:
+        requesterId:
+          type: string
+        targetId:
+          type: string
+        date:
+          type: string
+        reason:
+          type: string
+      required: [requesterId, targetId, date, reason]
+
+    RosterSwapReviewInput:
+      type: object
+      properties:
+        approved:
+          type: boolean
+        reviewerName:
+          type: string
+      required: [approved, reviewerName]
