@@ -1,0 +1,40 @@
+# Dependencies (reinstalled inside the image)
+**/node_modules
+
+# Build output (rebuilt inside the image)
+**/dist
+**/out-tsc
+**/*.tsbuildinfo
+
+# VCS / editor / OS cruft
+.git
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+
+# Local/dev-only state, never needed in a build context
+.scratch
+.claude
+.config
+.local
+*.log
+
+# Secrets — never sent to the Docker build context
+.env
+.env.*
+!.env.example
+
+# Replit artifacts unrelated to the build
+.replit
+.replitignore
+replit.nix
+.cache
+
+# Out-of-scope artifacts (mobile clients, static mockup) per
+# .scratch/govpaas-migration/issues/00-scope-decisions.md — not hosted,
+# and excluding them keeps the build context free of their independent
+# (currently lockfile-drifted) dependency trees.
+artifacts/deployment-tracker
+artifacts/wls-android-forwarder
+artifacts/mockup-sandbox
