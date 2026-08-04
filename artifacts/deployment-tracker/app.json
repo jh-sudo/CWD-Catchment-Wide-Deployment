@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Deployment Tracker",
+    "slug": "deployment-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "deployment-tracker",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#0A1628"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.deploymenttracker.app",
+      "config": {
+        "googleMapsApiKey": ""
+      },
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app uses your location to match you to the nearest deployment point.",
+        "NSLocationAlwaysUsageDescription": "This app tracks your location while on duty to assist team coordination."
+      }
+    },
+    "android": {
+      "package": "com.deploymenttracker.app",
+      "versionCode": 1,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": ""
+        }
+      }
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Deployment Tracker to use your location."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true,
+      "baseUrl": "/crew"
+    }
+  }
+}

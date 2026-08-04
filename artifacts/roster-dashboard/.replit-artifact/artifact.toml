@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/roster/"
+title = "Roster Dashboard"
+version = "1.0.0"
+id = "artifacts/roster-dashboard"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/roster/" ]
+localPort = 20315
+
+[services.development]
+run = "pnpm --filter @workspace/roster-dashboard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/roster-dashboard", "run", "build" ]
+publicDir = "artifacts/roster-dashboard/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "20315"
+BASE_PATH = "/roster/"

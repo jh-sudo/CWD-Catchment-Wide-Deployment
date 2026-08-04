@@ -1,0 +1,26 @@
+kind = "design"
+previewPath = "/inventory"
+title = "Warehouse IMS"
+version = "1.0.0"
+id = "XegfDyZt7HqfW2Bb8Ghoy"
+
+[[services]]
+localPort = 8081
+name = "Component Preview Server"
+paths = ["/inventory"]
+
+[services.env]
+PORT = "8081"
+BASE_PATH = "/inventory"
+
+[services.development]
+run = "pnpm --filter @workspace/mockup-sandbox run dev"
+
+[services.production]
+build = ["pnpm", "--filter", "@workspace/mockup-sandbox", "run", "build"]
+publicDir = "artifacts/mockup-sandbox/dist"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"

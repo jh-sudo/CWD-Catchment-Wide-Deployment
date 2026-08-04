@@ -1,0 +1,506 @@
+[
+  {
+    "id": "bu1a",
+    "name": "Officer-26",
+    "unitCode": "BU1",
+    "vehicle": "TST0004A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 1,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu1b",
+    "name": "Officer-16",
+    "unitCode": "BU1",
+    "vehicle": "TST0004A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 1,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu2a",
+    "name": "Officer-11",
+    "unitCode": "BU2",
+    "vehicle": "TST0009A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 2,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu2b",
+    "name": "Officer-04",
+    "unitCode": "BU2",
+    "vehicle": "TST0009A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 2,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu3a",
+    "name": "Officer-14",
+    "unitCode": "BU3",
+    "vehicle": "TST0003A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 3,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu3b",
+    "name": "Officer-30",
+    "unitCode": "BU3",
+    "vehicle": "TST0003A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 3,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu4a",
+    "name": "Officer-22",
+    "unitCode": "BU4",
+    "vehicle": "",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 4,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu4b",
+    "name": "Officer-31",
+    "unitCode": "BU4",
+    "vehicle": "",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 4,
+    "crewPosition": 2
+  },
+  {
+    "id": "bu5a",
+    "name": "Officer-08",
+    "unitCode": "BU5",
+    "vehicle": "TST0008A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 5,
+    "crewPosition": 1
+  },
+  {
+    "id": "bu5b",
+    "name": "Officer-19",
+    "unitCode": "BU5",
+    "vehicle": "TST0008A",
+    "catchment": "Bukit Timah & Urban",
+    "teamSlot": 5,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj1a",
+    "name": "Officer-37",
+    "unitCode": "PJ1",
+    "vehicle": "TST0014A",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 6,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj1b",
+    "name": "Officer-15",
+    "unitCode": "PJ1",
+    "vehicle": "TST0014A",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 6,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj2a",
+    "name": "Officer-10",
+    "unitCode": "PJ2",
+    "vehicle": "TST0017A",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 7,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj2b",
+    "name": "Officer-40",
+    "unitCode": "PJ2",
+    "vehicle": "TST0017A",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 7,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj3a",
+    "name": "Officer-25",
+    "unitCode": "PJ3",
+    "vehicle": "TST0016A",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 8,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj3b",
+    "name": "Officer-20",
+    "unitCode": "PJ3",
+    "vehicle": "TST0016A",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 8,
+    "crewPosition": 2
+  },
+  {
+    "id": "pj4a",
+    "name": "Officer-35",
+    "unitCode": "PJ4",
+    "vehicle": "",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 9,
+    "crewPosition": 1
+  },
+  {
+    "id": "pj4b",
+    "name": "Officer-09",
+    "unitCode": "PJ4",
+    "vehicle": "",
+    "catchment": "Jurong & Pandan",
+    "teamSlot": 9,
+    "crewPosition": 2
+  },
+  {
+    "id": "wk1a",
+    "name": "Officer-21",
+    "unitCode": "WK1",
+    "vehicle": "TST0015A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 10,
+    "crewPosition": 1
+  },
+  {
+    "id": "wk1b",
+    "name": "Officer-36",
+    "unitCode": "WK1",
+    "vehicle": "TST0015A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 10,
+    "crewPosition": 2
+  },
+  {
+    "id": "wk2a",
+    "name": "Officer-23",
+    "unitCode": "WK2",
+    "vehicle": "TST0012A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 11,
+    "crewPosition": 1
+  },
+  {
+    "id": "wk2b",
+    "name": "Officer-33",
+    "unitCode": "WK2",
+    "vehicle": "TST0012A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 11,
+    "crewPosition": 2
+  },
+  {
+    "id": "wk3a",
+    "name": "Officer-28",
+    "unitCode": "WK3",
+    "vehicle": "TST0013A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 12,
+    "crewPosition": 1
+  },
+  {
+    "id": "wk3b",
+    "name": "Officer-03",
+    "unitCode": "WK3",
+    "vehicle": "TST0013A",
+    "catchment": "Kranji & Woodlands",
+    "teamSlot": 12,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp1a",
+    "name": "Officer-02",
+    "unitCode": "CP1",
+    "vehicle": "TST0002A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 13,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp1b",
+    "name": "Officer-13",
+    "unitCode": "CP1",
+    "vehicle": "TST0002A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 13,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp2a",
+    "name": "Officer-34",
+    "unitCode": "CP2",
+    "vehicle": "TST0005A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 14,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp2b",
+    "name": "Officer-18",
+    "unitCode": "CP2",
+    "vehicle": "TST0005A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 14,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp3a",
+    "name": "Officer-17",
+    "unitCode": "CP3",
+    "vehicle": "TST0007A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 15,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp3b",
+    "name": "Officer-38",
+    "unitCode": "CP3",
+    "vehicle": "TST0007A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 15,
+    "crewPosition": 2
+  },
+  {
+    "id": "cp4a",
+    "name": "Officer-24",
+    "unitCode": "CP4",
+    "vehicle": "TST0001A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 16,
+    "crewPosition": 1
+  },
+  {
+    "id": "cp4b",
+    "name": "Officer-29",
+    "unitCode": "CP4",
+    "vehicle": "TST0001A",
+    "catchment": "Changi & Punggol",
+    "teamSlot": 16,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg1a",
+    "name": "Officer-07",
+    "unitCode": "KG1",
+    "vehicle": "TST0011A",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 17,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg1b",
+    "name": "Officer-39",
+    "unitCode": "KG1",
+    "vehicle": "TST0011A",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 17,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg2a",
+    "name": "Officer-27",
+    "unitCode": "KG2",
+    "vehicle": "TST0010A",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 18,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg2b",
+    "name": "Officer-05",
+    "unitCode": "KG2",
+    "vehicle": "TST0010A",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 18,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg3a",
+    "name": "Officer-01",
+    "unitCode": "KG3",
+    "vehicle": "TST0006A",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 19,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg3b",
+    "name": "Officer-32",
+    "unitCode": "KG3",
+    "vehicle": "TST0006A",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 19,
+    "crewPosition": 2
+  },
+  {
+    "id": "kg4a",
+    "name": "Officer-12",
+    "unitCode": "KG4",
+    "vehicle": "",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 20,
+    "crewPosition": 1
+  },
+  {
+    "id": "kg4b",
+    "name": "Officer-06",
+    "unitCode": "KG4",
+    "vehicle": "",
+    "catchment": "Kallang & Geylang",
+    "teamSlot": 20,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc21a",
+    "name": "Crew 1",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 21,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc21b",
+    "name": "Crew 2",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 21,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc22a",
+    "name": "Crew 3",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 22,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc22b",
+    "name": "Crew 4",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 22,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc23a",
+    "name": "Crew 5",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 23,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc23b",
+    "name": "Crew 6",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 23,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc24a",
+    "name": "Crew 7",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 24,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc24b",
+    "name": "Crew 8",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 24,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc25a",
+    "name": "Crew 9",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 25,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc25b",
+    "name": "Crew 10",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 25,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc26a",
+    "name": "Crew 11",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 26,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc26b",
+    "name": "Crew 12",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 26,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc27a",
+    "name": "Crew 13",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 27,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc27b",
+    "name": "Crew 14",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 27,
+    "crewPosition": 2
+  },
+  {
+    "id": "tbc28a",
+    "name": "Crew 15",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 28,
+    "crewPosition": 1
+  },
+  {
+    "id": "tbc28b",
+    "name": "Crew 16",
+    "unitCode": "TBC",
+    "vehicle": "",
+    "catchment": "",
+    "teamSlot": 28,
+    "crewPosition": 2
+  }
+]
