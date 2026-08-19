@@ -197,6 +197,15 @@ router.get("/crew", requireCrew, (req, res) => {
 
     document.getElementById('officerName').textContent = OFFICER.name;
 
+    // Safe way to embed a JSON-stringified value inside a double-quoted
+    // onclick="..." HTML attribute — JSON.stringify's own double quotes would
+    // otherwise prematurely close the attribute and silently break the
+    // handler (the bug that made every Accept/Weather/Swap/CRMS button do
+    // nothing on first deploy — caught via live testing, not locally).
+    function attrArg(val) {
+      return JSON.stringify(val).replace(/"/g, '&quot;');
+    }
+
     function toast(msg) {
       var t = document.getElementById('toast');
       t.textContent = msg; t.classList.add('show');
@@ -304,7 +313,7 @@ router.get("/crew", requireCrew, (req, res) => {
           '</div>' +
           '<div class="row" style="margin-bottom:10px;">' +
             weatherOpts.map(function (w) {
-              return '<button class="action secondary" style="' + (entry.weather === w ? 'outline:2px solid var(--primary);' : '') + '" onclick="reportWeather(' + JSON.stringify(w) + ')">' + w + '</button>';
+              return '<button class="action secondary" style="' + (entry.weather === w ? 'outline:2px solid var(--primary);' : '') + '" onclick="reportWeather(' + attrArg(w) + ')">' + w + '</button>';
             }).join('') +
           '</div>' +
           '<button class="action" onclick="updateLocation(false)">📍 Update My Location</button>' +
@@ -314,7 +323,7 @@ router.get("/crew", requireCrew, (req, res) => {
         card.innerHTML =
           '<h2>New Assignment</h2>' +
           '<div style="font-size:16px; font-weight:700; margin-bottom:12px;">' + aloc.name + '</div>' +
-          '<button class="action green" onclick="acceptAssignment(' + JSON.stringify(assignment.locationId) + ')">Accept</button>';
+          '<button class="action green" onclick="acceptAssignment(' + attrArg(assignment.locationId) + ')">Accept</button>';
       } else if (t) {
         var available = (state.presetLocations || []).filter(function (l) {
           return !(state.entries || []).some(function (e) { return e.locationId === l.id; });
@@ -324,7 +333,7 @@ router.get("/crew", requireCrew, (req, res) => {
           (available.length
             ? available.map(function (l) {
                 return '<div class="loc-item"><div><div class="name">' + l.name + '</div><div class="addr">' + l.address + '</div></div>' +
-                  '<button class="action green" style="flex:none; padding:10px 14px;" onclick="acceptLocation(' + JSON.stringify(l.id) + ')">Accept</button></div>';
+                  '<button class="action green" style="flex:none; padding:10px 14px;" onclick="acceptLocation(' + attrArg(l.id) + ')">Accept</button></div>';
               }).join('')
             : '<div class="muted">No locations currently available.</div>');
       } else {
@@ -389,8 +398,8 @@ router.get("/crew", requireCrew, (req, res) => {
         body.innerHTML =
           '<div class="muted" style="margin-bottom:10px;">' + incoming.fromUnitCode + ' wants to swap you into ' + incoming.fromLocationName + '</div>' +
           '<div class="row">' +
-            '<button class="action green" onclick="swapAccept(' + JSON.stringify(incoming.id) + ')">Accept Swap</button>' +
-            '<button class="action red" onclick="swapDecline(' + JSON.stringify(incoming.id) + ')">Decline</button>' +
+            '<button class="action green" onclick="swapAccept(' + attrArg(incoming.id) + ')">Accept Swap</button>' +
+            '<button class="action red" onclick="swapDecline(' + attrArg(incoming.id) + ')">Decline</button>' +
           '</div>';
         return;
       }
@@ -448,8 +457,8 @@ router.get("/crew", requireCrew, (req, res) => {
             '<div class="muted" style="font-size:12px; margin-bottom:6px;">' + (c.description || '') + '</div>' +
             '<textarea placeholder="Add a comment…" id="cmt_' + c.id + '" rows="2"></textarea>' +
             '<div class="row">' +
-              '<button class="action secondary" onclick="crmsComment(' + JSON.stringify(c.id) + ')">Comment</button>' +
-              '<button class="action green" onclick="crmsResolve(' + JSON.stringify(c.id) + ')">Resolve</button>' +
+              '<button class="action secondary" onclick="crmsComment(' + attrArg(c.id) + ')">Comment</button>' +
+              '<button class="action green" onclick="crmsResolve(' + attrArg(c.id) + ')">Resolve</button>' +
             '</div>' +
           '</div>';
         }).join('');
