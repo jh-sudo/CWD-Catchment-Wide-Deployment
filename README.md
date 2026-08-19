@@ -2,7 +2,8 @@
 
 Government-adjacent flood-ops fleet coordination system for Singapore — coordinates vehicle
 deployments, crew rosters, and field inspections across catchments. pnpm monorepo: four hosted
-web services sharing one Express backend, plus two standalone mobile clients.
+web services sharing one Express backend. No native mobile client — see
+[Crew and manager dashboards](#crew-and-manager-dashboards) below for why.
 
 ## Structure
 
@@ -12,8 +13,6 @@ artifacts/
   roster-dashboard/     — React + Vite web dashboard (crew roster, leave, PH rotation)
   apa/                   — React + Vite web app (FRA & coverage map)
   inspector/             — React + Vite web app (field inspection reports + photos)
-  deployment-tracker/   — Expo React Native mobile app (crew-facing: accept locations, navigate)
-  wls-android-forwarder/ — Native Android app (SMS forwarder for water-level-sensor readings)
   mockup-sandbox/        — Static "Warehouse IMS" design mockup — prototype only, not hosted, no backend
 lib/
   db/                    — Drizzle ORM schema + Postgres client (source of truth for all tables)
@@ -34,10 +33,8 @@ photos), `web-push` (VAPID), `docx`/`exceljs` (report generation), `sharp` (imag
 **Web frontends** (`roster-dashboard`, `apa`, `inspector`): React 19 + TypeScript, Vite 7,
 Tailwind CSS 4, `wouter` (routing), TanStack Query, Zod (shared schemas from `lib/api-zod`).
 
-**Mobile** (`deployment-tracker`): Expo (~54) + React Native 0.81 + React 19, Expo Router,
-`react-native-maps`, `expo-location`, TanStack Query. Distributed via EAS Build.
-
-**Mobile** (`wls-android-forwarder`): native Android (Java), separate from the Expo app.
+**Crew and manager dashboards** (`/crew`, `/manager`): server-rendered HTML/JS directly from
+`api-server` — no separate frontend build, no app to install. See below for why.
 
 **Infra**: pnpm workspaces monorepo, one Docker image per hosted service (`node:20-slim`),
 pushed to GHCR, deployed on GOV PaaS with path-based routing under one subdomain. PostgreSQL and
@@ -54,26 +51,44 @@ where the code lives:
 | **Inspection photos** | In-memory only — never actually persisted, would vanish on restart | MinIO (S3-compatible), via `@aws-sdk/client-s3` |
 | **Routing 4 services under 1 origin** | Replit's built-in path-based artifact router (`router = "path"` in each `.replit-artifact/artifact.toml`) | GOV PaaS/Northflank's native path-based routing — same shape, different platform |
 | **Build & deploy** | Automatic — Replit built and deployed on every change | Manual: `docker build` per service → push to GHCR → manual redeploy on GOV PaaS (no CI; the deploy step is a manual "pull this image" action regardless, so CI would only automate half the pipeline — not worth it yet) |
-| **Domain** | `cwd-dashboard.replit.app` (and a *second*, different Replit domain for `wls-android-forwarder` — never reconciled until now) | One GOV PaaS-issued sandbox subdomain, intranet-only |
+| **Domain** | `cwd-dashboard.replit.app` | One GOV PaaS-issued sandbox subdomain, intranet-only |
 | **Secrets** | Replit's built-in Secrets panel | Environment variables set per-service in the GOV PaaS console |
 | **Mobile clients** | Pointed at their Replit domains via a build-time env var / fallback constant | Same mechanism, just repointed at the new subdomain — no architecture change |
 
-**Two apps were deliberately *not* carried over to GOV PaaS**, not by oversight:
+**One app was deliberately not carried over to GOV PaaS**, not by oversight:
 - **`mockup-sandbox`** ("Warehouse IMS") — a static design mockup with zero backend calls
   (`kind = "design"` in its own Replit metadata). Left as-is, under development.
-- **`deployment-tracker`'s web-preview mode** ("Flood Commander Dashboard", Replit's `/crew`
-  path) — Expo's browser-preview convenience feature, not the app's real distribution target.
-  The actual app is meant to run natively on phones, not as a hosted website.
 
-Both still exist on the old Replit deployment today; once Replit is decommissioned, those two
-specific surfaces simply stop being reachable — expected, not a regression.
+Still exists on the old Replit deployment today; once Replit is decommissioned, that surface
+simply stops being reachable — expected, not a regression.
+
+## Crew and manager dashboards
+
+`deployment-tracker` (Expo/React Native — crew-facing: accept locations, weather report, swap
+requests, navigate) and `wls-android-forwarder` (native Android SMS forwarder) both used to live
+in this repo. Neither was ever distributed to a real device. Both were removed, not just left
+unfinished — see `.scratch/flood-commander-web/` for the full reasoning, in short:
+
+- Singapore GovTech's Vibe Coding Playbook forces **any** native/locally-run app into the
+  heaviest governance tier (required SSP, VAPT, CISO/CIO/IDSC approval), regardless of actual
+  data sensitivity or deployment scope — just for being a native app.
+- `deployment-tracker`'s functionality was rebuilt as plain server-rendered web pages instead —
+  `/crew` (new) for officers, `/manager` (already existed, confirmed already covering the rest —
+  live map, location/roster assignment, alerts, WLS, CRMS) for commanders. One real functional
+  trade-off: continuous background GPS tracking isn't possible from a browser tab, so crew now
+  send **intermittent, officer-initiated** location updates (auto-pinged on accept and whenever
+  the tab regains focus, plus a manual button) instead of a constantly-live dot. The manager map
+  shows a staleness indicator per vehicle to make that visible rather than implying a live feed
+  that no longer exists.
+- `wls-android-forwarder`'s one job (background SMS interception) can't become a web page —
+  removed outright since it was never deployed and its target feature (WLS alerts) already has a
+  working manual-paste ingestion path with no dependency on it.
 
 ## Prerequisites
 
 - Node.js 20+
 - pnpm 10+ (`corepack enable && corepack prepare pnpm@10 --activate`)
 - Docker (for local Postgres/MinIO, and for building deploy images)
-- Expo CLI — for the mobile app only
 
 ## Setup
 
@@ -85,20 +100,39 @@ pnpm install
 pnpm --filter @workspace/api-spec run codegen
 ```
 
+## Local Postgres & MinIO (for local development)
+
+```bash
+docker run -d --name cwd-local-postgres \
+  -e POSTGRES_USER=cwd -e POSTGRES_PASSWORD=cwd_local_dev -e POSTGRES_DB=cwd \
+  -p 5433:5432 postgres:16-alpine
+
+docker run -d --name cwd-local-minio \
+  -e MINIO_ROOT_USER=cwdminio -e MINIO_ROOT_PASSWORD=cwd_local_dev \
+  -p 55900:9000 -p 55901:9001 minio/minio server /data --console-address ":9001"
+
+# Push the schema to the fresh local Postgres
+DATABASE_URL="postgresql://cwd:cwd_local_dev@localhost:5433/cwd" \
+  pnpm --filter @workspace/db run push-force
+```
+
+On a genuinely fresh/empty database, the server auto-seeds a fallback admin
+account on first boot — see **Manager login** below.
+
 ## Running locally
 
 ```bash
-# 1. API server (port 8080) — needs a local Postgres, see Environment variables below
+# 1. API server (port 8080) — point at the local Postgres/MinIO above
 pnpm --filter @workspace/api-server run dev
 
 # 2. Web frontends (each on its own Vite dev port)
 pnpm --filter @workspace/roster-dashboard run dev
 pnpm --filter @workspace/apa run dev
 pnpm --filter @workspace/inspector run dev
-
-# 3. Mobile app — scan the printed QR code with Expo Go
-pnpm --filter @workspace/deployment-tracker run dev
 ```
+
+The crew (`/crew`) and manager (`/manager`) dashboards are served directly by the API server —
+no separate dev server, just open them once step 1 is running.
 
 ## Environment variables
 
@@ -113,15 +147,9 @@ pnpm --filter @workspace/deployment-tracker run dev
 | `MINIO_BUCKET` | Bucket name for inspection photos (e.g. `cwd-inspections`) |
 | `PORT` | Port the API server listens on |
 
-**`artifacts/deployment-tracker/.env`** (copy from `.env.example`):
-
-| Variable | Description |
-|---|---|
-| `EXPO_PUBLIC_API_URL` | Backend base URL — inlined into the client JS bundle at build time |
-| `EXPO_PUBLIC_GOOGLE_MAPS_API_KEY` | Google Maps key, used only for the Directions API call — **not** a server secret, but still don't commit real values (`.env` is gitignored) |
-
 `roster-dashboard`, `apa`, and `inspector` need no env vars of their own — they call the API
-same-origin via relative paths.
+same-origin via relative paths. Same for `/crew` and `/manager` — served directly by
+`api-server`, no separate config.
 
 ## Manager login
 
@@ -134,6 +162,26 @@ rows** (fresh/empty database):
 This is a first-run bootstrap default, not a fixed credential — once real manager accounts exist
 (via normal signup/approval, or a data migration), this fallback never fires and won't work.
 Change the seeded password immediately on a genuinely fresh deploy.
+
+## Crew login
+
+Historically crew "auth" was a single PIN shared by the whole crew
+(`POST /api/crew-pin/check`) with no individual identity — still present for backward
+compat but superseded, see
+[`.scratch/flood-commander-web/issues/01-crew-officer-auth.md`](.scratch/flood-commander-web/issues/01-crew-officer-auth.md).
+
+Each officer now gets their own PIN instead, tied to their roster record:
+
+```bash
+# Admin sets/replaces a specific officer's crew PIN (auto-approved)
+PUT /manager/auth/officers/:officerId/crew-pin   { "pin": "1234" }   # requires admin session
+
+# Officer logs in with their own PIN — issues a real session, not a bare pass/fail
+POST /api/crew/auth/login   { "officerId": "...", "pin": "..." }
+```
+
+All credential-check endpoints (manager login, manager PIN, crew PIN, per-officer crew
+login) are rate-limited independently — 10 attempts per 15 minutes per IP, per endpoint.
 
 ## Deployment
 
@@ -152,7 +200,7 @@ All 4 services sit under one GOV PaaS subdomain via path-based routing:
 
 | Path | Service |
 |---|---|
-| `/`, `/api/*`, `/manager/*`, `/lightning/*` | api-server |
+| `/`, `/api/*`, `/manager/*`, `/crew/*`, `/lightning/*` | api-server |
 | `/roster/*` | roster-dashboard |
 | `/apa/*` | apa |
 | `/inspector/*` | inspector |
@@ -160,10 +208,6 @@ All 4 services sit under one GOV PaaS subdomain via path-based routing:
 The PostgreSQL and MinIO addons are **private-network-only** — not reachable from outside GOV
 PaaS. One-off admin tasks (applying schema, creating a bucket) are run from a live service pod's
 own Shell tab in the GOV PaaS console, not from a local machine.
-
-`deployment-tracker` and `wls-android-forwarder` aren't hosted anywhere — they're distributed as
-native mobile builds (EAS Build for Expo; a standard APK build for the Android app) and just need
-their API URL pointed at the deployed backend.
 
 ## Codegen
 

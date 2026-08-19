@@ -2,7 +2,7 @@ import express, { type Express, type Request, type Response } from "express";
 import cors from "cors";
 import session from "express-session";
 import pinoHttp from "pino-http";
-import router, { managerRouter, authRouter, lightningPublicRouter } from "./routes";
+import router, { managerRouter, crewRouter, authRouter, lightningPublicRouter } from "./routes";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -62,6 +62,7 @@ app.get("/", (_req: Request, res: Response) => {
 
 app.use("/api", router);
 app.use(managerRouter);
+app.use(crewRouter);
 app.use(lightningPublicRouter);
 
 export default app;

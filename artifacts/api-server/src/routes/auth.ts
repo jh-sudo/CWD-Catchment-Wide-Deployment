@@ -1,11 +1,42 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import bcrypt from "bcryptjs";
+import rateLimit from "express-rate-limit";
 import { eq } from "drizzle-orm";
 import { db, managersTable, appConfigTable, officersTable, type Manager } from "@workspace/db";
+
+// ── Rate limiting ────────────────────────────────────────────────────────────
+// Applies to every credential-check endpoint below (manager login, manager PIN,
+// crew PIN, per-officer crew login) — none of them had any limit before, so a
+// password/PIN could be brute-forced with unlimited attempts. 10 tries per
+// 15 minutes per IP is generous enough for a mistyped password, tight enough
+// to make guessing a 4-6 digit PIN impractical.
+//
+// One limiter *instance* per endpoint, not one shared across all of them —
+// office networks / mobile carriers often NAT many users behind one public IP,
+// so a shared counter would let unrelated legitimate manager-login traffic eat
+// into the crew-login quota (and vice versa) for everyone behind that IP.
+function makeAuthRateLimit() {
+  return rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many attempts — try again later" },
+  });
+}
 
 declare module "express-session" {
   interface SessionData {
     managerId?: string;
+  }
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      /** Set by requireCrew — the officer behind the current crew session. */
+      officer?: { id: string; name: string };
+    }
   }
 }
 
@@ -128,6 +159,24 @@ export function requireManager(req: Request, res: Response, next: NextFunction) 
   next();
 }
 
+// Requires a real per-officer crew session (see /api/crew/auth/login). Unlike
+// requireManager, there's no PIN-header bypass here — the whole point of this
+// middleware is that the caller is one specific, verified officer, not "anyone
+// who knows a shared secret." Attaches req.officer so handlers can log/use who
+// actually performed the action, even though the deployment-tracking data
+// itself (vehicleId/unitCode) is keyed separately — see
+// .scratch/flood-commander-web/issues/02-crew-web-page.md for why.
+export function requireCrew(req: Request, res: Response, next: NextFunction) {
+  const mid = req.session?.managerId;
+  if (!mid) { res.status(401).json({ error: "Authentication required" }); return; }
+  const m = managers.find(a => a.id === mid);
+  if (!m || !m.approved || m.role !== "crew" || !m.officerId) {
+    res.status(403).json({ error: "Crew access required" }); return;
+  }
+  req.officer = { id: m.officerId, name: m.officerName ?? m.officerId };
+  next();
+}
+
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const mid = req.session?.managerId;
   if (!mid) { res.status(401).json({ error: "Authentication required" }); return; }
@@ -149,7 +198,7 @@ export function requireAdminOrManager(req: Request, res: Response, next: NextFun
 }
 
 // ── Auth API ───────────────────────────────────────────────────────────────────
-router.post("/manager/auth/login", async (req, res) => {
+router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
   const { username, password } = req.body as { username: string; password: string };
   const m = managers.find(a => a.username === username);
   if (!m || !(await bcrypt.compare(password, m.passwordHash))) {
@@ -360,7 +409,7 @@ router.post("/manager/auth/change-password", requireManager, async (req, res) =>
 });
 
 // ── Manager PIN (for mobile app) ──────────────────────────────────────────────
-router.post("/api/manager-pin/check", (req, res) => {
+router.post("/api/manager-pin/check", makeAuthRateLimit(), (req, res) => {
   const { pin } = req.body as { pin: string };
   if (!pin || pin !== appConfig.managerPin) {
     res.status(401).json({ error: "Incorrect PIN" }); return;
@@ -384,8 +433,13 @@ router.put("/manager/auth/pin", requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Crew PIN (for mobile app) ──────────────────────────────────────────────────
-router.post("/api/crew-pin/check", (req, res) => {
+// ── Crew PIN (legacy — shared PIN, no individual identity) ────────────────────
+// Superseded by /api/crew/auth/login below, which ties a PIN to one specific
+// officer instead of the whole crew sharing one secret. Left in place only for
+// backward compat with the native deployment-tracker app (never distributed —
+// see .scratch/flood-commander-web/issues/08-retire-native-app.md); new crew
+// UI should not use this.
+router.post("/api/crew-pin/check", makeAuthRateLimit(), (req, res) => {
   const { pin } = req.body as { pin: string };
   if (!pin || pin !== appConfig.crewPin) {
     res.status(401).json({ error: "Incorrect PIN" }); return;
@@ -407,6 +461,74 @@ router.put("/manager/auth/crew-pin", requireAdmin, async (req, res) => {
     .onConflictDoUpdate({ target: appConfigTable.id, set: { crewPin: pin } });
   await refreshAppConfigCache();
   res.json({ success: true });
+});
+
+// ── Per-officer crew login ──────────────────────────────────────────────────
+// Real replacement for the shared crew PIN above: each officer gets their own
+// short PIN, bcrypt-hashed, stored as a `role: "crew"` managers row linked via
+// officerId (this table/pattern already existed — see /manager/auth/register —
+// it just wasn't wired into any crew-facing UI). A successful check issues a
+// real session (same req.session.managerId used by manager/admin/ic logins),
+// so a location update or CRMS action is attributable to one specific officer
+// instead of "whoever knew the shared PIN."
+//
+// UX stays close to the old shared-PIN flow — pick your name, enter a short
+// PIN — the difference is invisible to the officer but the PIN is now theirs
+// alone, not shared across the whole crew.
+router.post("/api/crew/auth/login", makeAuthRateLimit(), async (req, res) => {
+  const { officerId, pin } = req.body as { officerId?: string; pin?: string };
+  if (!officerId || !pin) {
+    res.status(400).json({ error: "officerId and pin are required" }); return;
+  }
+  const m = managers.find(a => a.role === "crew" && a.officerId === officerId);
+  if (!m || !(await bcrypt.compare(pin, m.passwordHash))) {
+    res.status(401).json({ error: "Incorrect PIN" }); return;
+  }
+  if (!m.approved) {
+    res.status(403).json({ error: "Crew access not yet set up for this officer — ask an admin" }); return;
+  }
+  req.session.managerId = m.id;
+  res.json({ success: true, officerId: m.officerId, officerName: m.officerName });
+});
+
+// Admin: directly set (create or replace) an officer's individual crew PIN —
+// auto-approved since an admin is the one setting it, unlike the self-register
+// + pending-approval flow at /manager/auth/register. This is the practical way
+// to onboard a crew member without asking them to register themselves first.
+router.put("/manager/auth/officers/:officerId/crew-pin", requireAdmin, async (req, res) => {
+  const officerId = req.params.officerId as string;
+  const { pin } = req.body as { pin?: string };
+  if (!pin || !/^\d{4,8}$/.test(pin)) {
+    res.status(400).json({ error: "PIN must be 4-8 digits" }); return;
+  }
+  const [officer] = await db.select().from(officersTable).where(eq(officersTable.id, officerId));
+  if (!officer) { res.status(404).json({ error: "Officer not found" }); return; }
+
+  const passwordHash = await bcrypt.hash(pin, 10);
+  const existing = managers.find(a => a.role === "crew" && a.officerId === officerId);
+  if (existing) {
+    await updateManager(existing.id, { passwordHash, approved: true });
+  } else {
+    await db.insert(managersTable).values({
+      id: `crew_${officerId}`,
+      username: `crew_${officerId}`,
+      passwordHash,
+      role: "crew",
+      approved: true,
+      createdAt: new Date(),
+      officerId,
+      officerName: officer.name,
+    });
+    await refreshManagersCache();
+  }
+  res.json({ success: true, officerId, officerName: officer.name });
+});
+
+// Admin: list which officers currently have a crew login set up (no PIN values
+// returned — same write-only-credential pattern as manager password resets).
+router.get("/manager/auth/officers/crew-pins", requireAdmin, async (_req, res) => {
+  const linked = managers.filter(a => a.role === "crew" && a.officerId);
+  res.json(linked.map(m => ({ officerId: m.officerId, officerName: m.officerName, approved: m.approved })));
 });
 
 // ── Manager login / register HTML pages ───────────────────────────────────────

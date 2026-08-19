@@ -2080,12 +2080,19 @@ function haversineM(lat1, lng1, lat2, lng2) {
 }
 
 // ── Car-shaped SVG vehicle marker (top-down car silhouette + unit label pill) ──
+// Positions are intermittent by design now (officer-initiated updates, not a
+// continuous background stream — see .scratch/flood-commander-web/spec.md),
+// so a dot on this map is a snapshot, not a guaranteed live feed. Grey out
+// anything older than this so staleness is visible rather than implied-live.
+var STALE_THRESHOLD_MIN = 30;
+
 function buildCarIcon(unitCode, _colorIgnored, opts) {
   var UNIT_COLORS = {BU:'#3b82f6',PJ:'#06b6d4',WK:'#8b5cf6',CP:'#f97316',KG:'#22c55e'};
   var prefix  = ((unitCode || '') + '').replace(/[0-9].*$/, '').toUpperCase();
-  var color   = UNIT_COLORS[prefix] || '#6b7280';
+  var color   = (opts && opts.stale) ? '#94a3b8' : (UNIT_COLORS[prefix] || '#6b7280');
   var arrived = !!(opts && opts.arrived);
   var small   = !!(opts && opts.small);
+  var iconOpacity = (opts && opts.stale) ? ' opacity="0.55"' : '';
 
   // SVG canvas & car body (56% of original size)
   var W   = small ? 24 : 30;   // total SVG width
@@ -2139,7 +2146,7 @@ function buildCarIcon(unitCode, _colorIgnored, opts) {
   var extraW = arrived ? dR * 2 : 0;
   var svgW   = W + extraW;
 
-  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="'+svgW+'" height="'+totalH+'">'
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="'+svgW+'" height="'+totalH+'"'+iconOpacity+'>'
     // ── Car body ──
     + '<rect x="'+bx+'" y="0" width="'+bw+'" height="'+bh+'" rx="'+brx+'" fill="'+color+'" stroke="#fff" stroke-width="2"/>'
     // ── Wheels (4) ──
@@ -2193,6 +2200,14 @@ function buildVehicleTooltip(v, entry, locations) {
     if (entry.weather) html += '<div style="margin-top:2px;">' + weatherEmoji(entry.weather) + ' ' + esc(entry.weather) + '</div>';
   } else {
     html += '<div style="color:#999;margin-top:5px;">Not deployed</div>';
+  }
+  // Positions are officer-initiated, not continuous — show how stale this
+  // dot is rather than letting it imply a live feed.
+  if (v.updatedAt) {
+    var staleMin = Math.round((Date.now() - new Date(v.updatedAt).getTime()) / 60000);
+    var staleLabel = staleMin <= 0 ? 'just now' : (staleMin === 1 ? '1 min ago' : staleMin + ' min ago');
+    var staleColor = staleMin > STALE_THRESHOLD_MIN ? '#ef4444' : '#888';
+    html += '<div style="margin-top:5px;color:' + staleColor + ';font-size:11px;">🕐 Updated ' + staleLabel + '</div>';
   }
   html += '</div>';
   return html;
@@ -2300,12 +2315,14 @@ function render() {
     const entry   = entries.find(e => e.vehicleId === v.vehicleId);
     const arrived = !!(entry && entry.arrived);
     const color   = unitColor(v.unitCode);
-    const icon    = buildCarIcon(v.unitCode, color, { arrived, small: !entry });
+    const staleMin = v.updatedAt ? (Date.now() - new Date(v.updatedAt).getTime()) / 60000 : 0;
+    const stale   = staleMin > STALE_THRESHOLD_MIN;
+    const icon    = buildCarIcon(v.unitCode, color, { arrived, small: !entry, stale });
 
     if (!vehicleMarkers[v.vehicleId]) {
       const marker = new google.maps.Marker({
         map, position: { lat: v.lat, lng: v.lng },
-        title: v.unitCode + ' · ' + v.vehicleNumber,
+        title: v.unitCode + ' · ' + v.vehicleNumber + (stale ? ' (stale)' : ''),
         icon,
       });
       vehicleMarkers[v.vehicleId] = marker;
@@ -2783,15 +2800,23 @@ function renderActiveAlert(alert) {
 
 function renderVehicles(vehicles) {
   const el = document.getElementById('vehicles-list');
-  if (!vehicles.length) { el.innerHTML = '<div class="empty">No vehicles online.</div>'; return; }
+  // "Online" here means "has reported a position at some point" — positions
+  // are officer-initiated now, not a continuous connection, so this list can
+  // include vehicles whose last report is old. The per-row staleness label
+  // below is what actually tells you if a position is current.
+  if (!vehicles.length) { el.innerHTML = '<div class="empty">No positions reported yet.</div>'; return; }
   const entries = state?.entries ?? [];
   el.innerHTML = vehicles.map(v => {
     const deployed = entries.find(e => e.vehicleId === v.vehicleId);
+    const staleMin = v.updatedAt ? Math.round((Date.now() - new Date(v.updatedAt).getTime()) / 60000) : null;
+    const staleLabel = staleMin === null ? '' : staleMin <= 0 ? 'just now' : staleMin + ' min ago';
+    const staleClass = staleMin !== null && staleMin > STALE_THRESHOLD_MIN ? 'color:#ef4444;' : 'color:#888;';
     return \`<div class="card row">
       <div class="avatar" data-unit="\${(v.unitCode||'').replace(/\\d.*\$/,'')}">\${esc((v.unitCode||'?').slice(0,2))}</div>
       <div class="info">
         <strong>\${esc(v.unitCode)} · \${esc(v.vehicleNumber)}</strong>
         <small>\${esc(v.partner || '')} · \${esc(v.shift || '')}</small>
+        \${staleLabel ? \`<small style="\${staleClass}">🕐 \${staleLabel}</small>\` : ''}
       </div>
       <span class="badge \${deployed ? 'badge-green' : 'badge-muted'}">\${deployed ? 'Deployed' : 'Available'}</span>
     </div>\`;
