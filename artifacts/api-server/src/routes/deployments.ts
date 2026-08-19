@@ -18,6 +18,7 @@ import {
 import { sendToManagers, broadcastToCrew, sendToCrewVehicle } from "./push";
 import { getRadarStatus } from "../radar-monitor.js";
 import { logger } from "../lib/logger";
+import { requireCrew } from "./auth";
 
 const router = Router();
 
@@ -811,7 +812,7 @@ router.get("/alert", (req, res) => {
   res.json(activeAlert || null);
 });
 
-router.post("/alert/acknowledge", (req, res) => {
+router.post("/alert/acknowledge", requireCrew, (req, res) => {
   if (!activeAlert) { res.status(404).json({ error: "no_active_alert" }); return; }
   const { unitCode } = req.body as { unitCode: string };
   if (unitCode && !activeAlert.acknowledgments.includes(unitCode)) {
@@ -836,8 +837,9 @@ router.delete("/alert", (req, res) => {
   res.json({ success: true });
 });
 
-router.post("/deployments/accept", async (req, res) => {
+router.post("/deployments/accept", requireCrew, async (req, res) => {
   const { vehicleId, vehicleNumber, unitCode, partner, shift, locationId, eta, etaMinutes, fromRoad } = req.body as AcceptLocationRequest;
+  logger.info({ officer: req.officer, vehicleId, locationId }, "[deployments] accept");
 
   if (!vehicleId || !vehicleNumber || !unitCode || !locationId) {
     res.status(400).json({ error: "bad_request", message: "Missing required fields" });
@@ -889,7 +891,7 @@ interface AcceptLocationRequest {
   fromRoad?: string | null;
 }
 
-router.post("/deployments/position", (req, res) => {
+router.post("/deployments/position", requireCrew, (req, res) => {
   const { vehicleId, vehicleNumber, unitCode, partner, shift, lat, lng, acceptedLocationId, eta, etaMinutes } = req.body as {
     vehicleId: string;
     vehicleNumber: string;
@@ -950,7 +952,7 @@ router.post("/deployments/position", (req, res) => {
 });
 
 // Mark arrival at accepted location
-router.post("/deployments/arrive", (req, res) => {
+router.post("/deployments/arrive", requireCrew, (req, res) => {
   const { vehicleId, locationId } = req.body as { vehicleId: string; locationId: string };
   const entry = getEntry(locationId, vehicleId);
   if (!entry) {
@@ -981,7 +983,7 @@ router.post("/deployments/arrive", (req, res) => {
 });
 
 // Update weather condition
-router.post("/deployments/weather", (req, res) => {
+router.post("/deployments/weather", requireCrew, (req, res) => {
   const { vehicleId, locationId, weather } = req.body as {
     vehicleId: string;
     locationId: string;
@@ -1077,7 +1079,7 @@ router.get("/deployments/report", (req, res) => {
 
 // ── Location Swap endpoints ────────────────────────────────────────────────────
 
-router.post("/deployments/swap-request", (req, res) => {
+router.post("/deployments/swap-request", requireCrew, (req, res) => {
   const { fromVehicleId, toVehicleId } = req.body as { fromVehicleId: string; toVehicleId: string };
   if (!fromVehicleId || !toVehicleId) { res.status(400).json({ error: "fromVehicleId and toVehicleId required" }); return; }
 
@@ -1158,7 +1160,7 @@ router.post("/deployments/swap-request", (req, res) => {
   res.json({ success: true, swapRequestId: id });
 });
 
-router.post("/deployments/swap-accept", (req, res) => {
+router.post("/deployments/swap-accept", requireCrew, (req, res) => {
   const { swapRequestId, vehicleId } = req.body as { swapRequestId: string; vehicleId: string };
   const sr = swapRequests.get(swapRequestId);
   if (!sr) { res.status(404).json({ error: "Swap request not found or already resolved" }); return; }
@@ -1187,7 +1189,7 @@ router.post("/deployments/swap-accept", (req, res) => {
   res.json({ success: true });
 });
 
-router.post("/deployments/swap-decline", (req, res) => {
+router.post("/deployments/swap-decline", requireCrew, (req, res) => {
   const { swapRequestId, vehicleId } = req.body as { swapRequestId: string; vehicleId: string };
   const sr = swapRequests.get(swapRequestId);
   if (!sr) { res.status(404).json({ error: "Swap request not found" }); return; }

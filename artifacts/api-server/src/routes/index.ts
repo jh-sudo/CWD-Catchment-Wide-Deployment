@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import deploymentsRouter from "./deployments";
 import managerRouter from "./manager";
+import crewRouter from "./crew";
 import authRouter from "./auth";
 import pushRouter from "./push";
 import wlsRouter from "./wls";
@@ -36,6 +37,6 @@ router.get("/tide", async (_req, res) => {
 
 export default router;
 
-// Manager dashboard served at /manager (outside /api prefix)
-export { managerRouter, authRouter, lightningPublicRouter };
+// Manager dashboard served at /manager, crew dashboard at /crew (outside /api prefix)
+export { managerRouter, crewRouter, authRouter, lightningPublicRouter };
 export { deploymentsReady } from "./deployments";
