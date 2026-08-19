@@ -1,3 +1,0 @@
--keep class sg.gov.wls.smsforwarder.** { *; }
--keepnames class okhttp3.** { *; }
--dontwarn okhttp3.**
