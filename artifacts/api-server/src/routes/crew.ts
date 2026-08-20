@@ -264,6 +264,31 @@ router.get("/crew", requireCrew, (req, res) => {
         : 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lng;
     }
 
+    // ── Rough straight-line ETA estimate ─────────────────────────────────────
+    // No routing API on the crew side (unlike /manager's Google Directions
+    // call) — this is a haversine distance / assumed speed estimate, padded
+    // for the fact that roads aren't straight lines. Good enough for the
+    // manager's ETA display; not meant to be precise.
+    function haversineKm(lat1, lng1, lat2, lng2) {
+      var R = 6371;
+      var dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+        + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+    function sgHHMM(date) {
+      var parts = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Singapore' }).formatToParts(date);
+      var h = parts.find(function (p) { return p.type === 'hour'; }).value;
+      var m = parts.find(function (p) { return p.type === 'minute'; }).value;
+      return h + m;
+    }
+    var AVG_SPEED_KMH = 30; // rough urban estimate
+    function estimateEta(curLat, curLng, destLat, destLng) {
+      var km = haversineKm(curLat, curLng, destLat, destLng);
+      var minutes = Math.max(1, Math.round((km / AVG_SPEED_KMH) * 60 * 1.3)); // +30% pad, straight-line vs road
+      return { eta: sgHHMM(new Date(Date.now() + minutes * 60000)), etaMinutes: minutes };
+    }
+
     // ── Location update — accept-ping, tab-refocus-ping, manual button.
     // Deliberately NOT continuous/background — see spec.md for why. ─────────
     function updateLocation(silent) {
@@ -271,15 +296,24 @@ router.get("/crew", requireCrew, (req, res) => {
       var entry = myEntry();
       if (!t || !navigator.geolocation) return;
       navigator.geolocation.getCurrentPosition(function (pos) {
+        var body = {
+          vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode,
+          partner: t.partner, shift: t.shift,
+          lat: pos.coords.latitude, lng: pos.coords.longitude,
+          acceptedLocationId: entry ? entry.locationId : null,
+        };
+        if (entry && !entry.arrived) {
+          var destLoc = locationById(entry.locationId);
+          if (destLoc) {
+            var est = estimateEta(pos.coords.latitude, pos.coords.longitude, destLoc.lat, destLoc.lng);
+            body.eta = est.eta;
+            body.etaMinutes = est.etaMinutes;
+          }
+        }
         fetch('/api/deployments/position', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode,
-            partner: t.partner, shift: t.shift,
-            lat: pos.coords.latitude, lng: pos.coords.longitude,
-            acceptedLocationId: entry ? entry.locationId : null,
-          }),
+          body: JSON.stringify(body),
         }).then(function () { if (!silent) toast('Location updated'); });
       }, function () {
         if (!silent) toast('Could not get GPS location — check location permission.');
@@ -358,7 +392,12 @@ router.get("/crew", requireCrew, (req, res) => {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode, partner: t.partner, shift: t.shift, locationId: locationId, eta: '', etaMinutes: 0 }),
       }).then(function (r) { return r.json(); }).then(function () {
-        toast('Location accepted'); updateLocation(true); refresh();
+        toast('Location accepted');
+        // refresh() first — updateLocation() reads myEntry() from local
+        // state, which doesn't have the just-created entry until this
+        // resolves. Doing it in the other order meant the very first
+        // position ping after accepting always skipped the ETA calculation.
+        refresh().then(function () { updateLocation(true); });
       });
     }
     function acceptAssignment(locationId) { acceptLocation(locationId); }
