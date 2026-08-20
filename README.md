@@ -142,6 +142,7 @@ no separate dev server, just open them once step 1 is running.
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
 | `SESSION_SECRET` | Random secret for manager session cookies — no fallback, server fails fast if unset |
+| `MFA_ENCRYPTION_KEY` | Base64-encoded 32-byte AES-256-GCM key used to encrypt TOTP MFA secrets at rest — no fallback, server fails fast if unset. Generate with `openssl rand -base64 32` |
 | `MINIO_ENDPOINT` | MinIO/S3 endpoint URL |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
 | `MINIO_BUCKET` | Bucket name for inspection photos (e.g. `cwd-inspections`) |
@@ -182,6 +183,39 @@ POST /api/crew/auth/login   { "officerId": "...", "pin": "..." }
 
 All credential-check endpoints (manager login, manager PIN, crew PIN, per-officer crew
 login) are rate-limited independently — 10 attempts per 15 minutes per IP, per endpoint.
+
+## Manager MFA (TOTP)
+
+`admin`/`manager`/`ic` accounts can optionally turn on TOTP-based two-factor authentication
+(🛡️ button in the `/manager` dashboard header) — not `crew`, whose PIN flow is deliberately
+low-friction for field use. Opt-in, not enforced: see
+[`.scratch/flood-commander-web/issues/09-manager-mfa-totp.md`](.scratch/flood-commander-web/issues/09-manager-mfa-totp.md)
+for the full design writeup (including why this instead of Entra ID SSO).
+
+```bash
+# 1. Start enrollment (own session) — returns otpauth:// URI + QR code + the raw setup key
+POST /manager/auth/mfa/setup
+
+# 2. Confirm the phone actually scanned it before flipping mfa_enabled on
+POST /manager/auth/mfa/verify-setup   { "code": "123456" }
+
+# Login becomes two steps once enabled:
+POST /manager/auth/login              { "username": "...", "password": "..." }  → { mfaRequired: true }
+POST /manager/auth/mfa/challenge      { "code": "123456" }                       → session established
+
+# Self-service disable (re-verifies a current code first)
+POST /manager/auth/mfa/disable        { "code": "123456" }
+
+# Admin-initiated reset — lockout recovery when someone loses their device, no code required
+POST /manager/auth/managers/:id/disable-mfa
+```
+
+Lost-device recovery mirrors the existing forgot-password-with-admin-approval pattern: an admin
+clears another account's MFA via the Users panel ("Reset MFA") or the endpoint above, forcing
+re-enrollment on next login. **Bootstrapping risk**: if every admin account has MFA on and the
+last one loses their device, there's no other admin left to reset them — keep 2+ admin accounts
+enrolled, or fall back to the pod-shell pattern (see Deployment below) to clear
+`mfa_secret`/`mfa_enabled` by hand.
 
 ## Deployment
 

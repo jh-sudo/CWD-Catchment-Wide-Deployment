@@ -21,6 +21,14 @@ export const managersTable = pgTable(
     catchments: text("catchments").array(),
     pendingResetPasswordHash: text("pending_reset_password_hash"),
     pendingResetRequestedAt: timestamp("pending_reset_requested_at", { withTimezone: true }),
+    // TOTP-based MFA (admin/manager/ic only — see
+    // .scratch/flood-commander-web/issues/09-manager-mfa-totp.md). Unlike
+    // passwordHash this can't be a one-way hash: the server has to read the
+    // real secret back to check codes, so it's encrypted (AES-256-GCM, see
+    // lib/mfa.ts) rather than hashed. Null until the account has gone through
+    // /manager/auth/mfa/setup.
+    mfaSecret: text("mfa_secret"),
+    mfaEnabled: boolean("mfa_enabled").notNull().default(false),
   },
   (table) => [
     check("managers_role_check", sql`${table.role} IN ('admin', 'manager', 'ic', 'crew')`),

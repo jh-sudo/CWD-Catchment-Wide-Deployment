@@ -3,6 +3,14 @@ import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import { eq } from "drizzle-orm";
 import { db, managersTable, appConfigTable, officersTable, type Manager } from "@workspace/db";
+import {
+  encryptMfaSecret,
+  decryptMfaSecret,
+  generateMfaSecret,
+  mfaKeyUri,
+  mfaQrCodeDataUrl,
+  verifyMfaCode,
+} from "../lib/mfa";
 
 // ── Rate limiting ────────────────────────────────────────────────────────────
 // Applies to every credential-check endpoint below (manager login, manager PIN,
@@ -28,6 +36,11 @@ function makeAuthRateLimit() {
 declare module "express-session" {
   interface SessionData {
     managerId?: string;
+    // Set after password verifies for an account with mfa_enabled=true, in
+    // place of managerId, until /manager/auth/mfa/challenge confirms a TOTP
+    // code. A session carrying this is *not* authenticated — requireManager
+    // etc. only look at managerId.
+    pendingMfaManagerId?: string;
   }
 }
 
@@ -57,6 +70,16 @@ export interface ManagerAccount {
   // ic: which catchments they can approve for
   catchments?: string[];
   pendingReset?: { passwordHash: string; requestedAt: string };
+  // MFA (admin/manager/ic only — see
+  // .scratch/flood-commander-web/issues/09-manager-mfa-totp.md).
+  // mfaSecret is encrypted (see lib/mfa.ts), never sent to clients.
+  mfaSecret?: string;
+  mfaEnabled: boolean;
+}
+
+/** admin/manager/ic can enroll in MFA; crew's PIN flow is deliberately low-friction and out of scope. */
+function isMfaEligibleRole(role: AccountRole): boolean {
+  return role !== "crew";
 }
 
 function toManagerAccount(row: Manager): ManagerAccount {
@@ -76,6 +99,8 @@ function toManagerAccount(row: Manager): ManagerAccount {
           requestedAt: (row.pendingResetRequestedAt ?? new Date()).toISOString(),
         }
       : undefined,
+    mfaSecret: row.mfaSecret ?? undefined,
+    mfaEnabled: row.mfaEnabled,
   };
 }
 
@@ -207,6 +232,47 @@ router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
   if (!m.approved) {
     res.status(403).json({ error: "Account pending approval", pending: true }); return;
   }
+  if (m.mfaEnabled) {
+    // Password alone isn't enough — hold the session in a pending state
+    // (not authenticated: requireManager etc. only ever look at
+    // session.managerId) until /manager/auth/mfa/challenge confirms a TOTP
+    // code from the same login attempt.
+    req.session.pendingMfaManagerId = m.id;
+    res.json({ success: true, mfaRequired: true }); return;
+  }
+  req.session.managerId = m.id;
+  res.json({
+    success: true,
+    role: m.role,
+    username: m.username,
+    officerId: m.officerId,
+    officerName: m.officerName,
+    catchments: m.catchments,
+  });
+});
+
+// Second step of login when the account has MFA enabled — completes what
+// /manager/auth/login started (see pendingMfaManagerId above). Rate-limited
+// the same as every other credential check: a 6-digit code is a much
+// smaller brute-force space than a password, so unlimited attempts would be
+// a real hole even with the 30s-per-step validity window.
+router.post("/manager/auth/mfa/challenge", makeAuthRateLimit(), async (req, res) => {
+  const pendingId = req.session.pendingMfaManagerId;
+  if (!pendingId) {
+    res.status(400).json({ error: "No pending MFA challenge — sign in again" }); return;
+  }
+  const { code } = req.body as { code?: string };
+  const m = managers.find(a => a.id === pendingId);
+  if (!m || !m.mfaEnabled || !m.mfaSecret) {
+    // Account state changed out from under this pending session (e.g. an
+    // admin disabled MFA for them mid-login) — fail closed, not open.
+    delete req.session.pendingMfaManagerId;
+    res.status(400).json({ error: "MFA is no longer enabled for this account — sign in again" }); return;
+  }
+  if (!code || !(await verifyMfaCode(code, decryptMfaSecret(m.mfaSecret)))) {
+    res.status(401).json({ error: "Incorrect code" }); return;
+  }
+  delete req.session.pendingMfaManagerId;
   req.session.managerId = m.id;
   res.json({
     success: true,
@@ -292,6 +358,7 @@ router.get("/manager/auth/me", requireManager, (req, res) => {
     officerId: m.officerId,
     officerName: m.officerName,
     catchments: m.catchments,
+    mfaEnabled: m.mfaEnabled,
   });
 });
 
@@ -304,6 +371,7 @@ router.get("/manager/auth/managers", requireAdmin, (_req, res) => {
     createdAt: m.createdAt,
     officerId: m.officerId,
     officerName: m.officerName,
+    mfaEnabled: m.mfaEnabled,
     catchments: m.catchments,
     hasPendingReset: !!m.pendingReset,
     resetRequestedAt: m.pendingReset?.requestedAt,
@@ -406,6 +474,82 @@ router.post("/manager/auth/change-password", requireManager, async (req, res) =>
   const passwordHash = await bcrypt.hash(newPassword, 10);
   await updateManager(m.id, { passwordHash });
   res.json({ success: true });
+});
+
+// ── MFA (TOTP) — admin/manager/ic only ──────────────────────────────────────
+// See .scratch/flood-commander-web/issues/09-manager-mfa-totp.md. Opt-in:
+// building the capability here doesn't flip mfa_enabled for anyone — each
+// account enrolls itself via these three calls (setup → verify-setup, in
+// that order), and disables itself the same way it enrolled.
+router.post("/manager/auth/mfa/setup", requireManager, async (req, res) => {
+  const m = managers.find(a => a.id === req.session.managerId);
+  if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
+  if (!isMfaEligibleRole(m.role)) {
+    res.status(403).json({ error: "MFA is not available for crew accounts" }); return;
+  }
+  if (m.mfaEnabled) {
+    res.status(400).json({ error: "MFA is already enabled — disable it before re-enrolling" }); return;
+  }
+  // Stored un-enabled until verify-setup confirms the phone actually scanned
+  // it and can generate matching codes — otherwise a bad scan (or a secret
+  // that never got scanned at all) would flip mfa_enabled and lock the
+  // account out on next login with no way back in.
+  const secret = generateMfaSecret();
+  await updateManager(m.id, { mfaSecret: encryptMfaSecret(secret) });
+  const otpauthUrl = mfaKeyUri(m.username, secret);
+  res.json({ success: true, secret, otpauthUrl, qrCodeDataUrl: await mfaQrCodeDataUrl(otpauthUrl) });
+});
+
+router.post("/manager/auth/mfa/verify-setup", requireManager, async (req, res) => {
+  const m = managers.find(a => a.id === req.session.managerId);
+  if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
+  const { code } = req.body as { code?: string };
+  if (!m.mfaSecret) {
+    res.status(400).json({ error: "No MFA setup in progress — call setup first" }); return;
+  }
+  if (!code || !(await verifyMfaCode(code, decryptMfaSecret(m.mfaSecret)))) {
+    res.status(401).json({ error: "Incorrect code" }); return;
+  }
+  await updateManager(m.id, { mfaEnabled: true });
+  res.json({ success: true });
+});
+
+// Self-service disable — re-verifies a current code first so a hijacked
+// but still-open session can't silently turn MFA off. For lost-device
+// recovery (no code to give), see the admin-initiated route below.
+router.post("/manager/auth/mfa/disable", requireManager, async (req, res) => {
+  const m = managers.find(a => a.id === req.session.managerId);
+  if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
+  if (!m.mfaEnabled || !m.mfaSecret) {
+    res.status(400).json({ error: "MFA is not enabled" }); return;
+  }
+  const { code } = req.body as { code?: string };
+  if (!code || !(await verifyMfaCode(code, decryptMfaSecret(m.mfaSecret)))) {
+    res.status(401).json({ error: "Incorrect code" }); return;
+  }
+  await updateManager(m.id, { mfaSecret: null, mfaEnabled: false });
+  res.json({ success: true });
+});
+
+// Admin-initiated MFA reset — the lockout-recovery path when someone loses
+// their phone/authenticator app, mirroring the existing
+// forgot-password-with-admin-approval pattern above. No code required (the
+// admin's own session is the trust boundary here, same as reset-password);
+// forces the account to re-enroll from scratch on next login.
+//
+// Bootstrapping risk (see ticket 09): if there's ever only one admin and
+// *they* lose their device, there's no other admin left to call this for
+// them — keep 2+ admin accounts with MFA enabled, or fall back to direct DB
+// access (the pod-shell pattern already used for account seeding) to clear
+// the columns by hand.
+router.post("/manager/auth/managers/:id/disable-mfa", requireAdmin, async (req, res) => {
+  const m = managers.find(a => a.id === req.params.id);
+  if (!m) { res.status(404).json({ error: "Manager not found" }); return; }
+  if (!m.mfaEnabled && !m.mfaSecret) {
+    res.status(400).json({ error: "MFA is not enabled for this account" }); return;
+  }
+  await updateManager(m.id, { mfaSecret: null, mfaEnabled: false });
+  res.json({ success: true, username: m.username });
 });
 
 // ── Manager PIN (for mobile app) ──────────────────────────────────────────────
@@ -610,6 +754,15 @@ const LOGIN_HTML = /* html */`<!DOCTYPE html>
     <input id="r-pass" type="password" autocomplete="new-password" placeholder="min 8 characters" />
     <button id="reg-btn" onclick="doRegister()">Request Access</button>
   </div>
+
+  <!-- MFA challenge pane — second step after password verifies for accounts with MFA enabled -->
+  <div class="pane" id="pane-mfa">
+    <div class="err" id="mfa-err"></div>
+    <p class="sub" style="margin-bottom:16px;">Enter the 6-digit code from your authenticator app.</p>
+    <label for="mfa-code">Authentication code</label>
+    <input id="mfa-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
+    <button id="mfa-btn" onclick="doMfaChallenge()">Verify</button>
+  </div>
 </div>
 
 <script>
@@ -630,9 +783,31 @@ async function doLogin() {
     const r = await fetch('/manager/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ username: user, password: pass }) });
     const d = await r.json();
     if (!r.ok) { err.textContent = d.error || 'Login failed.'; err.style.display = 'block'; return; }
+    if (d.mfaRequired) {
+      document.querySelector('.tabs').style.display = 'none';
+      document.getElementById('pane-login').classList.remove('active');
+      document.getElementById('pane-mfa').classList.add('active');
+      document.getElementById('mfa-code').focus();
+      return;
+    }
     window.location.href = '/manager';
   } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
   finally { btn.disabled = false; btn.textContent = 'Sign In'; }
+}
+async function doMfaChallenge() {
+  const btn = document.getElementById('mfa-btn');
+  const err = document.getElementById('mfa-err');
+  const code = document.getElementById('mfa-code').value.trim();
+  err.style.display = 'none';
+  if (!/^[0-9]{6}$/.test(code)) { err.textContent = 'Enter the 6-digit code from your authenticator app.'; err.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const r = await fetch('/manager/auth/mfa/challenge', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ code }) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || 'Verification failed.'; err.style.display = 'block'; return; }
+    window.location.href = '/manager';
+  } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
+  finally { btn.disabled = false; btn.textContent = 'Verify'; }
 }
 async function doRegister() {
   const btn = document.getElementById('reg-btn');
@@ -652,7 +827,13 @@ async function doRegister() {
   } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
   finally { btn.disabled = false; btn.textContent = 'Request Access'; }
 }
-document.addEventListener('keydown', e => { if (e.key === 'Enter') { const pane = document.querySelector('.pane.active').id; if (pane === 'pane-login') doLogin(); else doRegister(); } });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const pane = document.querySelector('.pane.active').id;
+  if (pane === 'pane-login') doLogin();
+  else if (pane === 'pane-mfa') doMfaChallenge();
+  else doRegister();
+});
 </script>
 </body>
 </html>`;
