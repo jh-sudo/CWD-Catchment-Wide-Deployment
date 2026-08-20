@@ -37,7 +37,7 @@ self.addEventListener('notificationclick', event => {
 
 router.get("/manager", requireManager, (req, res) => {
   const me = getManager(req.session.managerId!);
-  const currentUser = JSON.stringify({ username: me?.username ?? "", role: me?.role ?? "manager" });
+  const currentUser = JSON.stringify({ username: me?.username ?? "", role: me?.role ?? "manager", mfaEnabled: me?.mfaEnabled ?? false });
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -604,6 +604,7 @@ router.get("/manager", requireManager, (req, res) => {
     </div>
     <button id="theme-btn" class="btn btn-outline btn-sm" onclick="toggleTheme()" title="Toggle light/dark mode" style="font-size:16px;padding:5px 10px;">🌙</button>
     <button class="logout-btn" onclick="openModal('chpw-modal')" title="Change password" style="margin-right:2px;">🔑</button>
+    <button id="mfa-header-btn" class="logout-btn" onclick="openMfaModal()" title="Two-factor authentication" style="margin-right:2px;">🛡️</button>
     <button class="logout-btn" onclick="logOut()">Sign out</button>
     <button id="notif-btn" class="btn btn-outline btn-sm" onclick="togglePush()" title="Enable push notifications" style="display:none;">🔔 Notifications</button>
     <button id="refresh-btn" class="btn btn-outline btn-sm" onclick="manualRefresh()" title="Refresh crew positions and data">⟳ Refresh</button>
@@ -1038,6 +1039,56 @@ This is an automated message…"></textarea>
   </div>
 </div>
 
+<!-- Two-factor authentication (TOTP) modal -->
+<div class="overlay" id="mfa-modal">
+  <div class="modal" style="max-width:380px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+      <h3>Two-Factor Authentication</h3>
+      <button onclick="closeModal('mfa-modal')" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted);line-height:1;padding:0;">×</button>
+    </div>
+
+    <!-- Enabled state: offer to disable -->
+    <div id="mfa-enabled-view" style="display:none;">
+      <p style="font-size:13px;color:var(--green);margin-bottom:14px;">✓ Two-factor authentication is ON for this account.</p>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Enter a current code from your authenticator app to turn it off.</p>
+      <input id="mfa-disable-code" type="text" inputmode="numeric" maxlength="6" placeholder="123456"
+        style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:10px 14px;border-radius:8px;font-size:14px;font-family:inherit;outline:none;letter-spacing:2px;" />
+      <div id="mfa-disable-msg" style="font-size:13px;min-height:18px;margin-top:8px;"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn btn-outline" style="flex:1;" onclick="closeModal('mfa-modal')">Close</button>
+        <button class="btn" style="flex:1;background:var(--red);color:#fff;border:none;" onclick="submitMfaDisable()">Disable</button>
+      </div>
+    </div>
+
+    <!-- Not set up yet: offer to start enrollment -->
+    <div id="mfa-intro-view">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:14px;">Adds a 6-digit code from an authenticator app (Microsoft Authenticator, Google Authenticator, etc.) as a second step at login.</p>
+      <button class="btn btn-primary" style="width:100%;" onclick="startMfaSetup()">Set Up Two-Factor Authentication</button>
+    </div>
+
+    <!-- Enrollment in progress: show QR + manual key, ask for a confirmation code -->
+    <div id="mfa-setup-view" style="display:none;">
+      <p style="font-size:12px;color:var(--muted);margin-bottom:10px;">Scan this with your authenticator app, or choose "enter a setup key" and type the code below.</p>
+      <div style="text-align:center;margin-bottom:10px;">
+        <img id="mfa-qr-img" alt="MFA setup QR code" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px;" />
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Setup key</div>
+      <div id="mfa-secret-text" style="font-family:monospace;font-size:13px;letter-spacing:1px;word-break:break-all;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:14px;"></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">Enter the 6-digit code it shows</div>
+      <input id="mfa-verify-code" type="text" inputmode="numeric" maxlength="6" placeholder="123456"
+        style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:10px 14px;border-radius:8px;font-size:14px;font-family:inherit;outline:none;letter-spacing:2px;" />
+      <div id="mfa-setup-msg" style="font-size:13px;min-height:18px;margin-top:8px;"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;">
+        <button class="btn btn-outline" style="flex:1;" onclick="closeModal('mfa-modal')">Cancel</button>
+        <button class="btn btn-primary" style="flex:1;" onclick="submitMfaVerifySetup()">Confirm &amp; Enable</button>
+      </div>
+      <div style="text-align:center;margin-top:10px;">
+        <a href="javascript:void(0)" onclick="restartMfaSetup()" style="font-size:11px;color:var(--muted);text-decoration:underline;">Scan didn't work? Get a new QR code</a>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Reset Password modal (admin only) -->
 <div class="overlay" id="reset-pw-modal">
   <div class="modal" style="max-width:380px;">
@@ -1153,6 +1204,112 @@ async function submitChangePassword() {
   }
 }
 
+// ── Two-factor authentication (self-service) ────────────────────────────────
+// Caches the QR/secret from the most recent /mfa/setup call so reopening the
+// modal (e.g. after tabbing away to an authenticator app) resumes the same
+// in-progress enrollment instead of silently resetting to the intro screen —
+// which used to also mean the *next* "Set Up" click minted a brand-new
+// secret, invalidating whatever had just been scanned.
+var _mfaSetupPending = null;
+
+function openMfaModal() {
+  document.getElementById('mfa-disable-code').value = '';
+  document.getElementById('mfa-disable-msg').textContent = '';
+  if (ME.mfaEnabled) {
+    document.getElementById('mfa-enabled-view').style.display = '';
+    document.getElementById('mfa-intro-view').style.display = 'none';
+    document.getElementById('mfa-setup-view').style.display = 'none';
+  } else if (_mfaSetupPending) {
+    document.getElementById('mfa-enabled-view').style.display = 'none';
+    document.getElementById('mfa-intro-view').style.display = 'none';
+    document.getElementById('mfa-setup-view').style.display = '';
+    document.getElementById('mfa-qr-img').src = _mfaSetupPending.qrCodeDataUrl;
+    document.getElementById('mfa-secret-text').textContent = _mfaSetupPending.secret;
+    document.getElementById('mfa-verify-code').value = '';
+    document.getElementById('mfa-setup-msg').textContent = '';
+  } else {
+    document.getElementById('mfa-enabled-view').style.display = 'none';
+    document.getElementById('mfa-intro-view').style.display = '';
+    document.getElementById('mfa-setup-view').style.display = 'none';
+  }
+  openModal('mfa-modal');
+}
+
+async function startMfaSetup() {
+  try {
+    var r = await fetch('/manager/auth/mfa/setup', { method: 'POST' });
+    var d = await r.json();
+    if (!r.ok) { alert(d.error || 'Could not start MFA setup.'); return; }
+    _mfaSetupPending = { qrCodeDataUrl: d.qrCodeDataUrl, secret: d.secret };
+    document.getElementById('mfa-qr-img').src = d.qrCodeDataUrl;
+    document.getElementById('mfa-secret-text').textContent = d.secret;
+    document.getElementById('mfa-verify-code').value = '';
+    document.getElementById('mfa-setup-msg').textContent = '';
+    document.getElementById('mfa-intro-view').style.display = 'none';
+    document.getElementById('mfa-setup-view').style.display = '';
+  } catch(e) {
+    alert('Network error — please try again.');
+  }
+}
+
+async function submitMfaVerifySetup() {
+  var code = document.getElementById('mfa-verify-code').value.trim();
+  var msg = document.getElementById('mfa-setup-msg');
+  msg.style.color = 'var(--red)';
+  if (!/^[0-9]{6}$/.test(code)) { msg.textContent = 'Enter the 6-digit code.'; return; }
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Verifying…';
+  try {
+    var r = await fetch('/manager/auth/mfa/verify-setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code }),
+    });
+    var d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--red)'; msg.textContent = d.error || 'Incorrect code.'; return; }
+    _mfaSetupPending = null;
+    ME.mfaEnabled = true;
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Two-factor authentication is now on.';
+    setTimeout(function() { closeModal('mfa-modal'); msg.textContent = ''; }, 1800);
+  } catch(e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Network error — please try again.';
+  }
+}
+
+// Scraps the in-progress secret/QR and gets a fresh one — for when a scan
+// genuinely didn't take, rather than the accidental-reset case above.
+function restartMfaSetup() {
+  _mfaSetupPending = null;
+  startMfaSetup();
+}
+
+async function submitMfaDisable() {
+  var code = document.getElementById('mfa-disable-code').value.trim();
+  var msg = document.getElementById('mfa-disable-msg');
+  msg.style.color = 'var(--red)';
+  if (!/^[0-9]{6}$/.test(code)) { msg.textContent = 'Enter the 6-digit code.'; return; }
+  msg.style.color = 'var(--muted)';
+  msg.textContent = 'Verifying…';
+  try {
+    var r = await fetch('/manager/auth/mfa/disable', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code }),
+    });
+    var d = await r.json();
+    if (!r.ok) { msg.style.color = 'var(--red)'; msg.textContent = d.error || 'Incorrect code.'; return; }
+    ME.mfaEnabled = false;
+    msg.style.color = 'var(--green)';
+    msg.textContent = '✓ Two-factor authentication turned off.';
+    setTimeout(function() { closeModal('mfa-modal'); msg.textContent = ''; }, 1800);
+  } catch(e) {
+    msg.style.color = 'var(--red)';
+    msg.textContent = 'Network error — please try again.';
+  }
+}
+
 async function loadUsers() {
   var list = document.getElementById('users-list');
   if (!list) return;
@@ -1191,11 +1348,18 @@ async function loadUsers() {
           actions += '<button class="btn btn-outline btn-sm" style="color:var(--amber);border-color:var(--amber);" onclick="revokeUser(\\''+u.id+'\\')">Revoke</button>';
         }
         actions += '<button class="btn btn-outline btn-sm" style="color:var(--primary);border-color:var(--primary);" onclick="resetUserPassword(\\''+u.id+'\\',\\''+u.username+'\\')">Reset PW</button>';
+        if (u.mfaEnabled) {
+          actions += '<button class="btn btn-outline btn-sm" style="color:var(--amber);border-color:var(--amber);" onclick="resetUserMfa(\\''+u.id+'\\',\\''+u.username+'\\')" title="Clear their MFA if they lost their device">Reset MFA</button>';
+        }
         actions += '<button class="btn btn-sm" style="background:var(--red);color:#fff;" onclick="deleteUser(\\''+u.id+'\\')">Delete</button>';
       } else {
         actions += '<button class="btn btn-outline btn-sm" style="color:var(--primary);border-color:var(--primary);" onclick="resetUserPassword(\\''+u.id+'\\',\\''+u.username+'\\')">Reset PW</button>';
+        if (u.mfaEnabled) {
+          actions += '<button class="btn btn-outline btn-sm" style="color:var(--amber);border-color:var(--amber);" onclick="resetUserMfa(\\''+u.id+'\\',\\''+u.username+'\\')" title="Clear their MFA if they lost their device">Reset MFA</button>';
+        }
       }
-      return '<div class="user-row"><div class="info"><strong>'+u.username+'</strong><small>'+date+'</small></div><span class="'+roleClass+'">'+roleLabel+'</span><div class="user-actions">'+actions+'</div></div>';
+      var mfaBadge = u.mfaEnabled ? ' <span title="Two-factor authentication is on" style="font-size:11px;">🛡️</span>' : '';
+      return '<div class="user-row"><div class="info"><strong>'+u.username+mfaBadge+'</strong><small>'+date+'</small></div><span class="'+roleClass+'">'+roleLabel+'</span><div class="user-actions">'+actions+'</div></div>';
     }).join('');
   } catch(e) {
     list.innerHTML = '<div class="empty">Error loading users.</div>';
@@ -1217,6 +1381,12 @@ async function deleteUser(id) {
   if (!confirm('Permanently delete this account?')) return;
   await fetch('/manager/auth/managers/'+id, { method: 'DELETE' });
   loadUsers();
+}
+
+async function resetUserMfa(id, username) {
+  if (!confirm('Clear two-factor authentication for ' + username + '? They will need to set it up again on next login.')) return;
+  var r = await fetch('/manager/auth/managers/'+id+'/disable-mfa', { method: 'POST' });
+  if (r.ok) { loadUsers(); } else { alert('Failed to reset MFA.'); }
 }
 
 async function approveReset(id, username) {
