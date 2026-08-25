@@ -334,8 +334,11 @@ export async function backfillCoreOpsState(dryRun: boolean): Promise<DomainRepor
             .onConflictDoUpdate({ target: deploymentAssignmentsTable.vehicleId, set: { status: sql`excluded.status` } });
         }
       });
-      warnings.push(`deployment_settings.deployment_date has no source value in state.json — defaulted to today (${new Date().toISOString().slice(0, 10)})`);
     }
+    // Computed independent of dryRun (like every other warning in this
+    // script) so `--dry-run` accurately previews what the live run would
+    // report, instead of silently skipping this one warning.
+    warnings.push(`deployment_settings.deployment_date has no source value in state.json — defaulted to today (${new Date().toISOString().slice(0, 10)})`);
   }
   tables.push({ table: "deployment_teams", sourceCount: state?.roster.length ?? 0, upserted: dryRun ? 0 : state?.roster.length ?? 0 });
   tables.push({ table: "deployment_settings", sourceCount: state ? 1 : 0, upserted: dryRun || !state ? 0 : 1 });

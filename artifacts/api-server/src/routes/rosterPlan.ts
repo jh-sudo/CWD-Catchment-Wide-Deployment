@@ -495,7 +495,7 @@ rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
 });
 
 // PUT /api/roster-plan/config
-rosterPlanRouter.put("/roster-plan/config", async (req, res) => {
+rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => {
   const { teamCount, cycleStartDate, maintenanceVehicles } = req.body as {
     teamCount: number;
     cycleStartDate: string;
@@ -521,7 +521,7 @@ rosterPlanRouter.get("/roster-plan/officers", async (_req, res) => {
 });
 
 // POST /api/roster-plan/officers
-rosterPlanRouter.post("/roster-plan/officers", async (req, res) => {
+rosterPlanRouter.post("/roster-plan/officers", requireManager, async (req, res) => {
   const [officer] = await db
     .insert(officersTable)
     .values({ id: randomUUID(), ...req.body })
@@ -530,11 +530,12 @@ rosterPlanRouter.post("/roster-plan/officers", async (req, res) => {
 });
 
 // PUT /api/roster-plan/officers/:id
-rosterPlanRouter.put("/roster-plan/officers/:id", async (req, res) => {
+rosterPlanRouter.put("/roster-plan/officers/:id", requireManager, async (req, res) => {
+  const { id } = req.params as { id: string };
   const [officer] = await db
     .update(officersTable)
-    .set({ ...req.body, id: req.params.id })
-    .where(eq(officersTable.id, req.params.id))
+    .set({ ...req.body, id })
+    .where(eq(officersTable.id, id))
     .returning();
   if (!officer) return res.status(404).json({ error: "not found" });
   return res.json(officer);
@@ -548,11 +549,12 @@ rosterPlanRouter.put("/roster-plan/officers/:id", async (req, res) => {
 // or destroy it. Deactivated officers are excluded from future roster/PH
 // generation (see officersInRotation filters) but keep all history intact and
 // can be reactivated later via the same PUT endpoint.
-rosterPlanRouter.delete("/roster-plan/officers/:id", async (req, res) => {
+rosterPlanRouter.delete("/roster-plan/officers/:id", requireManager, async (req, res) => {
+  const { id } = req.params as { id: string };
   const [officer] = await db
     .update(officersTable)
     .set({ active: false })
-    .where(eq(officersTable.id, req.params.id))
+    .where(eq(officersTable.id, id))
     .returning({ id: officersTable.id });
   if (!officer) return res.status(404).json({ error: "not found" });
   return res.json({ success: true, message: "Officer deactivated" });
@@ -667,7 +669,7 @@ rosterPlanRouter.get("/roster-plan/leave", async (req, res) => {
 });
 
 // POST /api/roster-plan/leave
-rosterPlanRouter.post("/roster-plan/leave", async (req, res) => {
+rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => {
   const { officerId, date, leaveType, coveringOfficerId } = req.body as {
     officerId: string; date: string; leaveType: string; coveringOfficerId?: string;
   };
@@ -727,10 +729,11 @@ rosterPlanRouter.post("/roster-plan/leave", async (req, res) => {
 });
 
 // DELETE /api/roster-plan/leave/:id
-rosterPlanRouter.delete("/roster-plan/leave/:id", async (req, res) => {
+rosterPlanRouter.delete("/roster-plan/leave/:id", requireManager, async (req, res) => {
+  const { id } = req.params as { id: string };
   const deleted = await db
     .delete(rosterLeavesTable)
-    .where(eq(rosterLeavesTable.id, req.params.id))
+    .where(eq(rosterLeavesTable.id, id))
     .returning();
   if (deleted.length === 0) return res.status(404).json({ error: "not found" });
   const [entry] = deleted;
@@ -845,12 +848,13 @@ rosterPlanRouter.post("/roster-plan/swaps", requireManager, async (req, res) => 
   return res.json(swap);
 });
 
-rosterPlanRouter.put("/roster-plan/swaps/:id", async (req, res) => {
+rosterPlanRouter.put("/roster-plan/swaps/:id", requireManager, async (req, res) => {
+  const { id } = req.params as { id: string };
   const { approved, reviewerName } = req.body as { approved: boolean; reviewerName: string };
   const [swap] = await db
     .update(rosterSwapsTable)
     .set({ status: approved ? "APPROVED" : "REJECTED", reviewerName, reviewedAt: new Date() })
-    .where(eq(rosterSwapsTable.id, req.params.id))
+    .where(eq(rosterSwapsTable.id, id))
     .returning();
   if (!swap) return res.status(404).json({ error: "not found" });
 
@@ -879,8 +883,9 @@ rosterPlanRouter.put("/roster-plan/swaps/:id", async (req, res) => {
   return res.json(swap);
 });
 
-rosterPlanRouter.delete("/roster-plan/swaps/:id", async (req, res) => {
-  const deleted = await db.delete(rosterSwapsTable).where(eq(rosterSwapsTable.id, req.params.id)).returning();
+rosterPlanRouter.delete("/roster-plan/swaps/:id", requireManager, async (req, res) => {
+  const { id } = req.params as { id: string };
+  const deleted = await db.delete(rosterSwapsTable).where(eq(rosterSwapsTable.id, id)).returning();
   if (deleted.length === 0) return res.status(404).json({ error: "not found" });
   const [target] = deleted;
 

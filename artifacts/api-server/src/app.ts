@@ -1,7 +1,9 @@
 import express, { type Express, type Request, type Response } from "express";
 import cors from "cors";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import pinoHttp from "pino-http";
+import { pool } from "@workspace/db";
 import router, { managerRouter, crewRouter, authRouter, lightningPublicRouter } from "./routes";
 import { logger } from "./lib/logger";
 
@@ -40,7 +42,32 @@ if (!process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET environment variable is required but was not provided.");
 }
 
+// Backed by Postgres (reusing the same pool @workspace/db uses for everything
+// else) rather than express-session's default in-memory store, which Node
+// explicitly documents as not production-safe: it never prunes expired
+// sessions, doesn't survive a process restart, and doesn't share state across
+// replicas.
+//
+// Deliberately NOT using connect-pg-simple's own createTableIfMissing: it
+// reads a table.sql file relative to its own package directory at runtime,
+// which esbuild's bundling of this app into a single dist/index.mjs doesn't
+// carry along — that option throws ENOENT in the built artifact even though
+// it works fine running from source. Create the table ourselves instead
+// (same DDL connect-pg-simple ships, idempotent) before wiring up the store.
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS "session" (
+    "sid" varchar NOT NULL COLLATE "default",
+    "sess" json NOT NULL,
+    "expire" timestamp(6) NOT NULL,
+    CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE
+  );
+  CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire");
+`);
+
+const PgSessionStore = connectPgSimple(session);
+
 app.use(session({
+  store: new PgSessionStore({ pool }),
   secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,

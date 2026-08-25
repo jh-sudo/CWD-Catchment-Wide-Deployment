@@ -54,6 +54,9 @@ export default function RosterCycle() {
   const { version } = useRosterVersion();
   const selectedDateRef = useRef<Date | null>(null);
   useEffect(() => { selectedDateRef.current = selectedDate; }, [selectedDate]);
+  // Tracks the date `loadDate()` was most recently called for, so a response for
+  // a date the user has since navigated away from doesn't overwrite fresher state.
+  const activeLoadDateRef = useRef<string>("");
 
   const days = useMemo(() => calendarDays(viewMonth), [viewMonth]);
 
@@ -61,6 +64,7 @@ export default function RosterCycle() {
     setSelectedDate(date);
     setLoading(true);
     const ds = format(date, "yyyy-MM-dd");
+    activeLoadDateRef.current = ds;
     try {
       const [schedRes, leaveRes] = await Promise.all([
         fetch(`/api/roster-plan/schedule?date=${ds}`),
@@ -83,6 +87,9 @@ export default function RosterCycle() {
           if (d.swappedWithOfficerName)   sm[d.officerId] = d.swappedWithOfficerName;
         }
       }
+      // Stale guard: if the user has navigated to a different date since this
+      // fetch started, drop the response instead of overwriting fresher state.
+      if (activeLoadDateRef.current !== ds) return;
       setDutyMap(dm);
       setTargetDutyMap(tdm);
       setCrossPostMap(cpm);
@@ -96,11 +103,14 @@ export default function RosterCycle() {
         if (l.coveringOfficerName) cm[l.officerId] = l.coveringOfficerName;
         if (l.coveringOfficerId)   cfm[l.coveringOfficerId] = true;
       }
+      if (activeLoadDateRef.current !== ds) return;
       setCoveringMap(cm);
       setCoverForMap(cfm);
       setLeaveMap(lm);
     } finally {
-      setLoading(false);
+      // Only the still-active date's request should clear the loading spinner —
+      // a superseded request's own finally block will handle its own state.
+      if (activeLoadDateRef.current === ds) setLoading(false);
     }
   }, []);
 

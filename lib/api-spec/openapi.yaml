@@ -292,7 +292,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RosterOfficerInput"
+              $ref: "#/components/schemas/RosterOfficerCreateInput"
       responses:
         "200":
           description: Officer created
@@ -317,7 +317,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RosterOfficerInput"
+              $ref: "#/components/schemas/RosterOfficerUpdateInput"
       responses:
         "200":
           description: Officer updated
@@ -510,6 +510,10 @@ components:
           type: string
         unitCode:
           type: string
+        partner:
+          type: string
+        shift:
+          type: string
         lat:
           type: number
         lng:
@@ -648,6 +652,10 @@ components:
           type: string
         unitCode:
           type: string
+        partner:
+          type: string
+        shift:
+          type: string
         lat:
           type: number
         lng:
@@ -727,7 +735,7 @@ components:
       properties:
         teamCount:
           type: integer
-          enum: [16, 20, 24, 28]
+          enum: [20, 24, 28]
         cycleStartDate:
           type: string
           description: ISO date string when cycle week 1 started (Monday)
@@ -741,7 +749,7 @@ components:
       properties:
         teamCount:
           type: integer
-          enum: [16, 20, 24, 28]
+          enum: [20, 24, 28]
         cycleStartDate:
           type: string
       required: [teamCount, cycleStartDate]
@@ -771,7 +779,24 @@ components:
           description: Soft-delete flag. false means the officer was deactivated — excluded from future roster/PH generation but their history is kept.
       required: [id, name, unitCode, vehicle, catchment, teamSlot, crewPosition, active]
 
-    RosterOfficerInput:
+    RosterOfficerCreateInput:
+      type: object
+      properties:
+        name:
+          type: string
+        unitCode:
+          type: string
+        vehicle:
+          type: string
+        catchment:
+          type: string
+        teamSlot:
+          type: integer
+        crewPosition:
+          type: integer
+      required: [name, unitCode, teamSlot, crewPosition]
+
+    RosterOfficerUpdateInput:
       type: object
       properties:
         name:
@@ -854,6 +879,11 @@ components:
         createdAt:
           type: string
         reviewedAt:
+          type: ["string", "null"]
+        type:
+          type: ["string", "null"]
+          description: 'Distinguishes a PH-roster-import-generated swap ("PH") from a regular officer-initiated swap (null).'
+        phName:
           type: ["string", "null"]
       required: [id, requesterId, requesterName, targetId, targetName, date, requesterDuty, targetDuty, reason, status, createdAt]
 

@@ -52,6 +52,8 @@ export const GetDeploymentStateResponse = zod.object({
       vehicleId: zod.string(),
       vehicleNumber: zod.string(),
       unitCode: zod.string(),
+      partner: zod.string().optional(),
+      shift: zod.string().optional(),
       lat: zod.number(),
       lng: zod.number(),
       updatedAt: zod.string(),
@@ -114,6 +116,8 @@ export const UpdateVehiclePositionBody = zod.object({
   vehicleId: zod.string(),
   vehicleNumber: zod.string(),
   unitCode: zod.string(),
+  partner: zod.string().optional(),
+  shift: zod.string().optional(),
   lat: zod.number(),
   lng: zod.number(),
   acceptedLocationId: zod.string().nullish(),
@@ -255,12 +259,7 @@ export const DeleteLocationResponse = zod.object({
  * @summary Get current roster configuration
  */
 export const GetRosterConfigResponse = zod.object({
-  teamCount: zod.union([
-    zod.literal(16),
-    zod.literal(20),
-    zod.literal(24),
-    zod.literal(28),
-  ]),
+  teamCount: zod.union([zod.literal(20), zod.literal(24), zod.literal(28)]),
   cycleStartDate: zod
     .string()
     .describe("ISO date string when cycle week 1 started (Monday)"),
@@ -273,22 +272,12 @@ export const GetRosterConfigResponse = zod.object({
  * @summary Update roster configuration
  */
 export const UpdateRosterConfigBody = zod.object({
-  teamCount: zod.union([
-    zod.literal(16),
-    zod.literal(20),
-    zod.literal(24),
-    zod.literal(28),
-  ]),
+  teamCount: zod.union([zod.literal(20), zod.literal(24), zod.literal(28)]),
   cycleStartDate: zod.string(),
 });
 
 export const UpdateRosterConfigResponse = zod.object({
-  teamCount: zod.union([
-    zod.literal(16),
-    zod.literal(20),
-    zod.literal(24),
-    zod.literal(28),
-  ]),
+  teamCount: zod.union([zod.literal(20), zod.literal(24), zod.literal(28)]),
   cycleStartDate: zod
     .string()
     .describe("ISO date string when cycle week 1 started (Monday)"),
@@ -322,18 +311,12 @@ export const GetRosterOfficersResponse = zod.array(
  * @summary Create a new officer
  */
 export const CreateRosterOfficerBody = zod.object({
-  name: zod.string().optional(),
-  unitCode: zod.string().optional(),
+  name: zod.string(),
+  unitCode: zod.string(),
   vehicle: zod.string().optional(),
   catchment: zod.string().optional(),
-  teamSlot: zod.number().optional(),
-  crewPosition: zod.number().optional(),
-  active: zod
-    .boolean()
-    .optional()
-    .describe(
-      "Only used to reactivate a deactivated officer via PUT — not settable on create.",
-    ),
+  teamSlot: zod.number(),
+  crewPosition: zod.number(),
 });
 
 export const CreateRosterOfficerResponse = zod.object({
@@ -465,6 +448,13 @@ export const GetRosterSwapsResponseItem = zod.object({
   reviewerName: zod.string().nullish(),
   createdAt: zod.string(),
   reviewedAt: zod.string().nullish(),
+  type: zod
+    .string()
+    .nullish()
+    .describe(
+      'Distinguishes a PH-roster-import-generated swap (\"PH\") from a regular officer-initiated swap (null).',
+    ),
+  phName: zod.string().nullish(),
 });
 export const GetRosterSwapsResponse = zod.array(GetRosterSwapsResponseItem);
 
@@ -492,6 +482,13 @@ export const CreateRosterSwapResponse = zod.object({
   reviewerName: zod.string().nullish(),
   createdAt: zod.string(),
   reviewedAt: zod.string().nullish(),
+  type: zod
+    .string()
+    .nullish()
+    .describe(
+      'Distinguishes a PH-roster-import-generated swap (\"PH\") from a regular officer-initiated swap (null).',
+    ),
+  phName: zod.string().nullish(),
 });
 
 /**
@@ -520,6 +517,13 @@ export const ReviewRosterSwapResponse = zod.object({
   reviewerName: zod.string().nullish(),
   createdAt: zod.string(),
   reviewedAt: zod.string().nullish(),
+  type: zod
+    .string()
+    .nullish()
+    .describe(
+      'Distinguishes a PH-roster-import-generated swap (\"PH\") from a regular officer-initiated swap (null).',
+    ),
+  phName: zod.string().nullish(),
 });
 
 /**

@@ -23,4 +23,11 @@ export interface RosterSwap {
   createdAt: string;
   /** @nullable */
   reviewedAt?: string | null;
+  /**
+   * Distinguishes a PH-roster-import-generated swap ("PH") from a regular officer-initiated swap (null).
+   * @nullable
+   */
+  type?: string | null;
+  /** @nullable */
+  phName?: string | null;
 }

@@ -2,26 +2,52 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import { useState, useEffect, useRef } from "react";
 import { MapContainer, TileLayer, Circle, Tooltip, Marker, CircleMarker } from "react-leaflet";
-import { PRESET_LOCATIONS } from "./data/presetLocations";
-import {
-  CATCHMENT_COLORS,
-  CATCHMENT_LABELS,
-  LOCATION_CATCHMENT,
-  FLOOD_DOTS,
-  FRA_CLUSTERS,
-  FRA_COLOR,
-  type Catchment,
-} from "./data/catchments";
 
 const SG_CENTER: [number, number] = [1.3221, 103.8690];
 const RADIUS_M = 2500;
+
+type Catchment = "BU" | "CP" | "KG" | "PJ" | "WK";
 const CATCHMENTS: Catchment[] = ["BU", "CP", "KG", "PJ", "WK"];
+
+// Deployment points, flood-risk-area clusters, and flood dot coordinates —
+// fetched at runtime from the authenticated GET /api/apa/fra-data instead
+// of being bundled into this app's static JS chunk. See
+// .scratch/full-repo-review/issues/08-apa-data-exposed-in-public-bundle.md.
+interface PresetLocation {
+  id: string;
+  name: string;
+  address: string;
+  lat: number;
+  lng: number;
+}
+interface FRACluster {
+  id: string;
+  label: string;
+  lat: number;
+  lng: number;
+  areas: string;
+}
+interface FraData {
+  presetLocations: PresetLocation[];
+  catchmentLabels: Record<Catchment, string>;
+  catchmentColors: Record<Catchment, { fill: string; stroke: string; text: string }>;
+  locationCatchment: Record<string, Catchment>;
+  fraColor: { fill: string; stroke: string; text: string };
+  fraClusters: FRACluster[];
+  floodDots: [number, number][];
+}
 
 type AuthState =
   | { status: "loading" }
   | { status: "unauthenticated" }
   | { status: "forbidden"; username: string; role: string }
   | { status: "authenticated"; username: string };
+
+interface MfaSetupInfo {
+  secret: string;
+  otpauthUrl: string;
+  qrCodeDataUrl: string;
+}
 
 function makeDeployDotIcon(fill: string, stroke: string) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 14 14">
@@ -59,20 +85,40 @@ function makeClusterLabelIcon(label: string, fill: string, stroke: string) {
   });
 }
 
+type LoginStep = "credentials" | "mfa-challenge" | "mfa-enroll";
+
 function LoginScreen({
   onLogin,
 }: {
   onLogin: (username: string) => void;
 }) {
+  const [step, setStep] = useState<LoginStep>("credentials");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [enrollInfo, setEnrollInfo] = useState<MfaSetupInfo | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const usernameRef = useRef<HTMLInputElement>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    usernameRef.current?.focus();
-  }, []);
+    if (step === "credentials") usernameRef.current?.focus();
+    else codeRef.current?.focus();
+  }, [step]);
+
+  // Kick off enrollment (fetch the QR/secret) as soon as we land on that step.
+  useEffect(() => {
+    if (step !== "mfa-enroll" || enrollInfo) return;
+    setError("");
+    fetch("/manager/auth/mfa/setup", { method: "POST", credentials: "include" })
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) { setError(data.error ?? "Could not start MFA setup"); return; }
+        setEnrollInfo({ secret: data.secret, otpauthUrl: data.otpauthUrl, qrCodeDataUrl: data.qrCodeDataUrl });
+      })
+      .catch(() => setError("Network error — check connection"));
+  }, [step, enrollInfo]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -87,7 +133,11 @@ function LoginScreen({
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        setError(data.message ?? "Invalid credentials");
+        setError(data.error ?? data.message ?? "Invalid credentials");
+      } else if (data.mfaStep === "challenge") {
+        setStep("mfa-challenge");
+      } else if (data.mfaStep === "enroll") {
+        setStep("mfa-enroll");
       } else if (data.role !== "admin") {
         setError("Admin access only. Your role: " + data.role);
       } else {
@@ -98,6 +148,123 @@ function LoginScreen({
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleMfaChallenge(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/manager/auth/mfa/challenge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error ?? "Incorrect code");
+      } else if (data.role !== "admin") {
+        setError("Admin access only. Your role: " + data.role);
+      } else {
+        onLogin(data.username);
+      }
+    } catch {
+      setError("Network error — check connection");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleMfaEnrollVerify(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/manager/auth/mfa/verify-setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ code }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setError(data.error ?? "Incorrect code");
+      } else if (data.role !== "admin") {
+        setError("Admin access only. Your role: " + data.role);
+      } else {
+        onLogin(data.username);
+      }
+    } catch {
+      setError("Network error — check connection");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function backToCredentials() {
+    setStep("credentials");
+    setCode("");
+    setEnrollInfo(null);
+    setError("");
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    boxSizing: "border-box",
+    background: "rgba(255,255,255,0.08)",
+    border: "1px solid rgba(255,255,255,0.15)",
+    borderRadius: 8,
+    padding: "10px 12px",
+    color: "#fff",
+    fontSize: 14,
+    outline: "none",
+  };
+  const labelStyle: React.CSSProperties = {
+    display: "block",
+    color: "#cbd5e1",
+    fontSize: 12,
+    fontWeight: 600,
+    marginBottom: 6,
+    letterSpacing: "0.04em",
+  };
+  const errorBoxStyle: React.CSSProperties = {
+    background: "rgba(239,68,68,0.15)",
+    border: "1px solid rgba(239,68,68,0.3)",
+    borderRadius: 8,
+    padding: "8px 12px",
+    color: "#fca5a5",
+    fontSize: 13,
+    marginBottom: 16,
+  };
+  const linkButtonStyle: React.CSSProperties = {
+    display: "block",
+    width: "100%",
+    textAlign: "center",
+    marginTop: 14,
+    background: "none",
+    border: "none",
+    color: "#94a3b8",
+    fontSize: 12,
+    cursor: "pointer",
+    fontFamily: "inherit",
+  };
+  function submitButtonStyle(disabled: boolean): React.CSSProperties {
+    return {
+      width: "100%",
+      padding: "11px 0",
+      borderRadius: 8,
+      border: "none",
+      background: disabled
+        ? "rgba(6,182,212,0.4)"
+        : "linear-gradient(90deg, #0e7490, #06b6d4)",
+      color: "#fff",
+      fontWeight: 700,
+      fontSize: 14,
+      cursor: disabled ? "not-allowed" : "pointer",
+      letterSpacing: "0.03em",
+      transition: "opacity 0.15s",
+    };
   }
 
   return (
@@ -163,137 +330,173 @@ function LoginScreen({
             FRA Map
           </div>
           <div style={{ color: "#94a3b8", fontSize: 12, marginTop: 4 }}>
-            Admin access required
+            {step === "credentials"
+              ? "Admin access required"
+              : step === "mfa-challenge"
+              ? "Enter your authenticator code"
+              : "Two-factor setup required"}
           </div>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: 14 }}>
-            <label
-              style={{
-                display: "block",
-                color: "#cbd5e1",
-                fontSize: 12,
-                fontWeight: 600,
-                marginBottom: 6,
-                letterSpacing: "0.04em",
-              }}
-            >
-              USERNAME
-            </label>
-            <input
-              ref={usernameRef}
-              type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              required
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                background: "rgba(255,255,255,0.08)",
-                border: "1px solid rgba(255,255,255,0.15)",
-                borderRadius: 8,
-                padding: "10px 12px",
-                color: "#fff",
-                fontSize: 14,
-                outline: "none",
-              }}
-              onFocus={(e) => {
-                e.currentTarget.style.borderColor = "#06b6d4";
-              }}
-              onBlur={(e) => {
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)";
-              }}
-            />
-          </div>
-
-          <div style={{ marginBottom: 20 }}>
-            <label
-              style={{
-                display: "block",
-                color: "#cbd5e1",
-                fontSize: 12,
-                fontWeight: 600,
-                marginBottom: 6,
-                letterSpacing: "0.04em",
-              }}
-            >
-              PASSWORD
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-              style={{
-                width: "100%",
-                boxSizing: "border-box",
-                background: "rgba(255,255,255,0.08)",
-                border: "1px solid rgba(255,255,255,0.15)",
-                borderRadius: 8,
-                padding: "10px 12px",
-                color: "#fff",
-                fontSize: 14,
-                outline: "none",
-              }}
-              onFocus={(e) => {
-                e.currentTarget.style.borderColor = "#06b6d4";
-              }}
-              onBlur={(e) => {
-                e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)";
-              }}
-            />
-          </div>
-
-          {error && (
-            <div
-              style={{
-                background: "rgba(239,68,68,0.15)",
-                border: "1px solid rgba(239,68,68,0.3)",
-                borderRadius: 8,
-                padding: "8px 12px",
-                color: "#fca5a5",
-                fontSize: 13,
-                marginBottom: 16,
-              }}
-            >
-              {error}
+        {step === "credentials" && (
+          <form onSubmit={handleSubmit}>
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>USERNAME</label>
+              <input
+                ref={usernameRef}
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                autoComplete="username"
+                required
+                style={inputStyle}
+                onFocus={(e) => { e.currentTarget.style.borderColor = "#06b6d4"; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+              />
             </div>
-          )}
 
-          <button
-            type="submit"
-            disabled={loading}
-            style={{
-              width: "100%",
-              padding: "11px 0",
-              borderRadius: 8,
-              border: "none",
-              background: loading
-                ? "rgba(6,182,212,0.4)"
-                : "linear-gradient(90deg, #0e7490, #06b6d4)",
-              color: "#fff",
-              fontWeight: 700,
-              fontSize: 14,
-              cursor: loading ? "not-allowed" : "pointer",
-              letterSpacing: "0.03em",
-              transition: "opacity 0.15s",
-            }}
-          >
-            {loading ? "Signing in…" : "Sign In"}
-          </button>
-        </form>
+            <div style={{ marginBottom: 20 }}>
+              <label style={labelStyle}>PASSWORD</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                autoComplete="current-password"
+                required
+                style={inputStyle}
+                onFocus={(e) => { e.currentTarget.style.borderColor = "#06b6d4"; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+              />
+            </div>
+
+            {error && <div style={errorBoxStyle}>{error}</div>}
+
+            <button type="submit" disabled={loading} style={submitButtonStyle(loading)}>
+              {loading ? "Signing in…" : "Sign In"}
+            </button>
+          </form>
+        )}
+
+        {step === "mfa-challenge" && (
+          <form onSubmit={handleMfaChallenge}>
+            <div style={{ marginBottom: 20 }}>
+              <label style={labelStyle}>AUTHENTICATION CODE</label>
+              <input
+                ref={codeRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="123456"
+                required
+                style={inputStyle}
+                onFocus={(e) => { e.currentTarget.style.borderColor = "#06b6d4"; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+              />
+            </div>
+
+            {error && <div style={errorBoxStyle}>{error}</div>}
+
+            <button type="submit" disabled={loading} style={submitButtonStyle(loading)}>
+              {loading ? "Verifying…" : "Verify"}
+            </button>
+            <button type="button" onClick={backToCredentials} style={linkButtonStyle}>
+              Back to sign in
+            </button>
+          </form>
+        )}
+
+        {step === "mfa-enroll" && (
+          <form onSubmit={handleMfaEnrollVerify}>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 16, lineHeight: 1.5 }}>
+              Scan this with an authenticator app (Microsoft/Google Authenticator, etc.), or enter
+              the setup key manually.
+            </div>
+
+            {enrollInfo ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
+                  <img
+                    src={enrollInfo.qrCodeDataUrl}
+                    alt="MFA setup QR code"
+                    style={{ width: 168, height: 168, borderRadius: 8, background: "#fff", padding: 8 }}
+                  />
+                </div>
+                <div style={{ marginBottom: 16 }}>
+                  <label style={labelStyle}>SETUP KEY</label>
+                  <div
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 12,
+                      letterSpacing: 1,
+                      wordBreak: "break-all",
+                      background: "rgba(255,255,255,0.08)",
+                      border: "1px solid rgba(255,255,255,0.15)",
+                      borderRadius: 8,
+                      padding: "9px 11px",
+                      color: "#fff",
+                    }}
+                  >
+                    {enrollInfo.secret}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div style={{ textAlign: "center", color: "#94a3b8", fontSize: 13, marginBottom: 16 }}>
+                Loading setup code…
+              </div>
+            )}
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={labelStyle}>ENTER THE 6-DIGIT CODE IT SHOWS</label>
+              <input
+                ref={codeRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="123456"
+                required
+                disabled={!enrollInfo}
+                style={inputStyle}
+                onFocus={(e) => { e.currentTarget.style.borderColor = "#06b6d4"; }}
+                onBlur={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; }}
+              />
+            </div>
+
+            {error && <div style={errorBoxStyle}>{error}</div>}
+
+            <button type="submit" disabled={loading || !enrollInfo} style={submitButtonStyle(loading || !enrollInfo)}>
+              {loading ? "Verifying…" : "Confirm & Continue"}
+            </button>
+            <button type="button" onClick={backToCredentials} style={linkButtonStyle}>
+              Back to sign in
+            </button>
+          </form>
+        )}
       </div>
     </div>
   );
 }
 
-function FRAMap({ username, onLogout }: { username: string; onLogout: () => void }) {
+function FRAMap({ username, onLogout, data }: { username: string; onLogout: () => void; data: FraData }) {
   const [showCatchments, setShowCatchments] = useState(true);
   const [showFlood, setShowFlood] = useState(true);
+  const {
+    presetLocations: PRESET_LOCATIONS,
+    catchmentLabels: CATCHMENT_LABELS,
+    catchmentColors: CATCHMENT_COLORS,
+    locationCatchment: LOCATION_CATCHMENT,
+    fraColor: FRA_COLOR,
+    fraClusters: FRA_CLUSTERS,
+    floodDots: FLOOD_DOTS,
+  } = data;
 
   return (
     <div style={{ width: "100vw", height: "100vh", position: "relative" }}>
@@ -530,6 +733,8 @@ function FRAMap({ username, onLogout }: { username: string; onLogout: () => void
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
+  const [fraData, setFraData] = useState<FraData | null>(null);
+  const [fraError, setFraError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/manager/auth/me", { credentials: "include" })
@@ -547,6 +752,19 @@ export default function App() {
       })
       .catch(() => setAuth({ status: "unauthenticated" }));
   }, []);
+
+  // Map data is fetched only once the session is confirmed authenticated —
+  // it's admin-only and previously shipped in the public JS bundle
+  // regardless of login state, which is the bug this fetch replaces.
+  useEffect(() => {
+    if (auth.status !== "authenticated" || fraData) return;
+    fetch("/api/apa/fra-data", { credentials: "include" })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`Could not load map data (${res.status})`);
+        setFraData(await res.json());
+      })
+      .catch((err) => setFraError(err instanceof Error ? err.message : "Network error — check your connection"));
+  }, [auth.status, fraData]);
 
   async function handleLogout() {
     try {
@@ -633,5 +851,70 @@ export default function App() {
     );
   }
 
-  return <FRAMap username={auth.username} onLogout={handleLogout} />;
+  if (fraError) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          width: "100vw",
+          background: "linear-gradient(135deg, #0f172a 0%, #164e63 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "system-ui, sans-serif",
+        }}
+      >
+        <div
+          style={{
+            background: "rgba(239,68,68,0.12)",
+            border: "1px solid rgba(239,68,68,0.3)",
+            borderRadius: 12,
+            padding: "28px 36px",
+            textAlign: "center",
+            maxWidth: 320,
+          }}
+        >
+          <div style={{ color: "#fca5a5", fontWeight: 700, fontSize: 16, marginBottom: 8 }}>
+            Could Not Load Map
+          </div>
+          <div style={{ color: "#cbd5e1", fontSize: 13, marginBottom: 20 }}>{fraError}</div>
+          <button
+            onClick={() => setFraError(null)}
+            style={{
+              background: "rgba(255,255,255,0.1)",
+              border: "1px solid rgba(255,255,255,0.2)",
+              borderRadius: 8,
+              padding: "8px 20px",
+              color: "#fff",
+              fontSize: 13,
+              cursor: "pointer",
+              fontFamily: "inherit",
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!fraData) {
+    return (
+      <div
+        style={{
+          minHeight: "100vh",
+          width: "100vw",
+          background: "linear-gradient(135deg, #0f172a 0%, #164e63 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "system-ui, sans-serif",
+        }}
+      >
+        <div style={{ color: "#94a3b8", fontSize: 14 }}>Loading map data…</div>
+      </div>
+    );
+  }
+
+  return <FRAMap username={auth.username} onLogout={handleLogout} data={fraData} />;
 }

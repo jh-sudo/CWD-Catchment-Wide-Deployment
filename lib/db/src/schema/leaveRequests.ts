@@ -5,6 +5,7 @@ import { z } from "zod/v4";
 import { officersTable } from "./officers";
 import { leaveTypesTable } from "./leaveTypes";
 import { rosterLeavesTable } from "./rosterLeaves";
+import { managersTable } from "./managers";
 
 // Replaces leave-requests.json (LeaveRequest) — the full cover/IC approval
 // workflow entity.
@@ -35,10 +36,7 @@ export const leaveRequestsTable = pgTable(
     coverDeclineReason: text("cover_decline_reason"),
 
     // IC approval
-    // ic_account_id references managers(id) — the managers table lives in
-    // the core ops state schema (a separate domain/execution pass), so no
-    // .references() here yet. Add the FK once that table exists.
-    icAccountId: text("ic_account_id"),
+    icAccountId: text("ic_account_id").references(() => managersTable.id),
     icName: text("ic_name"),
     icStatus: text("ic_status"),
     icReviewedAt: timestamp("ic_reviewed_at", { withTimezone: true }),

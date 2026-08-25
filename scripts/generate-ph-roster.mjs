@@ -77,7 +77,7 @@ const isCNY       = (n) => /chinese new year/i.test(n);
 const isHariRaya  = (n) => /hari raya/i.test(n);
 const isDeepavali = (n) => /deepavali/i.test(n);
 
-function autoAllocate(officers, slots, rotationStartIndex) {
+function autoAllocate(officers, slots, rotationStartIndex, violations) {
   const officersByUnit = new Map();
   for (const o of officers) {
     if (!o.unitCode || o.unitCode === "TBC") continue;
@@ -136,6 +136,20 @@ function autoAllocate(officers, slots, rotationStartIndex) {
     if (hr) {
       const forced  = selected.filter(s => hrDayOnlyUnits.has(s.unit));
       const flex    = selected.filter(s => !hrDayOnlyUnits.has(s.unit));
+      // Only the first 3 slots get DAY — if more than 3 of the selected units
+      // are HARI_RAYA_DAY_ONLY-restricted, the overflow would be forced onto
+      // PD, which the racial rules forbid. Record it as a hard violation
+      // instead of silently assigning it — see the process.exit(1) block at
+      // the bottom of this file, which blocks the write entirely rather than
+      // relying on the inline `remarks` cell below to be noticed.
+      if (forced.length > 3) {
+        violations.push({
+          date: slot.date,
+          phName: slot.phName,
+          restrictedUnits: forced.map(s => s.unit),
+          overflowCount: forced.length - 3,
+        });
+      }
       const ordered = [...forced, ...flex].slice(0, 6);
       for (let i = 0; i < ordered.length; i++) ordered[i].shift = i < 3 ? "DAY" : "PD";
       selected.splice(0, selected.length, ...ordered);
@@ -176,14 +190,40 @@ function autoAllocate(officers, slots, rotationStartIndex) {
 const officers = JSON.parse(fs.readFileSync(OFFICERS_FILE, "utf-8"));
 const existing = JSON.parse(fs.readFileSync(REF_FILE, "utf-8"));
 
+// Collects Hari Raya racial-rule violations (see autoAllocate) across both
+// years so the run can be blocked once, with one clear summary, instead of
+// per-year.
+const violations = [];
+
 // 2026: start at rotIdx=0
 console.log("\n=== Generating 2026 (rotationStartIndex=0) ===");
-const gen2026 = autoAllocate(officers, PH_YEAR_SLOTS[2026], 0);
+const gen2026 = autoAllocate(officers, PH_YEAR_SLOTS[2026], 0, violations);
 
 // 2026 has 11 actual PHs → rotIdx after = (0 + 11*6) % 20 = 66 % 20 = 6
 // 2027: continue from rotIdx=6
 console.log("\n=== Generating 2027 (rotationStartIndex=6) ===");
-const gen2027 = autoAllocate(officers, PH_YEAR_SLOTS[2027], 6);
+const gen2027 = autoAllocate(officers, PH_YEAR_SLOTS[2027], 6, violations);
+
+if (violations.length > 0) {
+  console.error("\n" + "=".repeat(78));
+  console.error("❌ HARI RAYA RACIAL-RULE VIOLATIONS — generation blocked");
+  console.error("=".repeat(78));
+  console.error(
+    "More than 3 selected units are HARI_RAYA_DAY_ONLY-restricted on the same\n" +
+    "date — only the first 3 can get the mandatory DAY shift, so the overflow\n" +
+    `would ship with a restricted officer on PD. ${REF_FILE} was NOT written.\n` +
+    "Resolve the slot assignment by hand (adjust the rotation or swap a unit\n" +
+    "out) and re-run.\n"
+  );
+  for (const v of violations) {
+    console.error(
+      `  • ${v.date} ${v.phName}: ${v.restrictedUnits.length} restricted units ` +
+      `[${v.restrictedUnits.join(", ")}] selected — ${v.overflowCount} would be forced onto PD`
+    );
+  }
+  console.error("=".repeat(78));
+  process.exit(1);
+}
 
 // Merge into existing (overwrite only 2026 and 2027 dates)
 const updated = { ...existing };

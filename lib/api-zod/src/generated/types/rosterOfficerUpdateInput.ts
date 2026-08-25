@@ -6,7 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface RosterOfficerInput {
+export interface RosterOfficerUpdateInput {
   name?: string;
   unitCode?: string;
   vehicle?: string;

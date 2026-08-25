@@ -30,6 +30,9 @@ export default function TodaysRoster() {
   const { version } = useRosterVersion();
   const touchXRef = useRef<number | null>(null);
   const touchYRef = useRef<number | null>(null);
+  // Tracks the date `load()` was most recently called for, so a response for a
+  // date the user has since navigated away from doesn't overwrite fresher state.
+  const activeLoadDateRef = useRef<string>(todayStr);
 
   const [copying, setCopying] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -121,6 +124,7 @@ export default function TodaysRoster() {
   }, [selectedDate]);
 
   const load = useCallback(async (dateStr: string) => {
+    activeLoadDateRef.current = dateStr;
     setFetching(true);
     try {
       const [schedRes, leaveRes] = await Promise.all([
@@ -144,6 +148,9 @@ export default function TodaysRoster() {
           if (d.swappedWithOfficerName) sm[d.officerId] = d.swappedWithOfficerName;
         }
       }
+      // Stale guard: if the user has navigated to a different date since this
+      // fetch started, drop the response instead of overwriting fresher state.
+      if (activeLoadDateRef.current !== dateStr) return;
       setDutyMap(dm); setTargetDutyMap(tdm); setCrossPostMap(cpm); setVehicleMap(vm); setSwapMap(sm);
 
       const leaveArr = leaveRes.ok ? await leaveRes.json() : [];
@@ -154,11 +161,14 @@ export default function TodaysRoster() {
         if (l.coveringOfficerName) cm[l.officerId] = l.coveringOfficerName;
         if (l.coveringOfficerId)   cfm[l.coveringOfficerId] = true;
       }
+      if (activeLoadDateRef.current !== dateStr) return;
       setLeaveMap(lm);
       setCoveringMap(cm);
       setCoverForMap(cfm);
     } finally {
-      setFetching(false);
+      // Only the still-active date's request should clear the loading spinner —
+      // a superseded request's own finally block will handle its own state.
+      if (activeLoadDateRef.current === dateStr) setFetching(false);
     }
   }, []);
 
