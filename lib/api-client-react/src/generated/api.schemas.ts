@@ -37,6 +37,8 @@ export interface VehiclePosition {
   vehicleId: string;
   vehicleNumber: string;
   unitCode: string;
+  partner?: string;
+  shift?: string;
   lat: number;
   lng: number;
   updatedAt: string;
@@ -104,6 +106,8 @@ export interface UpdatePositionRequest {
   vehicleId: string;
   vehicleNumber: string;
   unitCode: string;
+  partner?: string;
+  shift?: string;
   lat: number;
   lng: number;
   acceptedLocationId?: string | null;
@@ -146,7 +150,6 @@ export type RosterConfigTeamCount =
   (typeof RosterConfigTeamCount)[keyof typeof RosterConfigTeamCount];
 
 export const RosterConfigTeamCount = {
-  NUMBER_16: 16,
   NUMBER_20: 20,
   NUMBER_24: 24,
   NUMBER_28: 28,
@@ -164,7 +167,6 @@ export type RosterConfigInputTeamCount =
   (typeof RosterConfigInputTeamCount)[keyof typeof RosterConfigInputTeamCount];
 
 export const RosterConfigInputTeamCount = {
-  NUMBER_16: 16,
   NUMBER_20: 20,
   NUMBER_24: 24,
   NUMBER_28: 28,
@@ -190,7 +192,16 @@ export interface RosterOfficer {
   active: boolean;
 }
 
-export interface RosterOfficerInput {
+export interface RosterOfficerCreateInput {
+  name: string;
+  unitCode: string;
+  vehicle?: string;
+  catchment?: string;
+  teamSlot: number;
+  crewPosition: number;
+}
+
+export interface RosterOfficerUpdateInput {
   name?: string;
   unitCode?: string;
   vehicle?: string;
@@ -235,6 +246,13 @@ export interface RosterSwap {
   createdAt: string;
   /** @nullable */
   reviewedAt?: string | null;
+  /**
+   * Distinguishes a PH-roster-import-generated swap ("PH") from a regular officer-initiated swap (null).
+   * @nullable
+   */
+  type?: string | null;
+  /** @nullable */
+  phName?: string | null;
 }
 
 export interface RosterSwapInput {

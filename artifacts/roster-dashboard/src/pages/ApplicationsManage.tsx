@@ -5,9 +5,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Loader2, RefreshCcw, CheckCircle, XCircle, Search, Trash2, LayoutGrid } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Loader2, RefreshCcw, CheckCircle, XCircle, Search, Trash2, LayoutGrid, Shield } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import { useGetRosterSwaps, useReviewRosterSwap } from "@workspace/api-client-react";
+import { useGetRosterSwaps, useReviewRosterSwap, type RosterSwap } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
 
 const STATUS_BADGE: Record<string, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
@@ -36,9 +38,22 @@ function fmtEditedAt(ts: string) {
 const LeaveCard = memo(function LeaveCard({
   leaf,
   onDelete,
-}: { leaf: any; onDelete: (l: any) => void }) {
+  canReviewIc,
+  onCoverAccept,
+  onCoverDecline,
+  onIcReview,
+}: {
+  leaf: any;
+  onDelete: (l: any) => void;
+  canReviewIc: boolean;
+  onCoverAccept: (l: any) => void;
+  onCoverDecline: (l: any) => void;
+  onIcReview: (l: any) => void;
+}) {
   const st = STATUS_BADGE[leaf.status] ?? { label: leaf.status, variant: "outline" as const };
   const canDelete = leaf.status === "APPROVED" || leaf.status === "CANCELLED";
+  const needsCoverResponse = leaf.status === "PENDING_COVER" && leaf.coverStatus === "PENDING";
+  const needsIcReview = leaf.status === "PENDING_IC" && canReviewIc;
   const editedAt = leaf.lastEditedOn ?? leaf.updatedAt ?? leaf.createdAt ?? "";
   return (
     <Card>
@@ -97,6 +112,27 @@ const LeaveCard = memo(function LeaveCard({
             </div>
           </div>
         )}
+        {needsCoverResponse && (
+          <div className="flex gap-2 pt-1">
+            <Button size="sm" className="flex-1 bg-green-600 hover:bg-green-700 text-white h-8"
+              onClick={() => onCoverAccept(leaf)}>
+              <CheckCircle className="h-3.5 w-3.5 mr-1.5" />Accept Cover
+            </Button>
+            <Button size="sm" variant="outline"
+              className="flex-1 border-destructive text-destructive hover:bg-destructive/10 h-8"
+              onClick={() => onCoverDecline(leaf)}>
+              <XCircle className="h-3.5 w-3.5 mr-1.5" />Decline
+            </Button>
+          </div>
+        )}
+        {needsIcReview && (
+          <div className="flex gap-2 pt-1">
+            <Button size="sm" className="flex-1 bg-green-600 hover:bg-green-700 text-white h-8"
+              onClick={() => onIcReview(leaf)}>
+              <Shield className="h-3.5 w-3.5 mr-1.5" />Review
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -107,10 +143,10 @@ const SwapCard = memo(function SwapCard({
   onReview,
   onDelete,
   reviewPending,
-}: { swap: any; onReview: (s: any, approve: boolean) => void; onDelete: (s: any) => void; reviewPending: boolean }) {
+}: { swap: RosterSwap; onReview: (s: RosterSwap, approve: boolean) => void; onDelete: (s: RosterSwap) => void; reviewPending: boolean }) {
   const st = STATUS_BADGE[swap.status] ?? { label: swap.status, variant: "outline" as const };
   const isPending = swap.status === "PENDING";
-  const isPHSwap = !!(swap.phName || swap.type === "PH" || swap.kind === "PH");
+  const isPHSwap = !!(swap.phName || swap.type === "PH");
   const editedAt = (swap.reviewedAt && swap.createdAt)
     ? (swap.reviewedAt > swap.createdAt ? swap.reviewedAt : swap.createdAt)
     : swap.reviewedAt ?? swap.createdAt ?? "";
@@ -375,6 +411,14 @@ export default function ApplicationsManage() {
   const [swapReviewTarget, setSwapReviewTarget] = useState<any | null>(null);
   const [swapApprove, setSwapApprove] = useState(true);
 
+  // Cover-respond decline dialog (accept goes straight through, no dialog needed)
+  const [coverDeclineTarget, setCoverDeclineTarget] = useState<any | null>(null);
+  const [coverDeclineReason, setCoverDeclineReason] = useState("");
+
+  // IC review dialog
+  const [icReviewTarget, setIcReviewTarget] = useState<any | null>(null);
+  const [icNote, setIcNote] = useState("");
+
   // Delete dialogs
   const [deleteTarget, setDeleteTarget] = useState<any | null>(null);
   const [deleteOverrideTarget, setDeleteOverrideTarget] = useState<any | null>(null);
@@ -582,12 +626,74 @@ export default function ApplicationsManage() {
     finally { setDeleteSwapTarget(null); setActionLoading(false); }
   }, [deleteSwapTarget, syncAll]);
 
+  // Accept records the cover officer's decision on their behalf, same as
+  // every other action on this management-only page (no "only the cover
+  // officer's own account may click this" restriction — there's no
+  // crew-facing screen for this today, ported from the never-routed
+  // Approvals.tsx). Decline opens a dialog to optionally record a reason.
+  const handleCoverAccept = useCallback(async (leaf: any) => {
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/leave-requests/${leaf.id}/cover-respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ accepted: true }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Could not record cover response"); }
+      syncAll();
+    } catch (err: any) { alert(err.message); }
+    finally { setActionLoading(false); }
+  }, [syncAll]);
+
+  const handleCoverDeclineSubmit = useCallback(async () => {
+    if (!coverDeclineTarget) return;
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/leave-requests/${coverDeclineTarget.id}/cover-respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ accepted: false, declineReason: coverDeclineReason }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Could not record cover response"); }
+      syncAll();
+    } catch (err: any) { alert(err.message); }
+    finally { setCoverDeclineTarget(null); setCoverDeclineReason(""); setActionLoading(false); }
+  }, [coverDeclineTarget, coverDeclineReason, syncAll]);
+
+  const handleIcReviewSubmit = useCallback(async (approved: boolean) => {
+    if (!icReviewTarget) return;
+    setActionLoading(true);
+    try {
+      const res = await fetch(`/api/leave-requests/${icReviewTarget.id}/ic-review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ approved, note: icNote }),
+      });
+      if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || "Could not record IC review"); }
+      syncAll();
+    } catch (err: any) { alert(err.message); }
+    finally { setIcReviewTarget(null); setIcNote(""); setActionLoading(false); }
+  }, [icReviewTarget, icNote, syncAll]);
+
   // Stable card callback refs
   const onDeleteLeave         = useCallback((l: any) => setDeleteTarget(l), []);
   const onDeleteVisualOverride = useCallback((o: any) => setDeleteVisualOverrideTarget(o), []);
   const onDeleteOverride      = useCallback((o: any) => setDeleteOverrideTarget(o), []);
   const onDeleteSwap          = useCallback((s: any) => setDeleteSwapTarget(s), []);
   const onSwapReview          = useCallback((s: any, approve: boolean) => { setSwapReviewTarget(s); setSwapApprove(approve); }, []);
+  const onCoverDecline        = useCallback((l: any) => setCoverDeclineTarget(l), []);
+  const onIcReview            = useCallback((l: any) => { setIcReviewTarget(l); setIcNote(""); }, []);
+
+  // admin/manager see every catchment's IC-pending requests; an ic account
+  // only sees (and may review) requests within their own assigned
+  // catchments — same restriction the never-routed Approvals.tsx enforced.
+  const canReviewIc = useCallback((leaf: any) => {
+    if (user?.role === "admin" || user?.role === "manager") return true;
+    return user?.role === "ic" && (user.catchments ?? []).includes(leaf.officerCatchment);
+  }, [user]);
 
   return (
     <div className="flex-1 overflow-auto p-6">
@@ -665,7 +771,7 @@ export default function ApplicationsManage() {
             {allItems.length === 0
               ? <Card><CardContent className="py-10 text-center text-sm text-muted-foreground">{search ? "No records match your search." : "No records yet."}</CardContent></Card>
               : allItems.map(item => {
-                  if (item._type === "leave")           return <LeaveCard          key={item._id} leaf={item.data} onDelete={onDeleteLeave} />;
+                  if (item._type === "leave")           return <LeaveCard          key={item._id} leaf={item.data} onDelete={onDeleteLeave} canReviewIc={canReviewIc(item.data)} onCoverAccept={handleCoverAccept} onCoverDecline={onCoverDecline} onIcReview={onIcReview} />;
                   if (item._type === "swap")            return <SwapCard           key={item._id} swap={item.data} onReview={onSwapReview} onDelete={onDeleteSwap} reviewPending={reviewSwap.isPending} />;
                   if (item._type === "visual-override") return <VisualOverrideCard key={item._id} ov={item.data}   onDelete={onDeleteVisualOverride} />;
                   if (item._type === "override")        return <OverrideCard       key={item._id} ev={item.data}   onDelete={onDeleteOverride} />;
@@ -777,6 +883,81 @@ export default function ApplicationsManage() {
               disabled={reviewSwap.isPending}>
               {reviewSwap.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               {swapApprove ? "Approve" : "Reject"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Cover decline dialog ── */}
+      <Dialog open={!!coverDeclineTarget} onOpenChange={() => { setCoverDeclineTarget(null); setCoverDeclineReason(""); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Decline Cover Request</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Recording that <span className="font-semibold text-foreground">{coverDeclineTarget?.coverOfficerName ?? "the cover officer"}</span> declined
+            to cover {coverDeclineTarget?.officerName}
+            {coverDeclineTarget?.date ? ` on ${dateLabel(coverDeclineTarget.date)}` : ""}.
+            Please provide a reason if given.
+          </p>
+          <div className="space-y-1.5">
+            <Label>Reason <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Textarea
+              value={coverDeclineReason}
+              onChange={e => setCoverDeclineReason(e.target.value)}
+              placeholder="e.g. On medical leave that day"
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCoverDeclineTarget(null); setCoverDeclineReason(""); }}>Cancel</Button>
+            <Button variant="destructive" onClick={handleCoverDeclineSubmit} disabled={actionLoading}>
+              {actionLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Confirm Decline
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── IC review dialog ── */}
+      <Dialog open={!!icReviewTarget} onOpenChange={() => { setIcReviewTarget(null); setIcNote(""); }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader><DialogTitle>Review Leave Request</DialogTitle></DialogHeader>
+          {icReviewTarget && (
+            <div className="bg-muted rounded-md p-3 text-sm space-y-1">
+              <div><span className="font-medium">Officer:</span> {icReviewTarget.officerName}</div>
+              <div><span className="font-medium">Date:</span> {icReviewTarget.date ? dateLabel(icReviewTarget.date) : "—"}</div>
+              <div><span className="font-medium">Leave type:</span> {icReviewTarget.leaveType}</div>
+              {icReviewTarget.coverOfficerName && (
+                <div><span className="font-medium">Cover:</span> {icReviewTarget.coverOfficerName} ({icReviewTarget.coverStatus})</div>
+              )}
+            </div>
+          )}
+          <div className="space-y-1.5">
+            <Label>Note <span className="text-muted-foreground font-normal">(optional)</span></Label>
+            <Textarea
+              value={icNote}
+              onChange={e => setIcNote(e.target.value)}
+              placeholder="Add a note…"
+              rows={2}
+            />
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button variant="outline" onClick={() => { setIcReviewTarget(null); setIcNote(""); }}>Cancel</Button>
+            <Button
+              variant="destructive"
+              onClick={() => handleIcReviewSubmit(false)}
+              disabled={actionLoading}
+              className="flex-1"
+            >
+              {actionLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Reject
+            </Button>
+            <Button
+              className="flex-1 bg-green-600 hover:bg-green-700"
+              onClick={() => handleIcReviewSubmit(true)}
+              disabled={actionLoading}
+            >
+              {actionLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Approve
             </Button>
           </DialogFooter>
         </DialogContent>

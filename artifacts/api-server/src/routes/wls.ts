@@ -2,6 +2,7 @@ import { Router } from "express";
 import { eq, and, lt } from "drizzle-orm";
 import { db, wlsReadingsTable } from "@workspace/db";
 import { sendToManagers } from "./push";
+import { requireManager } from "./auth";
 
 const router = Router();
 
@@ -314,8 +315,10 @@ function tideGateReadings(all: WLSReading[]) {
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
 
-// POST /api/wls/ingest
-router.post("/wls/ingest", async (req, res) => {
+// POST /api/wls/ingest — manual-paste ingestion from the manager dashboard's
+// WLS panel (see README's "manual-paste ingestion" note); same auth level as
+// the analogous /api/crms/ingest paste flow.
+router.post("/wls/ingest", requireManager, async (req, res) => {
   const body = req.body as {
     smsText?: string; senderName?: string;
     text?: string; sender?: string;
@@ -369,7 +372,7 @@ router.post("/wls/ingest", async (req, res) => {
 });
 
 // POST /api/wls/ingest-batch
-router.post("/wls/ingest-batch", async (req, res) => {
+router.post("/wls/ingest-batch", requireManager, async (req, res) => {
   const { messages, senderName } = req.body as { messages?: string[]; senderName?: string };
   if (!Array.isArray(messages)) {
     res.status(400).json({ error: "messages array required" });
@@ -393,13 +396,14 @@ router.post("/wls/ingest-batch", async (req, res) => {
 });
 
 // DELETE /api/wls/:stationId
-router.delete("/wls/:stationId", async (req, res) => {
-  await db.delete(wlsReadingsTable).where(eq(wlsReadingsTable.stationId, req.params.stationId));
+router.delete("/wls/:stationId", requireManager, async (req, res) => {
+  const { stationId } = req.params as { stationId: string };
+  await db.delete(wlsReadingsTable).where(eq(wlsReadingsTable.stationId, stationId));
   res.json({ ok: true });
 });
 
 // DELETE /api/wls — clear WLS alerts only (keep tide gate)
-router.delete("/wls", async (req, res) => {
+router.delete("/wls", requireManager, async (req, res) => {
   const clearAll = (req.query.all === "1");
   if (clearAll) {
     await db.delete(wlsReadingsTable);

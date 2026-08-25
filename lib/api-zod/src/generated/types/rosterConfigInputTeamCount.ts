@@ -10,7 +10,6 @@ export type RosterConfigInputTeamCount =
   (typeof RosterConfigInputTeamCount)[keyof typeof RosterConfigInputTeamCount];
 
 export const RosterConfigInputTeamCount = {
-  NUMBER_16: 16,
   NUMBER_20: 20,
   NUMBER_24: 24,
   NUMBER_28: 28,

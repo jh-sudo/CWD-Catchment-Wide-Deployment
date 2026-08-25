@@ -10,6 +10,8 @@ export interface UpdatePositionRequest {
   vehicleId: string;
   vehicleNumber: string;
   unitCode: string;
+  partner?: string;
+  shift?: string;
   lat: number;
   lng: number;
   acceptedLocationId?: string | null;

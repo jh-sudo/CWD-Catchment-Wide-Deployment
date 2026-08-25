@@ -10,6 +10,8 @@ export interface VehiclePosition {
   vehicleId: string;
   vehicleNumber: string;
   unitCode: string;
+  partner?: string;
+  shift?: string;
   lat: number;
   lng: number;
   updatedAt: string;

@@ -33,7 +33,8 @@ import type {
   RosterConfig,
   RosterConfigInput,
   RosterOfficer,
-  RosterOfficerInput,
+  RosterOfficerCreateInput,
+  RosterOfficerUpdateInput,
   RosterScheduleResponse,
   RosterSwap,
   RosterSwapInput,
@@ -1280,14 +1281,14 @@ export const getCreateRosterOfficerUrl = () => {
 };
 
 export const createRosterOfficer = async (
-  rosterOfficerInput: RosterOfficerInput,
+  rosterOfficerCreateInput: RosterOfficerCreateInput,
   options?: RequestInit,
 ): Promise<RosterOfficer> => {
   return customFetch<RosterOfficer>(getCreateRosterOfficerUrl(), {
     ...options,
     method: "POST",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(rosterOfficerInput),
+    body: JSON.stringify(rosterOfficerCreateInput),
   });
 };
 
@@ -1298,14 +1299,14 @@ export const getCreateRosterOfficerMutationOptions = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof createRosterOfficer>>,
     TError,
-    { data: BodyType<RosterOfficerInput> },
+    { data: BodyType<RosterOfficerCreateInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof createRosterOfficer>>,
   TError,
-  { data: BodyType<RosterOfficerInput> },
+  { data: BodyType<RosterOfficerCreateInput> },
   TContext
 > => {
   const mutationKey = ["createRosterOfficer"];
@@ -1319,7 +1320,7 @@ export const getCreateRosterOfficerMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof createRosterOfficer>>,
-    { data: BodyType<RosterOfficerInput> }
+    { data: BodyType<RosterOfficerCreateInput> }
   > = (props) => {
     const { data } = props ?? {};
 
@@ -1332,7 +1333,8 @@ export const getCreateRosterOfficerMutationOptions = <
 export type CreateRosterOfficerMutationResult = NonNullable<
   Awaited<ReturnType<typeof createRosterOfficer>>
 >;
-export type CreateRosterOfficerMutationBody = BodyType<RosterOfficerInput>;
+export type CreateRosterOfficerMutationBody =
+  BodyType<RosterOfficerCreateInput>;
 export type CreateRosterOfficerMutationError = ErrorType<unknown>;
 
 /**
@@ -1345,14 +1347,14 @@ export const useCreateRosterOfficer = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof createRosterOfficer>>,
     TError,
-    { data: BodyType<RosterOfficerInput> },
+    { data: BodyType<RosterOfficerCreateInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof createRosterOfficer>>,
   TError,
-  { data: BodyType<RosterOfficerInput> },
+  { data: BodyType<RosterOfficerCreateInput> },
   TContext
 > => {
   return useMutation(getCreateRosterOfficerMutationOptions(options));
@@ -1367,14 +1369,14 @@ export const getUpdateRosterOfficerUrl = (id: string) => {
 
 export const updateRosterOfficer = async (
   id: string,
-  rosterOfficerInput: RosterOfficerInput,
+  rosterOfficerUpdateInput: RosterOfficerUpdateInput,
   options?: RequestInit,
 ): Promise<RosterOfficer> => {
   return customFetch<RosterOfficer>(getUpdateRosterOfficerUrl(id), {
     ...options,
     method: "PUT",
     headers: { "Content-Type": "application/json", ...options?.headers },
-    body: JSON.stringify(rosterOfficerInput),
+    body: JSON.stringify(rosterOfficerUpdateInput),
   });
 };
 
@@ -1385,14 +1387,14 @@ export const getUpdateRosterOfficerMutationOptions = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof updateRosterOfficer>>,
     TError,
-    { id: string; data: BodyType<RosterOfficerInput> },
+    { id: string; data: BodyType<RosterOfficerUpdateInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationOptions<
   Awaited<ReturnType<typeof updateRosterOfficer>>,
   TError,
-  { id: string; data: BodyType<RosterOfficerInput> },
+  { id: string; data: BodyType<RosterOfficerUpdateInput> },
   TContext
 > => {
   const mutationKey = ["updateRosterOfficer"];
@@ -1406,7 +1408,7 @@ export const getUpdateRosterOfficerMutationOptions = <
 
   const mutationFn: MutationFunction<
     Awaited<ReturnType<typeof updateRosterOfficer>>,
-    { id: string; data: BodyType<RosterOfficerInput> }
+    { id: string; data: BodyType<RosterOfficerUpdateInput> }
   > = (props) => {
     const { id, data } = props ?? {};
 
@@ -1419,7 +1421,8 @@ export const getUpdateRosterOfficerMutationOptions = <
 export type UpdateRosterOfficerMutationResult = NonNullable<
   Awaited<ReturnType<typeof updateRosterOfficer>>
 >;
-export type UpdateRosterOfficerMutationBody = BodyType<RosterOfficerInput>;
+export type UpdateRosterOfficerMutationBody =
+  BodyType<RosterOfficerUpdateInput>;
 export type UpdateRosterOfficerMutationError = ErrorType<unknown>;
 
 /**
@@ -1432,14 +1435,14 @@ export const useUpdateRosterOfficer = <
   mutation?: UseMutationOptions<
     Awaited<ReturnType<typeof updateRosterOfficer>>,
     TError,
-    { id: string; data: BodyType<RosterOfficerInput> },
+    { id: string; data: BodyType<RosterOfficerUpdateInput> },
     TContext
   >;
   request?: SecondParameter<typeof customFetch>;
 }): UseMutationResult<
   Awaited<ReturnType<typeof updateRosterOfficer>>,
   TError,
-  { id: string; data: BodyType<RosterOfficerInput> },
+  { id: string; data: BodyType<RosterOfficerUpdateInput> },
   TContext
 > => {
   return useMutation(getUpdateRosterOfficerMutationOptions(options));

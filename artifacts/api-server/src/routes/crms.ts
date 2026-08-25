@@ -9,7 +9,7 @@ import {
   type CrmsCase as CrmsCaseRow,
   type CrmsComment as CrmsCommentRow,
 } from "@workspace/db";
-import { requireManager } from "./auth";
+import { requireManager, requireCrew } from "./auth";
 import { sendToManagers, sendToCrewVehicle } from "./push";
 
 const router = Router();
@@ -683,9 +683,11 @@ router.delete("/crms", requireManager, async (req, res) => {
   res.json({ ok: true, remaining: remaining.length });
 });
 
-// POST /api/crms/:id/resolve — crew marks their assigned case as resolved (no manager auth)
-router.post("/crms/:id/resolve", async (req, res) => {
-  const current = await loadCase(req.params.id);
+// POST /api/crms/:id/resolve — crew marks their assigned case as resolved (no manager auth
+// required — requireCrew is enough: any authenticated crew session, not just managers)
+router.post("/crms/:id/resolve", requireCrew, async (req, res) => {
+  const { id } = req.params as { id: string };
+  const current = await loadCase(id);
   if (!current) { res.status(404).json({ error: "Not found" }); return; }
 
   const { vehicleId, unitCode } = req.body as { vehicleId?: string; unitCode?: string };
@@ -713,8 +715,9 @@ router.post("/crms/:id/resolve", async (req, res) => {
 });
 
 // POST /api/crms/:id/comment — crew adds a field comment
-router.post("/crms/:id/comment", async (req, res) => {
-  const current = await loadCase(req.params.id);
+router.post("/crms/:id/comment", requireCrew, async (req, res) => {
+  const { id } = req.params as { id: string };
+  const current = await loadCase(id);
   if (!current) { res.status(404).json({ error: "Not found" }); return; }
 
   const { vehicleId, unitCode, text } = req.body as { vehicleId?: string; unitCode?: string; text?: string };

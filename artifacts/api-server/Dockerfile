@@ -16,7 +16,13 @@ RUN pnpm --filter @workspace/api-server run build
 
 FROM node:20-slim AS runtime
 WORKDIR /app
-COPY --from=builder /app /app
+
+# Run as a non-root user rather than the default root — node:20-slim already
+# ships a low-privilege "node" user/group (uid/gid 1000). --chown here (not a
+# separate `RUN chown -R /app`) sets ownership as part of the copy itself —
+# a follow-up recursive chown over node_modules took ~4 minutes in testing.
+COPY --from=builder --chown=node:node /app /app
+USER node
 
 ENV NODE_ENV=production
 ENV PORT=8080

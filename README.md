@@ -147,6 +147,7 @@ no separate dev server, just open them once step 1 is running.
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
 | `MINIO_BUCKET` | Bucket name for inspection photos (e.g. `cwd-inspections`) |
 | `PORT` | Port the API server listens on |
+| `GOOGLE_MAPS_API_KEY` | Client-facing Google Maps JS API key, embedded in the `/manager` dashboard page — optional; the map just won't load if unset |
 
 `roster-dashboard`, `apa`, and `inspector` need no env vars of their own — they call the API
 same-origin via relative paths. Same for `/crew` and `/manager` — served directly by
