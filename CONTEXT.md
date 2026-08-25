@@ -60,7 +60,7 @@ Full implementation lives in `phRoster.ts`'s `autoAllocate()`. Key rules:
 - Keep all past leave/override/swap/duty history intact and fully resolvable — nothing reads `active` when looking up *historical* records by id or name (e.g. PH rotation's Rule A/B lookback reads `ph_roster_ref`, which is name-keyed with no FK to `officers`, so it's unaffected either way).
 - Remain visible (and reactivatable via the same `PUT` endpoint, `{ active: true }`) on the Officers admin page — the only place in the UI that shows inactive officers by design.
 
-There is currently no way to truly hard-delete an officer via the API — a stray duplicate/typo entry with zero history just becomes permanently inactive rather than removable. Deciding whether officer deletion should ever cascade or reassign related records instead of blocking/deactivating is still an open question (see `.scratch/postgres-migration-fixes/issues/05-officer-delete-fk-restrict.md`).
+There is currently no way to truly hard-delete an officer via the API — a stray duplicate/typo entry with zero history just becomes permanently inactive rather than removable. This is accepted as out of scope, not an open question: soft-delete was the deliberate decision (see `.scratch/postgres-migration-fixes/issues/05-officer-delete-fk-restrict.md`), and a hard-delete path for genuine zero-history duplicates isn't worth its own admin affordance unless it becomes a real nuisance in practice.
 
 ## Persistence
 

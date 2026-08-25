@@ -81,7 +81,7 @@ function MapClickHandler({ mode, onMapClick }: MapClickHandlerProps) {
 // ── Team Select Screen ────────────────────────────────────────────────────────
 
 interface TeamSelectProps {
-  onStart: (team: { vehicleNumber: string; officers: string; shift: string; teamId: string; teamName: string }) => void;
+  onStart: (team: { vehicleNumber: string; officers: string; shift: string; teamId: string; teamName: string }) => Promise<void>;
 }
 
 function TeamSelect({ onStart }: TeamSelectProps) {
@@ -92,6 +92,7 @@ function TeamSelect({ onStart }: TeamSelectProps) {
   const [manualShift, setManualShift] = useState("DAY");
   const [loading, setLoading] = useState(false);
   const [useManual, setUseManual] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/deployments/state")
@@ -102,28 +103,35 @@ function TeamSelect({ onStart }: TeamSelectProps) {
       .catch(() => {});
   }, []);
 
-  function handleStart() {
-    if (useManual || rosterTeams.length === 0) {
-      if (!manualVehicle.trim()) return;
-      onStart({
-        vehicleNumber: manualVehicle.trim().toUpperCase(),
-        officers: manualOfficers.trim(),
-        shift: manualShift,
-        teamId: "",
-        teamName: manualVehicle.trim().toUpperCase(),
-      });
-    } else {
-      if (!selectedTeam) return;
-      const veh = selectedTeam.vehicleNumber || selectedTeam.vehicleId || selectedTeam.id;
-      onStart({
-        vehicleNumber: veh,
-        officers: selectedTeam.partner,
-        shift: selectedTeam.shift,
-        teamId: selectedTeam.id,
-        teamName: `${selectedTeam.unitCode} ${veh}`.trim(),
-      });
-    }
+  async function handleStart() {
+    const team = useManual || rosterTeams.length === 0
+      ? (!manualVehicle.trim() ? null : {
+          vehicleNumber: manualVehicle.trim().toUpperCase(),
+          officers: manualOfficers.trim(),
+          shift: manualShift,
+          teamId: "",
+          teamName: manualVehicle.trim().toUpperCase(),
+        })
+      : (!selectedTeam ? null : {
+          vehicleNumber: selectedTeam.vehicleNumber || selectedTeam.vehicleId || selectedTeam.id,
+          officers: selectedTeam.partner,
+          shift: selectedTeam.shift,
+          teamId: selectedTeam.id,
+          teamName: `${selectedTeam.unitCode} ${selectedTeam.vehicleNumber || selectedTeam.vehicleId || selectedTeam.id}`.trim(),
+        });
+    if (!team) return;
+
     setLoading(true);
+    setStartError(null);
+    try {
+      await onStart(team);
+    } catch (err) {
+      setStartError(
+        err instanceof Error ? err.message : "Network error — check your connection and retry"
+      );
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -189,6 +197,12 @@ function TeamSelect({ onStart }: TeamSelectProps) {
           </div>
         )}
 
+        {startError && (
+          <div className="upload-error">
+            ⚠️ {startError}
+          </div>
+        )}
+
         <button
           className="start-btn"
           onClick={handleStart}
@@ -198,7 +212,7 @@ function TeamSelect({ onStart }: TeamSelectProps) {
             ((useManual || rosterTeams.length === 0) && !manualVehicle.trim())
           }
         >
-          {loading ? "Starting…" : "Start Inspection"}
+          {loading ? "Starting…" : startError ? "Retry" : "Start Inspection"}
         </button>
       </div>
     </div>
@@ -227,7 +241,10 @@ function InspectionScreen({ inspectionId, vehicleNumber, officers, shift, onComp
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  const [lineSaving, setLineSaving] = useState(false);
+  const [lineError, setLineError] = useState<string | null>(null);
   const [drawColor, setDrawColor] = useState("#e74c3c");
   const [gpsPos, setGpsPos] = useState<[number, number] | null>(null);
   const [locating, setLocating] = useState(false);
@@ -384,16 +401,35 @@ function InspectionScreen({ inspectionId, vehicleNumber, officers, shift, onComp
       setDrawPoints([]);
       return;
     }
-    const res = await fetch(`/api/inspections/${inspectionId}/lines`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ points: drawPoints, color: drawColor }),
-    });
-    if (res.ok) {
-      const line: InspectionLine = await res.json();
-      setLines((l) => [...l, line]);
+    setLineSaving(true);
+    setLineError(null);
+    try {
+      const res = await fetch(`/api/inspections/${inspectionId}/lines`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ points: drawPoints, color: drawColor }),
+      });
+      if (res.ok) {
+        const line: InspectionLine = await res.json();
+        setLines((l) => [...l, line]);
+        setDrawPoints([]);
+      } else {
+        let msg = `Could not save line (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {
+          // ignore parse errors
+        }
+        setLineError(msg);
+      }
+    } catch (err) {
+      setLineError(
+        err instanceof Error ? err.message : "Network error — check your connection and retry"
+      );
+    } finally {
+      setLineSaving(false);
     }
-    setDrawPoints([]);
   }
 
   function stopLiveTracking() {
@@ -407,12 +443,28 @@ function InspectionScreen({ inspectionId, vehicleNumber, officers, shift, onComp
   async function handleSubmit() {
     stopLiveTracking();
     setSubmitting(true);
+    setSubmitError(null);
     try {
-      await fetch(`/api/inspections/${inspectionId}/complete`, {
+      const res = await fetch(`/api/inspections/${inspectionId}/complete`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
       });
-      setDone(true);
+      if (res.ok) {
+        setDone(true);
+      } else {
+        let msg = `Could not submit inspection (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch {
+          // ignore parse errors
+        }
+        setSubmitError(msg);
+      }
+    } catch (err) {
+      setSubmitError(
+        err instanceof Error ? err.message : "Network error — check your connection and retry"
+      );
     } finally {
       setSubmitting(false);
     }
@@ -615,25 +667,37 @@ function InspectionScreen({ inspectionId, vehicleNumber, officers, shift, onComp
               <button
                 className={`tool-btn finish-btn ${drawPoints.length < 2 ? "disabled" : ""}`}
                 onClick={finishLine}
+                disabled={lineSaving || drawPoints.length < 2}
               >
-                ✓ Finish Line
+                {lineSaving ? "Saving…" : lineError ? "Retry" : "✓ Finish Line"}
               </button>
               <button
                 className="tool-btn cancel-btn"
-                onClick={() => { setMode(null); setDrawPoints([]); }}
+                onClick={() => { setMode(null); setDrawPoints([]); setLineError(null); }}
               >
                 ✕ Cancel
               </button>
             </>
           )}
         </div>
+        {mode === "draw" && lineError && (
+          <div className="upload-error">
+            ⚠️ {lineError}
+          </div>
+        )}
+
+        {submitError && (
+          <div className="upload-error">
+            ⚠️ {submitError}
+          </div>
+        )}
 
         <button
           className="submit-btn"
           onClick={handleSubmit}
           disabled={submitting}
         >
-          {submitting ? "Submitting…" : "Submit ✓"}
+          {submitting ? "Submitting…" : submitError ? "Retry Submit" : "Submit ✓"}
         </button>
       </div>
     </div>
@@ -772,7 +836,16 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(team),
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      let msg = `Could not start inspection (${res.status})`;
+      try {
+        const body = await res.json();
+        if (body?.error) msg = body.error;
+      } catch {
+        // ignore parse errors
+      }
+      throw new Error(msg);
+    }
     const insp = await res.json();
     setState({
       screen: "inspection",

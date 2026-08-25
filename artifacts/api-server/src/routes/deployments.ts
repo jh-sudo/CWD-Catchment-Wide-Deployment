@@ -18,7 +18,7 @@ import {
 import { sendToManagers, broadcastToCrew, sendToCrewVehicle } from "./push";
 import { getRadarStatus } from "../radar-monitor.js";
 import { logger } from "../lib/logger";
-import { requireCrew } from "./auth";
+import { requireCrew, requireManager } from "./auth";
 
 const router = Router();
 
@@ -692,7 +692,7 @@ function weatherEmoji(weather: string | null): string {
   return "";
 }
 
-router.get("/deployments/state", (req, res) => {
+router.get("/deployments/state", requireManager, (req, res) => {
   const etag = `"v${stateVersion}"`;
   if (req.headers["if-none-match"] === etag) {
     res.status(304).end();
@@ -716,7 +716,7 @@ router.get("/deployments/state", (req, res) => {
 });
 
 // ── Roster endpoints ──────────────────────────────────────────────────────────
-router.post("/roster/import", (req, res) => {
+router.post("/roster/import", requireManager, (req, res) => {
   const { text, merge } = req.body as { text: string; merge?: boolean };
   if (!text) { res.status(400).json({ error: "text required" }); return; }
   const teams = parseRoster(text);
@@ -744,7 +744,7 @@ router.get("/roster", (req, res) => {
   res.json({ teams: currentRoster });
 });
 
-router.delete("/roster", (req, res) => {
+router.delete("/roster", requireManager, (req, res) => {
   currentRoster = [];
   bumpState();
   persistRoster();
@@ -776,7 +776,7 @@ router.post("/roster/active-teams", (req, res) => {
 });
 
 // ── Alert endpoints ───────────────────────────────────────────────────────────
-router.post("/alert/broadcast", (req, res) => {
+router.post("/alert/broadcast", requireManager, (req, res) => {
   const { text } = req.body as { text: string };
   if (!text) { res.status(400).json({ error: "text required" }); return; }
   const extracted = extractAlertText(text);
@@ -829,7 +829,7 @@ router.post("/alert/acknowledge", requireCrew, (req, res) => {
   res.json({ success: true, count: activeAlert.acknowledgments.length });
 });
 
-router.delete("/alert", (req, res) => {
+router.delete("/alert", requireManager, (req, res) => {
   // Clears only the in-memory "current" pointer — the broadcast history in
   // deployment_alerts is intentionally not deleted (accountability record).
   activeAlert = null;
@@ -1199,7 +1199,7 @@ router.post("/deployments/swap-decline", requireCrew, (req, res) => {
   res.json({ success: true });
 });
 
-router.post("/deployments/reset", (req, res) => {
+router.post("/deployments/reset", requireManager, (req, res) => {
   deploymentEntries.clear();
   vehiclePositions.clear();
   assignments.clear();
@@ -1222,7 +1222,7 @@ router.post("/deployments/reset", (req, res) => {
 });
 
 // Deduplicate entries: keep only the latest acceptedAt per vehicle
-router.post("/deployments/deduplicate", (req, res) => {
+router.post("/deployments/deduplicate", requireManager, (req, res) => {
   const latest = new Map<string, { key: string; acceptedAt: string }>();
   for (const [key, entry] of deploymentEntries.entries()) {
     const existing = latest.get(entry.vehicleId);
@@ -1248,7 +1248,7 @@ router.post("/deployments/deduplicate", (req, res) => {
   res.json({ success: true, removed, remaining: deploymentEntries.size });
 });
 
-router.post("/deployments/assign", (req, res) => {
+router.post("/deployments/assign", requireManager, (req, res) => {
   const { vehicleId, locationId, locationName, lat, lng, assignedBy, force } = req.body as {
     vehicleId: string;
     locationId: string;
@@ -1348,7 +1348,7 @@ router.post("/deployments/assign", (req, res) => {
 });
 
 // ── Pre-assign a roster team to a location (before GPS check-in) ──────────────
-router.post("/deployments/pre-assign", (req, res) => {
+router.post("/deployments/pre-assign", requireManager, (req, res) => {
   const { vehicleId, unitCode, vehicleNumber, locationId, locationName, lat, lng, assignedBy } = req.body as {
     vehicleId: string; unitCode: string; vehicleNumber: string;
     locationId: string; locationName: string; lat: number; lng: number;
@@ -1384,13 +1384,13 @@ router.post("/deployments/pre-assign", (req, res) => {
 });
 
 // ── Clear all pending assignments (not deployed entries) ──────────────────────
-router.post("/deployments/clear-assignments", (req, res) => {
+router.post("/deployments/clear-assignments", requireManager, (req, res) => {
   assignments.clear();
   persist(() => db.delete(deploymentAssignmentsTable), "clear assignments");
   res.json({ success: true });
 });
 
-router.post("/deployments/assignments/respond", async (req, res) => {
+router.post("/deployments/assignments/respond", requireManager, async (req, res) => {
   const { vehicleId, vehicleNumber, unitCode, partner, shift, accepted, eta, etaMinutes, fromRoad } = req.body as {
     vehicleId: string;
     vehicleNumber?: string;
@@ -1457,7 +1457,7 @@ router.get("/deployments/locations", (req, res) => {
   res.json({ locations: getActiveLocations() });
 });
 
-router.post("/deployments/locations", (req, res) => {
+router.post("/deployments/locations", requireManager, (req, res) => {
   const { name, address, lat, lng } = req.body as { name: string; address: string; lat: number; lng: number };
   if (!name || lat == null || lng == null) {
     res.status(400).json({ error: "bad_request", message: "name, lat and lng are required" });
@@ -1472,7 +1472,7 @@ router.post("/deployments/locations", (req, res) => {
   res.json({ success: true, location });
 });
 
-router.put("/deployments/locations/:id", (req, res) => {
+router.put("/deployments/locations/:id", requireManager, (req, res) => {
   const { id } = req.params as { id: string };
   if (!customLocations.has(id)) {
     res.status(404).json({ error: "not_found", message: "Location not found" });
@@ -1499,7 +1499,7 @@ router.put("/deployments/locations/:id", (req, res) => {
 });
 
 // ── Rain-Path Auto-Assign (server fetches NEA rainfall, scores locations) ─────
-router.post("/deployments/rain-auto-assign", async (_req, res) => {
+router.post("/deployments/rain-auto-assign", requireManager, async (_req, res) => {
   const CLUSTERS: Record<string, string> = { BU: "A", PJ: "A", WK: "A", CP: "B", KG: "B" };
   const clusterOf = (region: string) => CLUSTERS[region] ?? region;
   const regionOf  = (unitCode: string) => unitCode.match(/^([A-Za-z]+)/)?.[1].toUpperCase() ?? "";
@@ -1609,7 +1609,7 @@ router.post("/deployments/rain-auto-assign", async (_req, res) => {
   });
 });
 
-router.post("/deployments/auto-assign", (req, res) => {
+router.post("/deployments/auto-assign", requireManager, (req, res) => {
   // Extract alphabetic prefix from unit code → region (e.g. "BU3" → "BU")
   const regionOf = (unitCode: string) =>
     unitCode.match(/^([A-Za-z]+)/)?.[1].toUpperCase() ?? "";
@@ -1713,7 +1713,7 @@ router.post("/deployments/auto-assign", (req, res) => {
   });
 });
 
-router.delete("/deployments/locations/:id", (req, res) => {
+router.delete("/deployments/locations/:id", requireManager, (req, res) => {
   const { id } = req.params as { id: string };
   if (!customLocations.has(id)) {
     res.status(404).json({ error: "not_found", message: "Location not found" });

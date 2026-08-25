@@ -228,9 +228,11 @@ async function run(): Promise<void> {
   }
 
   // ── 6. Clean up ────────────────────────────────────────────────────────────
+  // Scoped delete — removes exactly this test inspection, not every
+  // inspection in the environment (DELETE /api/inspections is bulk-only).
   console.log("\nStep 6: clean up test inspection");
-  const delRes = await fetch(`${BASE}/api/inspections`, { method: "DELETE" });
-  await assertOk(delRes, "DELETE /api/inspections");
+  const delRes = await fetch(`${BASE}/api/inspections/${id}`, { method: "DELETE" });
+  await assertOk(delRes, `DELETE /api/inspections/${id}`);
   ok("Test inspection deleted");
 
   console.log("\n✅  All checks passed.\n");

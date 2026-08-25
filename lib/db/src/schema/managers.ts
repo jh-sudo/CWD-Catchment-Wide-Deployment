@@ -32,6 +32,17 @@ export const managersTable = pgTable(
   },
   (table) => [
     check("managers_role_check", sql`${table.role} IN ('admin', 'manager', 'ic', 'crew')`),
+    // Backstops the mfa/setup -> mfa/verify-setup two-step flow in auth.ts:
+    // mfaEnabled is only ever flipped true alongside mfaSecret being set
+    // (see verify-setup), and mfaSecret is only ever cleared alongside
+    // mfaEnabled being flipped false (see mfa/disable and
+    // managers/:id/disable-mfa) — this constraint just makes that
+    // invariant unbreakable at the DB level too, so a row can never end up
+    // requiring an MFA code that can never be verified.
+    check(
+      "managers_mfa_enabled_requires_secret_check",
+      sql`${table.mfaEnabled} = false OR ${table.mfaSecret} IS NOT NULL`,
+    ),
   ],
 );
 

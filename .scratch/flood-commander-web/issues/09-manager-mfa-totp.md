@@ -98,12 +98,17 @@ a locked-out admin).
 
 ## Rollout policy
 
-Recommend **optional/opt-in first**, not a forced cutover — the 46 real
-manager accounts backfilled during the original migration have no MFA today,
-and flipping `mfa_enabled` on for everyone at once would lock all of them
-out simultaneously. Build the capability, let accounts self-enroll, decide
-separately (an organizational policy call, not this ticket's job) whether
-and when to make it mandatory.
+Originally recommended **optional/opt-in first**, deferring the
+mandatory-or-not call as "an organizational policy call, not this ticket's
+job." **Superseded 2026-08-20**: user made that call — MFA is mandatory for
+admin/manager/ic, specifically to satisfy the SSP `ac-2` requirement rather
+than just make the capability available. `/manager/auth/login` now forces
+an unenrolled admin/manager/ic account straight into setup (a new pane on
+the login page) before granting a session at all; no opt-out, no session
+until verify-setup succeeds. Applies to every existing account on its next
+login, not just new ones — the 46 real backfilled manager accounts will all
+hit this the first time they sign in after this deploys. The dashboard's 🛡️
+button remains for voluntary re-linking after initial enrollment.
 
 ## Out of scope for this ticket
 

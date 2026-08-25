@@ -1,9 +1,19 @@
 import { Router } from "express";
 import { requireManager, getManager } from "./auth";
+import { logger } from "../lib/logger";
 
 const router = Router();
 
-const MAPS_KEY = "AIzaSyDmAHX3VjJMtpkZd2iassstA9g8GGVNM7A";
+// Client-facing Google Maps JS API key — not a secret leak per se (it's
+// embedded in a <script src> shipped straight to the browser below), but
+// hardcoding it made per-environment keys and rotation harder than an env
+// var would. No hard fail if unset: the map on /manager degrading (the
+// script tag just won't load) is preferable to the whole dashboard being
+// unusable in an environment where nobody's set this up yet.
+const MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY ?? "";
+if (!MAPS_KEY) {
+  logger.warn("[manager] GOOGLE_MAPS_API_KEY is not set — the map on /manager will not load");
+}
 
 // ── Manager service worker (must be served from same origin as dashboard) ──────
 router.get("/sw-manager.js", (_req, res) => {

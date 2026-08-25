@@ -474,38 +474,69 @@ inspectionsRouter.get("/inspections/summary", async (req, res) => {
   res.send(text);
 });
 
-// DELETE /api/inspections — clear inspections (?mode=completed clears only completed, default all)
+// Deletes the given inspections' MinIO photo objects (best-effort) and rows
+// (transactional). Shared by the bulk clear route and the scoped
+// single-inspection delete below.
+async function deleteInspectionsByIds(toDelete: string[]): Promise<void> {
+  if (toDelete.length === 0) return;
+
+  const photos = await db
+    .select()
+    .from(inspectionPhotosTable)
+    .where(inArray(inspectionPhotosTable.inspectionId, toDelete));
+  // Clean up uploaded photo objects from MinIO
+  for (const photo of photos) {
+    if (!photo.filename) continue;
+    try {
+      await deleteObject(photo.filename);
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.delete(inspectionPhotosTable).where(inArray(inspectionPhotosTable.inspectionId, toDelete));
+    await tx.delete(inspectionLinesTable).where(inArray(inspectionLinesTable.inspectionId, toDelete));
+    await tx.delete(inspectionsTable).where(inArray(inspectionsTable.id, toDelete));
+  });
+}
+
+// DELETE /api/inspections — clear inspections in bulk. Requires an explicit
+// ?mode=all or ?mode=completed — no default, since defaulting to "all" made
+// this the only delete route AND a foot-gun (a caller expecting a scoped
+// delete, like the old test-photo-remarks.ts cleanup step, would silently
+// wipe every inspection instead of erroring). Use DELETE /inspections/:id
+// for a single inspection.
 inspectionsRouter.delete("/inspections", async (req, res) => {
-  const mode = (req.query.mode as string | undefined) ?? "all";
+  const mode = req.query.mode as string | undefined;
+  if (mode !== "all" && mode !== "completed") {
+    res.status(400).json({ error: "mode=all or mode=completed is required" });
+    return;
+  }
 
   const rows = mode === "completed"
     ? await db.select().from(inspectionsTable).where(eq(inspectionsTable.status, "completed"))
     : await db.select().from(inspectionsTable);
   const toDelete = rows.map((r) => r.id);
 
-  if (toDelete.length > 0) {
-    const photos = await db
-      .select()
-      .from(inspectionPhotosTable)
-      .where(inArray(inspectionPhotosTable.inspectionId, toDelete));
-    // Clean up uploaded photo objects from MinIO
-    for (const photo of photos) {
-      if (!photo.filename) continue;
-      try {
-        await deleteObject(photo.filename);
-      } catch {
-        // Best-effort cleanup
-      }
-    }
-
-    await db.transaction(async (tx) => {
-      await tx.delete(inspectionPhotosTable).where(inArray(inspectionPhotosTable.inspectionId, toDelete));
-      await tx.delete(inspectionLinesTable).where(inArray(inspectionLinesTable.inspectionId, toDelete));
-      await tx.delete(inspectionsTable).where(inArray(inspectionsTable.id, toDelete));
-    });
-  }
+  await deleteInspectionsByIds(toDelete);
 
   res.json({ deleted: toDelete.length, mode });
+});
+
+// DELETE /api/inspections/:id — remove exactly one inspection (row + MinIO
+// photos + lines), leaving all others untouched.
+inspectionsRouter.delete("/inspections/:id", async (req, res) => {
+  const { id } = req.params as { id: string };
+  const [row] = await db.select().from(inspectionsTable).where(eq(inspectionsTable.id, id));
+  if (!row) {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+
+  await deleteInspectionsByIds([id]);
+
+  res.json({ deleted: 1 });
 });
 
 // GET /inspections/:id — detail

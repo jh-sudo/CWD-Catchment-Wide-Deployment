@@ -33,6 +33,52 @@ function makeAuthRateLimit() {
   });
 }
 
+// Rate limiter for the X-Manager-Pin header bypass built into requireManager
+// itself (see below) — as opposed to makeAuthRateLimit(), which only guards
+// the dedicated /api/manager-pin/check endpoint. Without this, the PIN could
+// be brute-forced through any requireManager-gated route by varying the
+// header on each request. Tighter than makeAuthRateLimit()'s 10/15min —
+// this bypass has no username/officerId to pair with the PIN, so 3 wrong
+// guesses is as far as an attacker gets before the window locks them out.
+//
+// skipSuccessfulRequests is essential here, unlike the endpoint-specific
+// limiters above: a legitimate mobile caller sends this header on *every*
+// manager-gated request, not just once to "log in" — if correct-PIN requests
+// counted against the limit the same as wrong ones, normal API traffic would
+// exhaust it and lock the caller out. Only responses that end up failing
+// (wrong PIN and no valid session cookie either) count toward the 3-per-
+// 15-min budget.
+const managerPinBypassRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many attempts — try again later" },
+});
+
+// Per-account TOTP verify limiter — makeAuthRateLimit() above is per-IP only,
+// so a distributed attacker (many source IPs) gets a fresh 10-attempt budget
+// on every IP and could still brute-force a 6-digit code across enough of
+// them. Keyed on the account being verified against instead of the caller's
+// IP, so the budget is shared no matter how many IPs an attacker spreads
+// across. Low priority on its own (the 30s code-validity window already
+// narrows this a lot) — this is a backstop alongside the per-IP limiter, not
+// a replacement for it. skipSuccessfulRequests for the same reason as the
+// PIN bypass limiter above: a correct code is the expected outcome and
+// shouldn't eat into the budget, only wrong ones should.
+function makeAccountRateLimit(accountIdOf: (req: Request) => string | undefined) {
+  return rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    keyGenerator: req => accountIdOf(req) ?? req.ip ?? "unknown",
+    message: { error: "Too many attempts — try again later" },
+  });
+}
+
 declare module "express-session" {
   interface SessionData {
     managerId?: string;
@@ -54,6 +100,20 @@ declare global {
 }
 
 const router = Router();
+
+// Regenerates the session ID in place (promisified — express-session's
+// regenerate() is callback-only). Call this at every trust-boundary crossing
+// (pre-auth → pending-MFA, pending-MFA → authenticated, pre-auth →
+// authenticated) so a session ID established before login can never carry
+// forward into a privileged state — the standard session-fixation defense.
+// regenerate() replaces req.session with a fresh object/ID, so any pending
+// state the caller needs (e.g. pendingMfaManagerId) must be re-set *after*
+// awaiting this, not before.
+function regenerateSession(req: Request): Promise<void> {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate(err => (err ? reject(err) : resolve()));
+  });
+}
 
 export type AccountRole = "admin" | "manager" | "ic" | "crew";
 
@@ -162,10 +222,23 @@ seedAdmin();
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 export function requireManager(req: Request, res: Response, next: NextFunction) {
-  // Allow mobile API callers that send X-Manager-Pin header
+  // Allow mobile API callers that send X-Manager-Pin header — rate-limited
+  // (see managerPinBypassRateLimit above) so the PIN can't be brute-forced
+  // through this bypass. A wrong/missing pin header still falls through to
+  // the session check below, same as before.
   const pinHeader = req.headers["x-manager-pin"] as string | undefined;
-  if (pinHeader && pinHeader === appConfig.managerPin) { next(); return; }
+  if (pinHeader) {
+    managerPinBypassRateLimit(req, res, () => {
+      if (pinHeader === appConfig.managerPin) { next(); return; }
+      requireManagerSession(req, res, next);
+    });
+    return;
+  }
 
+  requireManagerSession(req, res, next);
+}
+
+function requireManagerSession(req: Request, res: Response, next: NextFunction) {
   const mid = req.session?.managerId;
   if (!mid) {
     // Redirect browser GET requests to login page; return JSON for API calls
@@ -232,13 +305,27 @@ router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
   if (!m.approved) {
     res.status(403).json({ error: "Account pending approval", pending: true }); return;
   }
+  // Credentials just verified — regenerate before granting any session state
+  // (pending-MFA or fully authenticated) so a pre-existing session ID can't
+  // ride along into a privileged one.
+  await regenerateSession(req);
   if (m.mfaEnabled) {
     // Password alone isn't enough — hold the session in a pending state
     // (not authenticated: requireManager etc. only ever look at
     // session.managerId) until /manager/auth/mfa/challenge confirms a TOTP
     // code from the same login attempt.
     req.session.pendingMfaManagerId = m.id;
-    res.json({ success: true, mfaRequired: true }); return;
+    res.json({ success: true, mfaStep: "challenge" }); return;
+  }
+  if (isMfaEligibleRole(m.role)) {
+    // Mandatory enrollment (SSP ac-2) — admin/manager/ic accounts that
+    // haven't set up MFA yet don't get a session until they do. Same
+    // pending mechanism as the challenge branch above; which second step a
+    // pending session needs is derived from the account's own mfaEnabled at
+    // resolve-time (see resolveMfaEnrollmentSubject below), not tracked as
+    // a separate flag here.
+    req.session.pendingMfaManagerId = m.id;
+    res.json({ success: true, mfaStep: "enroll", username: m.username }); return;
   }
   req.session.managerId = m.id;
   res.json({
@@ -256,7 +343,11 @@ router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
 // the same as every other credential check: a 6-digit code is a much
 // smaller brute-force space than a password, so unlimited attempts would be
 // a real hole even with the 30s-per-step validity window.
-router.post("/manager/auth/mfa/challenge", makeAuthRateLimit(), async (req, res) => {
+router.post(
+  "/manager/auth/mfa/challenge",
+  makeAuthRateLimit(),
+  makeAccountRateLimit(req => req.session.pendingMfaManagerId),
+  async (req, res) => {
   const pendingId = req.session.pendingMfaManagerId;
   if (!pendingId) {
     res.status(400).json({ error: "No pending MFA challenge — sign in again" }); return;
@@ -272,7 +363,10 @@ router.post("/manager/auth/mfa/challenge", makeAuthRateLimit(), async (req, res)
   if (!code || !(await verifyMfaCode(code, decryptMfaSecret(m.mfaSecret)))) {
     res.status(401).json({ error: "Incorrect code" }); return;
   }
-  delete req.session.pendingMfaManagerId;
+  // Crossing the pending-MFA → authenticated boundary — regenerate first.
+  // The fresh session has no pendingMfaManagerId, so there's nothing left to
+  // delete.
+  await regenerateSession(req);
   req.session.managerId = m.id;
   res.json({
     success: true,
@@ -477,12 +571,38 @@ router.post("/manager/auth/change-password", requireManager, async (req, res) =>
 });
 
 // ── MFA (TOTP) — admin/manager/ic only ──────────────────────────────────────
-// See .scratch/flood-commander-web/issues/09-manager-mfa-totp.md. Opt-in:
-// building the capability here doesn't flip mfa_enabled for anyone — each
-// account enrolls itself via these three calls (setup → verify-setup, in
-// that order), and disables itself the same way it enrolled.
-router.post("/manager/auth/mfa/setup", requireManager, async (req, res) => {
-  const m = managers.find(a => a.id === req.session.managerId);
+// See .scratch/flood-commander-web/issues/09-manager-mfa-totp.md. Mandatory
+// for admin/manager/ic (SSP ac-2): /manager/auth/login forces an unenrolled
+// account through setup/verify-setup below before granting a real session
+// (see the "enroll" branch there); the dashboard's 🛡️ button reaches the
+// same two endpoints afterwards for voluntary re-enrollment/relinking.
+//
+// Who's allowed to call setup/verify-setup for themselves:
+//  - A full, already-authenticated session (self-service re-enroll).
+//  - A *pending* session from /manager/auth/login — but ONLY while that
+//    account's mfaEnabled is still false. A pending session for an
+//    already-enrolled account (the "challenge" case, not "enroll") must
+//    NOT be allowed here — otherwise anyone who knows the password could
+//    mint a brand-new secret instead of proving they hold the device
+//    already enrolled, silently bypassing the real second factor entirely.
+function resolveMfaEnrollmentSubject(req: Request): ManagerAccount | undefined {
+  if (req.session.managerId) {
+    const m = managers.find(a => a.id === req.session.managerId);
+    return m && m.approved ? m : undefined;
+  }
+  if (req.session.pendingMfaManagerId) {
+    const m = managers.find(a => a.id === req.session.pendingMfaManagerId);
+    if (m && m.approved && !m.mfaEnabled) return m;
+  }
+  return undefined;
+}
+
+// Rate-limited like every other credential-adjacent endpoint: since this is
+// now reachable off a pending (not-yet-fully-authenticated) session too —
+// not just an established one — it's guessable-target-shaped in a way the
+// old purely-self-service version wasn't.
+router.post("/manager/auth/mfa/setup", makeAuthRateLimit(), async (req, res) => {
+  const m = resolveMfaEnrollmentSubject(req);
   if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
   if (!isMfaEligibleRole(m.role)) {
     res.status(403).json({ error: "MFA is not available for crew accounts" }); return;
@@ -500,8 +620,12 @@ router.post("/manager/auth/mfa/setup", requireManager, async (req, res) => {
   res.json({ success: true, secret, otpauthUrl, qrCodeDataUrl: await mfaQrCodeDataUrl(otpauthUrl) });
 });
 
-router.post("/manager/auth/mfa/verify-setup", requireManager, async (req, res) => {
-  const m = managers.find(a => a.id === req.session.managerId);
+router.post(
+  "/manager/auth/mfa/verify-setup",
+  makeAuthRateLimit(),
+  makeAccountRateLimit(req => resolveMfaEnrollmentSubject(req)?.id),
+  async (req, res) => {
+  const m = resolveMfaEnrollmentSubject(req);
   if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
   const { code } = req.body as { code?: string };
   if (!m.mfaSecret) {
@@ -511,6 +635,26 @@ router.post("/manager/auth/mfa/verify-setup", requireManager, async (req, res) =
     res.status(401).json({ error: "Incorrect code" }); return;
   }
   await updateManager(m.id, { mfaEnabled: true });
+
+  // A pending (not-yet-authenticated) enrollment is now confirmed — promote
+  // it to a real session, the same way /mfa/challenge does for accounts
+  // that were already enrolled. Already-authenticated self-service
+  // re-enrollment (session.managerId already set) has nothing to promote.
+  if (!req.session.managerId && req.session.pendingMfaManagerId === m.id) {
+    // Crossing the pending-enrollment → authenticated boundary — regenerate
+    // first, same as the challenge (already-enrolled) path above.
+    await regenerateSession(req);
+    req.session.managerId = m.id;
+    res.json({
+      success: true,
+      role: m.role,
+      username: m.username,
+      officerId: m.officerId,
+      officerName: m.officerName,
+      catchments: m.catchments,
+    });
+    return;
+  }
   res.json({ success: true });
 });
 
@@ -631,6 +775,9 @@ router.post("/api/crew/auth/login", makeAuthRateLimit(), async (req, res) => {
   if (!m.approved) {
     res.status(403).json({ error: "Crew access not yet set up for this officer — ask an admin" }); return;
   }
+  // Same pre-auth → authenticated boundary as /manager/auth/login — regenerate
+  // before granting the session.
+  await regenerateSession(req);
   req.session.managerId = m.id;
   res.json({ success: true, officerId: m.officerId, officerName: m.officerName });
 });
@@ -763,6 +910,20 @@ const LOGIN_HTML = /* html */`<!DOCTYPE html>
     <input id="mfa-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
     <button id="mfa-btn" onclick="doMfaChallenge()">Verify</button>
   </div>
+
+  <!-- MFA enrollment pane — shown instead of the dashboard when this account doesn't have MFA set up yet (mandatory for admin/manager/ic) -->
+  <div class="pane" id="pane-mfa-enroll">
+    <div class="err" id="mfa-enroll-err"></div>
+    <p class="sub" style="margin-bottom:14px;">Two-factor authentication is required for this account. Scan this with an authenticator app (Microsoft/Google Authenticator, etc.), or choose "enter a setup key" and type the code below.</p>
+    <div style="text-align:center;margin-bottom:12px;">
+      <img id="mfa-enroll-qr" alt="MFA setup QR code" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px;" />
+    </div>
+    <label style="margin-bottom:4px;">Setup key</label>
+    <div id="mfa-enroll-secret" style="font-family:monospace;font-size:13px;letter-spacing:1px;word-break:break-all;background:#0f1117;border:1px solid #2a2d3a;border-radius:7px;padding:9px 11px;margin-bottom:16px;"></div>
+    <label for="mfa-enroll-code">Enter the 6-digit code it shows</label>
+    <input id="mfa-enroll-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
+    <button id="mfa-enroll-btn" onclick="doMfaEnrollVerify()">Confirm &amp; Continue</button>
+  </div>
 </div>
 
 <script>
@@ -783,16 +944,49 @@ async function doLogin() {
     const r = await fetch('/manager/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ username: user, password: pass }) });
     const d = await r.json();
     if (!r.ok) { err.textContent = d.error || 'Login failed.'; err.style.display = 'block'; return; }
-    if (d.mfaRequired) {
+    if (d.mfaStep === 'challenge') {
       document.querySelector('.tabs').style.display = 'none';
       document.getElementById('pane-login').classList.remove('active');
       document.getElementById('pane-mfa').classList.add('active');
       document.getElementById('mfa-code').focus();
       return;
     }
+    if (d.mfaStep === 'enroll') {
+      document.querySelector('.tabs').style.display = 'none';
+      document.getElementById('pane-login').classList.remove('active');
+      document.getElementById('pane-mfa-enroll').classList.add('active');
+      await startMfaEnrollment();
+      return;
+    }
     window.location.href = '/manager';
   } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
   finally { btn.disabled = false; btn.textContent = 'Sign In'; }
+}
+async function startMfaEnrollment() {
+  const err = document.getElementById('mfa-enroll-err');
+  err.style.display = 'none';
+  try {
+    const r = await fetch('/manager/auth/mfa/setup', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || 'Could not start MFA setup.'; err.style.display = 'block'; return; }
+    document.getElementById('mfa-enroll-qr').src = d.qrCodeDataUrl;
+    document.getElementById('mfa-enroll-secret').textContent = d.secret;
+  } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
+}
+async function doMfaEnrollVerify() {
+  const btn = document.getElementById('mfa-enroll-btn');
+  const err = document.getElementById('mfa-enroll-err');
+  const code = document.getElementById('mfa-enroll-code').value.trim();
+  err.style.display = 'none';
+  if (!/^[0-9]{6}$/.test(code)) { err.textContent = 'Enter the 6-digit code it shows.'; err.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Verifying…';
+  try {
+    const r = await fetch('/manager/auth/mfa/verify-setup', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ code }) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || 'Incorrect code.'; err.style.display = 'block'; return; }
+    window.location.href = '/manager';
+  } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
+  finally { btn.disabled = false; btn.textContent = 'Confirm & Continue'; }
 }
 async function doMfaChallenge() {
   const btn = document.getElementById('mfa-btn');
@@ -832,6 +1026,7 @@ document.addEventListener('keydown', e => {
   const pane = document.querySelector('.pane.active').id;
   if (pane === 'pane-login') doLogin();
   else if (pane === 'pane-mfa') doMfaChallenge();
+  else if (pane === 'pane-mfa-enroll') doMfaEnrollVerify();
   else doRegister();
 });
 </script>
