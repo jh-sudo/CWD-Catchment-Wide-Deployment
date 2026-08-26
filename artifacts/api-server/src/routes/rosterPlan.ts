@@ -170,6 +170,11 @@ interface RosterConfigShape {
   teamCount: 20 | 24 | 28;
   cycleStartDate: string;
   maintenanceVehicles: string[];
+  // Minimum on-duty strength inputs (see rosterConfigTable) — optional,
+  // buildSummary() falls back to 3 / 3 / 40 when unset.
+  weekendPD?: number;
+  weekendDAY?: number;
+  weekdayMinStrength?: number;
 }
 
 async function loadConfig(): Promise<RosterConfigShape> {
@@ -179,6 +184,9 @@ async function loadConfig(): Promise<RosterConfigShape> {
     teamCount: (row?.teamCount as 20 | 24 | 28) ?? 20,
     cycleStartDate: row?.cycleStartDate ?? "2025-01-06",
     maintenanceVehicles: vehicles.map((v) => v.vehicle),
+    weekendPD: row?.weekendPD ?? undefined,
+    weekendDAY: row?.weekendDay ?? undefined,
+    weekdayMinStrength: row?.weekdayMinStrength ?? undefined,
   };
 }
 
@@ -186,10 +194,23 @@ async function saveConfig(config: RosterConfigShape): Promise<void> {
   await db.transaction(async (tx) => {
     await tx
       .insert(rosterConfigTable)
-      .values({ id: 1, teamCount: config.teamCount, cycleStartDate: config.cycleStartDate })
+      .values({
+        id: 1,
+        teamCount: config.teamCount,
+        cycleStartDate: config.cycleStartDate,
+        weekendPD: config.weekendPD ?? null,
+        weekendDay: config.weekendDAY ?? null,
+        weekdayMinStrength: config.weekdayMinStrength ?? null,
+      })
       .onConflictDoUpdate({
         target: rosterConfigTable.id,
-        set: { teamCount: config.teamCount, cycleStartDate: config.cycleStartDate },
+        set: {
+          teamCount: config.teamCount,
+          cycleStartDate: config.cycleStartDate,
+          weekendPD: config.weekendPD ?? null,
+          weekendDay: config.weekendDAY ?? null,
+          weekdayMinStrength: config.weekdayMinStrength ?? null,
+        },
       });
     await tx.delete(rosterMaintenanceVehiclesTable);
     if (config.maintenanceVehicles.length > 0) {
@@ -454,8 +475,13 @@ function buildSummary(
     const m = l.match(/: (.+) \(\w+\)$/);
     return n + (m ? m[1].split(" & ").length : 0);
   }, 0);
-  // Minimum strength: weekday 4PD+8DAY+12ND=24, weekend 3PD+3DAY+6ND=12
-  const minStrength = isWeekend ? 12 : 24;
+  // Minimum strength: weekday = weekdayMinStrength (configured, default 40
+  // per the Replit source this was ported from); weekend/PH =
+  // (weekendPD + weekendDAY) × 2 (defaults 3 + 3 → 12).
+  const wkPD = config.weekendPD ?? 3;
+  const wkDAY = config.weekendDAY ?? 3;
+  const wkMin = config.weekdayMinStrength ?? 40;
+  const minStrength = isWeekend ? (wkPD + wkDAY) * 2 : wkMin;
 
   const SEP = "----------------------------------------------";
 
@@ -497,18 +523,29 @@ rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
 
 // PUT /api/roster-plan/config
 rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => {
-  const { teamCount, cycleStartDate, maintenanceVehicles } = req.body as {
+  const { teamCount, cycleStartDate, maintenanceVehicles, weekendPD, weekendDAY, weekdayMinStrength } = req.body as {
     teamCount: number;
     cycleStartDate: string;
     maintenanceVehicles?: string[];
+    weekendPD?: number;
+    weekendDAY?: number;
+    weekdayMinStrength?: number;
   };
   if (![20, 24, 28].includes(teamCount)) {
     return res.status(400).json({ error: "invalid teamCount" });
   }
+  // Partial update semantics for the strength fields — an omitted field
+  // keeps whatever was already saved (falling back to the same 3/3/40
+  // defaults buildSummary() uses) rather than being reset, so a caller that
+  // only wants to change teamCount doesn't accidentally blank these out.
+  const existing = await loadConfig();
   const config: RosterConfigShape = {
     teamCount: teamCount as 20 | 24 | 28,
     cycleStartDate,
     maintenanceVehicles: Array.isArray(maintenanceVehicles) ? maintenanceVehicles : [],
+    weekendPD: weekendPD ?? existing.weekendPD ?? 3,
+    weekendDAY: weekendDAY ?? existing.weekendDAY ?? 3,
+    weekdayMinStrength: weekdayMinStrength ?? existing.weekdayMinStrength ?? 40,
   };
   await saveConfig(config);
   const targetMonday = getMondayOf(new Date());
