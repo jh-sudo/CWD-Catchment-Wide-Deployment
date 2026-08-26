@@ -160,6 +160,40 @@ function getDutyFromCycle(unitCode: string, dateStr: string): string | null {
   return unitDuties.get(wrappedDate) ?? null;
 }
 
+// Single-officer effective-duty lookup — the same 4-tier precedence
+// (override > committed leave > cycle > generator fallback) buildSummary()
+// computes per-officer above, factored out for read-before-write callers
+// (import-brief) that need to compare one officer's *current* state against
+// an incoming value without building a whole day's report. Deliberately
+// re-derived from buildSummary's own resolution snippet rather than written
+// independently — see CONTEXT.md's "Duty resolution — 4-tier precedence"
+// note on how easy it is to under-count this to 3 tiers.
+function getOfficerEffectiveDutyForDate(
+  officer: Officer,
+  dateStr: string,
+  overridesForDate: Map<string, RosterOverride>,
+  leavesForDate: Map<string, RosterLeave>,
+  config: RosterConfigShape,
+): { duty: string; vehicle: string | null; crossPostedUnit: string | null; coveringName: string | null } {
+  const d = new Date(dateStr + "T00:00:00Z");
+  const monday = getMondayOf(d);
+  const cycleWeek = computeCycleWeek(config.cycleStartDate, monday, config.teamCount);
+  const utcDay = d.getUTCDay();
+  const dayName = DAYS_ORDER[utcDay === 0 ? 6 : utcDay - 1];
+
+  const ov = overridesForDate.get(officer.id);
+  const lv = leavesForDate.get(officer.id);
+  const computed = getDutyFromCycle(officer.unitCode, dateStr)
+    ?? getDutyForSlotInWeek(officer.teamSlot, cycleWeek, dayName, config.teamCount);
+
+  return {
+    duty: ov ? ov.duty : lv ? lv.leaveType : computed,
+    vehicle: ov?.vehicle ?? null,
+    crossPostedUnit: ov?.crossPostedToUnit ?? null,
+    coveringName: ov?.coveredByOfficerName ?? lv?.coveringOfficerName ?? null,
+  };
+}
+
 // ── Officers ─────────────────────────────────────────────────────────────────
 async function loadOfficers(): Promise<Officer[]> {
   return db.select().from(officersTable);
@@ -1443,19 +1477,50 @@ rosterPlanRouter.delete("/roster-plan/day-overrides/:id", requireManager, async 
 
 // POST /api/roster-plan/import-brief
 // Accepts a structured brief (parsed client-side) and writes overrides + leaves for the date.
+// Read-before-write: only writes an override/leave when the incoming value
+// differs from the officer's current effective state (override → leave →
+// cycle → generator, via getOfficerEffectiveDutyForDate). An unchanged
+// officer keeps their existing entry untouched — re-importing the same
+// brief twice is a no-op for anyone who hasn't actually changed.
 rosterPlanRouter.post("/roster-plan/import-brief", requireManager, async (req, res) => {
   const { date, assignments, off, leave } = req.body as {
     date: string;
-    assignments?: Array<{ unitCode: string; vehicle?: string; officers: string[]; duty: string }>;
+    assignments?: Array<{
+      unitCode: string;
+      vehicle?: string;
+      officers: string[];
+      duty: string;
+      coveringUnitCode?: string; // OT col was a unit code → cross-posted to this unit
+    }>;
     off?: string[];
-    leave?: Array<{ name: string; targetDuty?: string; leaveType: string; coveringOfficerName?: string }>;
+    leave?: Array<{
+      name: string;
+      targetDuty?: string;
+      leaveType: string;
+      coveringOfficerName?: string; // OT col was an officer name
+      coveringUnitCode?: string;    // OT col was a unit code (rare for leave rows)
+    }>;
   };
 
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid or missing date" }); return;
   }
 
+  // Caller identity for "applied by" metadata on new leave entries.
+  const callerMid = req.session?.managerId;
+  const caller = callerMid ? getManager(callerMid) : null;
+  const callerName = caller?.officerName ?? caller?.username ?? undefined;
+  const importedAt = new Date();
+
   const officers = (await loadOfficers()).filter(o => o.active);
+  const config = await loadConfig();
+  const [existingOverrides, existingLeaves] = await Promise.all([
+    loadOverridesForDates([date]),
+    loadLeavesForDates([date]),
+  ]);
+  const overridesForDate = new Map(existingOverrides.map((o) => [o.officerId, o]));
+  const leavesForDate = new Map(existingLeaves.map((l) => [l.officerId, l]));
+
   const norm      = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
   const normLoose = (s: string) => s.toLowerCase().replace(/\s+/g, "").trim();
 
@@ -1486,9 +1551,18 @@ rosterPlanRouter.post("/roster-plan/import-brief", requireManager, async (req, r
     );
   }
 
-  // Use a map to de-duplicate (last write wins per officer)
-  const ovMap = new Map<string, typeof rosterOverridesTable.$inferInsert>();
+  // Seeded with every existing override/leave for this date so an officer
+  // untouched by this import keeps their current entry — only entries that
+  // actually change get overwritten below.
+  const ovMap = new Map<string, typeof rosterOverridesTable.$inferInsert>(
+    existingOverrides.map((o) => [o.officerId, o]),
+  );
+  const lvMap = new Map<string, typeof rosterLeavesTable.$inferInsert>(
+    existingLeaves.map((l) => [l.officerId, l]),
+  );
+
   const applied: Array<{ officerName: string; duty: string; unit: string }> = [];
+  const skipped: string[] = [];
   const unmatched: string[] = [];
 
   const markUnmatched = (name: string) => {
@@ -1500,12 +1574,25 @@ rosterPlanRouter.post("/roster-plan/import-brief", requireManager, async (req, r
     for (const officerName of asgn.officers) {
       const o = findOfficer(officerName);
       if (!o) { markUnmatched(officerName); continue; }
+
+      const importVehicle = asgn.vehicle ?? null;
+      // OT col = unit code → this officer is cross-posted to that unit;
+      // fall back to inferring it from the unit the row was listed under.
+      const importXPost = asgn.coveringUnitCode
+        ?? (o.unitCode !== asgn.unitCode ? asgn.unitCode : null);
+
+      const cur = getOfficerEffectiveDutyForDate(o, date, overridesForDate, leavesForDate, config);
+      if (cur.duty === asgn.duty && cur.vehicle === importVehicle && cur.crossPostedUnit === importXPost) {
+        skipped.push(o.name);
+        continue;
+      }
+
       ovMap.set(o.id, {
         officerId: o.id, date,
         duty:       asgn.duty,
         targetDuty: asgn.duty,
-        vehicle: asgn.vehicle ?? null,
-        crossPostedToUnit: o.unitCode !== asgn.unitCode ? asgn.unitCode : null,
+        vehicle: importVehicle,
+        crossPostedToUnit: importXPost,
       });
       applied.push({ officerName: o.name, duty: asgn.duty, unit: asgn.unitCode });
     }
@@ -1515,20 +1602,29 @@ rosterPlanRouter.post("/roster-plan/import-brief", requireManager, async (req, r
   for (const name of off ?? []) {
     const o = findOfficer(name);
     if (!o) { markUnmatched(name); continue; }
+
+    const cur = getOfficerEffectiveDutyForDate(o, date, overridesForDate, leavesForDate, config);
+    if (cur.duty === "OFF") { skipped.push(o.name); continue; }
+
     ovMap.set(o.id, { officerId: o.id, date, duty: "OFF", targetDuty: "OFF" });
     applied.push({ officerName: o.name, duty: "OFF", unit: o.unitCode });
   }
 
-  // LEAVE section — also creates leave entries
-  const newLeaves: (typeof rosterLeavesTable.$inferInsert)[] = [];
+  // LEAVE section — also creates/updates leave entries
   for (const entry of leave ?? []) {
     const o = findOfficer(entry.name);
     if (!o) { markUnmatched(entry.name); continue; }
 
-    // Resolve covering officer if provided
-    const coveringOfficer = entry.coveringOfficerName
-      ? findOfficer(entry.coveringOfficerName)
-      : undefined;
+    // OT col: officer name → coveredBy; unit code → crossPostedToUnit (rare)
+    const coveringOfficer = entry.coveringOfficerName ? findOfficer(entry.coveringOfficerName) : undefined;
+    const resolvedCoveringName = coveringOfficer?.name ?? entry.coveringOfficerName ?? null;
+    const coveringUnit = entry.coveringUnitCode ?? null;
+
+    const cur = getOfficerEffectiveDutyForDate(o, date, overridesForDate, leavesForDate, config);
+    if (cur.duty === entry.leaveType && cur.coveringName === resolvedCoveringName && cur.crossPostedUnit === coveringUnit) {
+      skipped.push(o.name);
+      continue; // lvMap already has the existing leave entry — nothing to do
+    }
 
     ovMap.set(o.id, {
       officerId: o.id, date,
@@ -1536,40 +1632,63 @@ rosterPlanRouter.post("/roster-plan/import-brief", requireManager, async (req, r
       // targetDuty is intentionally omitted — the schedule API derives it from the
       // officer's cycle, so the "target" column always shows the scheduled duty,
       // not the leave code.
-      coveredByOfficerName: coveringOfficer?.name ?? entry.coveringOfficerName ?? null,
+      coveredByOfficerName: resolvedCoveringName,
+      crossPostedToUnit: coveringUnit,
     });
-    newLeaves.push({
-      id: randomUUID(),
-      officerId:          o.id,
-      officerName:        o.name,
+
+    // Preserve the existing id/appliedBy/appliedAt if this officer already
+    // had a leave entry for this date — a re-import must never erase who
+    // originally applied it or mint a new row id for the same leave.
+    const existingLv = lvMap.get(o.id);
+    lvMap.set(o.id, {
+      id: existingLv?.id ?? randomUUID(),
+      officerId:           o.id,
+      officerName:         o.name,
       date,
-      leaveType:          entry.leaveType,
-      coveringOfficerId:  coveringOfficer?.id ?? null,
-      coveringOfficerName: coveringOfficer?.name ?? entry.coveringOfficerName ?? null,
+      leaveType:           entry.leaveType,
+      coveringOfficerId:   coveringOfficer?.id ?? existingLv?.coveringOfficerId ?? null,
+      coveringOfficerName: resolvedCoveringName,
       source: "import-brief",
+      appliedBy: existingLv?.appliedBy ?? callerName ?? null,
+      appliedAt: existingLv?.appliedAt ?? importedAt,
     });
     applied.push({ officerName: o.name, duty: entry.leaveType, unit: o.unitCode });
   }
 
   const overrideValues = [...ovMap.values()];
-  const officerIds = [...ovMap.keys()];
+  const leaveValues = [...lvMap.values()];
 
   await db.transaction(async (tx) => {
-    // Clear existing overrides and leaves for this date, for the touched officers
-    if (officerIds.length > 0) {
-      await tx
-        .delete(rosterOverridesTable)
-        .where(and(inArray(rosterOverridesTable.officerId, officerIds), eq(rosterOverridesTable.date, date)));
-    }
+    // ovMap/lvMap were seeded with every existing entry for this date, so
+    // their final values are the complete, correct set — replace the whole
+    // date rather than trying to diff row-by-row.
+    await tx.delete(rosterOverridesTable).where(eq(rosterOverridesTable.date, date));
     if (overrideValues.length > 0) await tx.insert(rosterOverridesTable).values(overrideValues);
 
-    if (officerIds.length > 0) {
-      await tx
-        .delete(rosterLeavesTable)
-        .where(and(inArray(rosterLeavesTable.officerId, officerIds), eq(rosterLeavesTable.date, date)));
-    }
-    if (newLeaves.length > 0) await tx.insert(rosterLeavesTable).values(newLeaves);
+    await tx.delete(rosterLeavesTable).where(eq(rosterLeavesTable.date, date));
+    if (leaveValues.length > 0) await tx.insert(rosterLeavesTable).values(leaveValues);
   });
 
-  res.json({ success: true, applied, unmatched, date });
+  res.json({
+    success: true,
+    applied: applied.map((a) => a.officerName),
+    changed: applied.length,
+    skipped: skipped.length,
+    unmatched,
+    date,
+  });
+});
+
+// DELETE /api/roster-plan/import-brief — revert a previous import by removing
+// all overrides and leaves for the supplied date list.
+rosterPlanRouter.delete("/roster-plan/import-brief", requireManager, async (req, res) => {
+  const { dates } = req.body as { dates?: string[] };
+  if (!Array.isArray(dates) || dates.length === 0) {
+    res.status(400).json({ error: "dates array required" }); return;
+  }
+  await db.transaction(async (tx) => {
+    await tx.delete(rosterOverridesTable).where(inArray(rosterOverridesTable.date, dates));
+    await tx.delete(rosterLeavesTable).where(inArray(rosterLeavesTable.date, dates));
+  });
+  res.json({ success: true, cleared: dates.length });
 });
