@@ -46,6 +46,7 @@ interface OvRow {
   cover: string;
   vehicle: string;
   ot: string;
+  comment?: string;
   dirty: boolean;
 }
 
@@ -440,6 +441,8 @@ type CellData = {
   coveringFor?: string;
   /** catchment/unit code of the officer THIS officer is covering for — shown in the CVR column, matching the unit-code convention used elsewhere in that column */
   coveringForUnit?: string;
+  /** free-text note pinned to this cell; displayed as a purple corner triangle */
+  comment?: string;
 };
 
 // ── Subcatchment prefix → catchment name reverse map ──────────────────────────
@@ -589,10 +592,11 @@ function OverrideEditor() {
               ot: entry?.overtimeHours ?? "",
               coveringFor: entry?.coveringForOfficerName ?? "",
               coveringForUnit: entry?.coveringForUnit ?? "",
+              comment: entry?.comment ?? "",
             };
             const pendingRow = pendingRef.current[ds]?.find(p => p.id === o.id);
             next[ds][o.id] = pendingRow
-              ? { scheduledDuty: base.scheduledDuty, duty: pendingRow.duty, cover: pendingRow.cover, vehicle: pendingRow.vehicle, ot: pendingRow.ot, coveringFor: base.coveringFor, coveringForUnit: base.coveringForUnit }
+              ? { scheduledDuty: base.scheduledDuty, duty: pendingRow.duty, cover: pendingRow.cover, vehicle: pendingRow.vehicle, ot: pendingRow.ot, coveringFor: base.coveringFor, coveringForUnit: base.coveringForUnit, comment: pendingRow.comment ?? base.comment }
               : base;
           }
         }
@@ -618,6 +622,7 @@ function OverrideEditor() {
       id: o.id, name: o.name, unitCode: o.unitCode, catchment: o.catchment,
       crewPosition: o.crewPosition ?? 0,
       scheduledDuty: base.scheduledDuty, duty: base.duty, cover: base.cover, vehicle: base.vehicle, ot: base.ot,
+      comment: base.comment ?? "",
       dirty: false,
     };
     const updated: OvRow = { ...prev, [field]: value, dirty: true };
@@ -657,6 +662,7 @@ function OverrideEditor() {
               vehicle: r.vehicle || undefined,
               overtimeHours: r.ot || undefined,
               targetDuty: r.scheduledDuty || undefined,
+              comment: r.comment || undefined,
             })),
           }),
         });
@@ -969,22 +975,27 @@ function OverrideEditor() {
                                 {target || "—"}
                               </span>
                             </div>
-                            {/* ACTUAL — rounded badge, tap to pick */}
+                            {/* ACTUAL — rounded badge, tap to pick. A comment (added via the
+                                Vehicle cell's full modal below) shows as a purple corner
+                                triangle here, with the note text on hover. */}
                             <div
                               role={isReadOnly ? undefined : "button"}
                               onClick={e => openQuickPick(e, o.id, ds, "duty")}
                               className={cn(
-                                "flex items-center justify-center px-0.5 py-1.5 border-r border-gray-100 select-none",
+                                "relative flex items-center justify-center px-0.5 py-1.5 border-r border-gray-100 select-none",
                                 !isReadOnly && "cursor-pointer hover:brightness-90 active:scale-95"
                               )}
                               style={{ width: ACT_W }}>
+                              {cell?.comment && (
+                                <span style={{ position: "absolute", top: 0, right: 0, width: 0, height: 0, borderStyle: "solid", borderWidth: "0 7px 7px 0", borderColor: "transparent #9333ea transparent transparent", pointerEvents: "none" }} />
+                              )}
                               <span className={cn(
                                 "rounded-lg border text-[10px] font-bold px-1.5 py-0.5 w-full text-center",
                                 isLeave ? "bg-red-100 border-red-300 text-red-800"
                                         : cell?.coveringFor ? "bg-amber-100 border-amber-300 text-amber-800"
                                         : (OV_ACTUAL_COLORS[duty] ?? "bg-gray-50 border-gray-200 text-gray-400")
                               )}
-                                title={cell?.coveringFor ? `Covering for ${cell.coveringFor}` : undefined}>
+                                title={cell?.comment ? `💬 ${cell.comment}` : cell?.coveringFor ? `Covering for ${cell.coveringFor}` : undefined}>
                                 {duty || "—"}
                               </span>
                             </div>
@@ -1274,6 +1285,16 @@ function OverrideEditor() {
                   onChange={e => updateCell(editModal.officerId, editModal.dateStr, "ot", e.target.value)}
                   placeholder="0"
                   className="h-7 border border-gray-200 dark:border-gray-600 rounded px-2 text-[11px] bg-background text-gray-800 dark:text-gray-200 placeholder:text-gray-400 w-20"
+                />
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-[11px] text-muted-foreground w-14 shrink-0 pt-1.5">Note</span>
+                <textarea
+                  value={editModalCell.comment ?? ""}
+                  onChange={e => updateCell(editModal.officerId, editModal.dateStr, "comment", e.target.value)}
+                  placeholder="Add a note for this cell…"
+                  rows={2}
+                  className="flex-1 border border-gray-200 dark:border-gray-600 rounded px-2 py-1 text-[11px] bg-background text-gray-800 dark:text-gray-200 placeholder:text-gray-400 resize-none"
                 />
               </div>
             </div>

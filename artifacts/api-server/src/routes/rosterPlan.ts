@@ -817,6 +817,7 @@ rosterPlanRouter.get("/roster-plan/schedule", async (req, res) => {
         swappedWithOfficerName: override?.swappedWithOfficerName ?? null,
         coveringForOfficerName: coveringFor?.name ?? null,
         coveringForUnit: coveringFor?.unitCode ?? null,
+        comment: override?.comment ?? null,
       };
     });
   });
@@ -1100,6 +1101,7 @@ rosterPlanRouter.post("/roster-plan/overrides/bulk", requireManager, async (req,
       targetDuty?: string;
       vehicle?: string;
       overtimeHours?: string;
+      comment?: string;
     }>;
   };
   if (!date || !Array.isArray(entries) || entries.length === 0) {
@@ -1133,6 +1135,7 @@ rosterPlanRouter.post("/roster-plan/overrides/bulk", requireManager, async (req,
         targetDuty: e.targetDuty ?? null,
         vehicle: e.vehicle ?? null,
         overtimeHours: e.overtimeHours ?? null,
+        comment: e.comment ?? null,
         madeBy: madeBy ?? null,
         madeByName: madeByName ?? null,
         madeAt,

@@ -26,6 +26,7 @@ export default function TodaysRoster() {
   const [coverForMap, setCoverForMap] = useState<Record<string, boolean>>({});
   const [swapMap, setSwapMap] = useState<Record<string, string>>({});
   const [vehicleMap, setVehicleMap] = useState<Record<string, string>>({});
+  const [commentMap, setCommentMap] = useState<Record<string, string>>({});
   const [fetching, setFetching] = useState(true);
   const { version } = useRosterVersion();
   const touchXRef = useRef<number | null>(null);
@@ -138,6 +139,7 @@ export default function TodaysRoster() {
       const cm: Record<string, string> = {};
       const vm: Record<string, string> = {};
       const sm: Record<string, string> = {};
+      const comm: Record<string, string> = {};
       for (const d of sched.duties ?? []) {
         if (d.date?.startsWith(dateStr)) {
           dm[d.officerId] = d.duty;
@@ -146,12 +148,13 @@ export default function TodaysRoster() {
           if (d.coveredByOfficerName)   cm[d.officerId] = d.coveredByOfficerName;
           if (d.vehicle)                vm[d.officerId] = d.vehicle;
           if (d.swappedWithOfficerName) sm[d.officerId] = d.swappedWithOfficerName;
+          if (d.comment)                comm[d.officerId] = d.comment;
         }
       }
       // Stale guard: if the user has navigated to a different date since this
       // fetch started, drop the response instead of overwriting fresher state.
       if (activeLoadDateRef.current !== dateStr) return;
-      setDutyMap(dm); setTargetDutyMap(tdm); setCrossPostMap(cpm); setVehicleMap(vm); setSwapMap(sm);
+      setDutyMap(dm); setTargetDutyMap(tdm); setCrossPostMap(cpm); setVehicleMap(vm); setSwapMap(sm); setCommentMap(comm);
 
       const leaveArr = leaveRes.ok ? await leaveRes.json() : [];
       const lm: Record<string, string> = {};
@@ -341,6 +344,7 @@ export default function TodaysRoster() {
               coverForMap={coverForMap}
               swapMap={swapMap}
               vehicleMap={vehicleMap}
+              commentMap={commentMap}
               date={selectedDate}
               hideStrengthBar
               filterDuty={dutyFilter}
