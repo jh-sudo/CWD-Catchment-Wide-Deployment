@@ -271,6 +271,7 @@ interface PresetLocation {
   lng: number;
   region?: string;
   priority?: number;
+  tier?: 1 | 2;
 }
 
 interface DeploymentEntry {
@@ -333,7 +334,7 @@ function loadLocationsFromCSV(): PresetLocation[] {
     if (lines.length < 2) return [];
     const header = lines[0].toLowerCase().split(",");
     const idx = (col: string) => header.indexOf(col);
-    const ni = idx("name"), ri = idx("region"), pi = idx("priority"), lai = idx("latitude"), loi = idx("longitude");
+    const ni = idx("name"), ri = idx("region"), pi = idx("priority"), lai = idx("latitude"), loi = idx("longitude"), ti = idx("tier");
     return lines.slice(1).map(line => {
       const c = line.split(",");
       const name = c[ni]?.trim() ?? "";
@@ -341,8 +342,11 @@ function loadLocationsFromCSV(): PresetLocation[] {
       const priority = parseInt(c[pi]?.trim() ?? "0") || 0;
       const lat = parseFloat(c[lai]?.trim() ?? "0");
       const lng = parseFloat(c[loi]?.trim() ?? "0");
+      // Tier column is optional — absent (or anything but "2") defaults to
+      // Tier 1, matching every `loc.tier ?? 1` fallback read elsewhere.
+      const tier: 1 | 2 = (ti >= 0 ? parseInt(c[ti]?.trim() ?? "1") : 1) === 2 ? 2 : 1;
       if (!name || !lat || !lng) return null;
-      return { id: slugify(name), name, address: `${name}, Singapore`, lat, lng, region, priority } as PresetLocation;
+      return { id: slugify(name), name, address: `${name}, Singapore`, lat, lng, region, priority, tier } as PresetLocation;
     }).filter(Boolean) as PresetLocation[];
   } catch {
     return [];

@@ -638,6 +638,9 @@ router.get("/manager", requireManager, (req, res) => {
       <button id="lightning-toggle" onclick="toggleLightning()" title="Toggle CAT lightning risk layer" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;">
         ⚡ Lightning <span id="lightning-status" style="font-weight:400;color:var(--muted);font-size:10px;">OFF</span>
       </button>
+      <button id="tier-toggle" onclick="cycleTierFilter()" title="Filter locations by tier" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap;">
+        🏷 Tier <span id="tier-status" style="font-weight:400;color:var(--muted);font-size:10px;">ALL</span>
+      </button>
       <button id="fit-rain-btn" onclick="fitRainRadar()" title="Zoom to full NEA 240km radar coverage" style="display:none;background:var(--card);border:1px solid #38bdf8;color:#38bdf8;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">🌍 Full Radar View</button>
       <button id="sg-view-btn" onclick="returnToSingapore()" title="Return to Singapore view" style="display:none;background:var(--card);border:1px solid var(--primary);color:var(--primary);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">📍 SG View</button>
       <div id="rain-timestamp" style="display:none;background:rgba(0,0,0,.72);color:#7a9cc4;padding:4px 12px;border-radius:6px;font-size:11px;white-space:nowrap;display:flex;align-items:center;gap:8px;"></div>
@@ -1507,6 +1510,7 @@ async function updateCrewPin() {
 let state = null;
 let locations = [];
 let crmsCases = [];   // shared with CRMS IIFE so renderReport can reference it
+let tierFilter = 0; // 0 = all, 1 = T1 only, 2 = T2 only — see cycleTierFilter()
 let map, markers = {}, vehicleMarkers = {}, routeCache = {}, pendingPin = null, pendingMarker = null;
 let hoverIW = null, hoverCloseTimer = null;
 let editingLocId = null;
@@ -2459,8 +2463,19 @@ function render() {
   // LightGreen=Arrived+Nil  Cyan=Accepted(OnTheWay)  Violet=Assigned  Grey=Unassigned
   const pendingLocIds = new Set(allAssignments.map(a => a.locationId));
   const seenLoc = new Set();
+  const visibleLocIds = new Set(
+    tierFilter === 0 ? locations.map(l => l.id)
+    : locations.filter(l => (l.tier ?? 1) === tierFilter).map(l => l.id)
+  );
   locations.forEach(loc => {
     seenLoc.add(loc.id);
+    // Hide/show based on tier filter — keep the marker object cached rather
+    // than destroying it, so re-showing on the next cycleTierFilter() click
+    // doesn't need a fresh google.maps.Marker + InfoWindow listener.
+    if (!visibleLocIds.has(loc.id)) {
+      if (markers[loc.id]) markers[loc.id].setMap(null);
+      return;
+    }
     const entry = entries.find(e => e.locationId === loc.id);
     const isPending = !entry && pendingLocIds.has(loc.id);
     let color = '#6B7280'; // Grey — unassigned
@@ -2480,7 +2495,10 @@ function render() {
     } else if (isPending) {
       color = '#A78BFA'; // Violet — Assigned, awaiting crew (distinct from cyan and grey)
     }
-    const icon = { path: google.maps.SymbolPath.CIRCLE, scale, fillColor: color, fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 };
+    const isTier2 = (loc.tier ?? 1) === 2;
+    // Diamond path (rotated square) for T2; circle for T1
+    const markerPath = isTier2 ? 'M 0,-1 1,0 0,1 -1,0 Z' : google.maps.SymbolPath.CIRCLE;
+    const icon = { path: markerPath, scale, fillColor: color, fillOpacity: 1, strokeColor: '#fff', strokeWeight: 2 };
     if (!markers[loc.id]) {
       markers[loc.id] = new google.maps.Marker({
         map, position: { lat: loc.lat, lng: loc.lng },
@@ -2490,6 +2508,7 @@ function render() {
       const iw = new google.maps.InfoWindow({ content: buildInfoWindow(loc, entry) });
       markers[loc.id].addListener('click', () => { iw.setContent(buildInfoWindow(loc, entries.find(e => e.locationId === loc.id))); iw.open(map, markers[loc.id]); });
     } else {
+      markers[loc.id].setMap(map); // re-show if it was hidden by the tier filter
       markers[loc.id].setIcon(icon);
     }
   });
@@ -2598,6 +2617,19 @@ function render() {
   renderVehicles(vehicles);
   renderLocations(locations.length ? locations : (state.presetLocations ?? []), acceptedIds);
   renderReport(entries, state.deploymentDate);
+}
+
+function cycleTierFilter() {
+  tierFilter = tierFilter === 0 ? 1 : tierFilter === 1 ? 2 : 0;
+  const labels = ['ALL', 'T1', 'T2'];
+  const colors = ['var(--muted)', '#3b82f6', '#7c3aed'];
+  const btnColors = ['var(--border)', '#3b82f6', '#7c3aed'];
+  const fgColors  = ['var(--fg)', '#3b82f6', '#7c3aed'];
+  const el = document.getElementById('tier-status');
+  const btn = document.getElementById('tier-toggle');
+  if (el)  { el.textContent = labels[tierFilter]; el.style.color = colors[tierFilter]; }
+  if (btn) { btn.style.borderColor = btnColors[tierFilter]; btn.style.color = fgColors[tierFilter]; }
+  if (state) render();
 }
 
 function buildInfoWindow(loc, entry) {
@@ -3104,7 +3136,7 @@ function renderLocations(locs, acceptedIds) {
         \${pBadge}
         <div class="loc-dot" style="background:\${accepted?'var(--green)':'var(--muted)'};margin-left:6px;"></div>
         <div class="loc-info" style="flex:1;min-width:0;">
-          <div class="loc-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">\${esc(loc.name)}</div>
+          <div class="loc-name" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">\${esc(loc.name)}<span style="margin-left:5px;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px;\${(loc.tier??1)===2?'background:rgba(124,58,237,0.18);color:#a78bfa;border:1px solid rgba(124,58,237,0.4);':'background:rgba(59,130,246,0.13);color:#60a5fa;border:1px solid rgba(59,130,246,0.35);'}">T\${loc.tier??1}</span></div>
           <div class="loc-meta">\${loc.lat.toFixed(4)}, \${loc.lng.toFixed(4)}\${accepted?' · Accepted':''}</div>
         </div>
         <div class="loc-actions">
