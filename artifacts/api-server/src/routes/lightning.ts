@@ -144,6 +144,16 @@ publicRouter.get("/lightning", (_req, res) => {
   .lightning-label{background:transparent;border:none;box-shadow:none;color:#fff;
     font-size:10px;font-weight:700;text-shadow:0 1px 3px #000,0 0 6px #000;pointer-events:none}
   [data-theme="light"] .lightning-label{color:#1e293b;text-shadow:0 1px 2px rgba(255,255,255,.8)}
+  #regional-lightning-status{position:absolute;top:98px;left:50%;transform:translateX(-50%);z-index:999;
+    display:none;padding:5px 10px;border-radius:8px;border:1px solid #b45309;background:rgba(120,53,15,.9);
+    color:#ffedd5;font-size:11px;font-weight:700;font-family:system-ui,-apple-system,sans-serif;
+    white-space:nowrap;box-shadow:0 2px 8px var(--shadow);pointer-events:none}
+  #regional-lightning-status.on{display:block}
+  .regional-lightning-pin{background:transparent;border:0}
+  .regional-lightning-pin span{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;
+    background:#f97316;color:#fff;border:2px solid #fff;font:700 16px/1 system-ui,-apple-system,sans-serif;
+    box-shadow:0 0 0 4px rgba(249,115,22,.28),0 2px 8px rgba(0,0,0,.48)}
+  [data-theme="light"] .regional-lightning-pin span{border-color:#fff7ed}
 </style>
 </head>
 <body>
@@ -164,6 +174,7 @@ publicRouter.get("/lightning", (_req, res) => {
 
 <div id="cat-banner"></div>
 <div id="radar-ts" id="radar-ts"></div>
+<div id="regional-lightning-status" aria-live="polite"></div>
 
 <div id="subscribe-bar">
   <button id="push-btn" onclick="togglePush()">🔔 Subscribe to CAT 1</button>
@@ -175,7 +186,7 @@ publicRouter.get("/lightning", (_req, res) => {
 // ── Theme ─────────────────────────────────────────────────────────────────────
 var TILE_DARK  = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 var TILE_LIGHT = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-var TILE_ATTR  = '&copy; <a href="https://carto.com">CARTO</a>';
+var TILE_ATTR  = '&copy; <a href="https://carto.com">CARTO</a> | nearby strikes: <a href="https://www.blitzortung.org/">Blitzortung.org</a> contributors';
 var isDark = localStorage.getItem('lgtn-theme') !== 'light';
 
 function applyTheme(dark) {
@@ -304,6 +315,26 @@ var lightningOn = false;
 var lightningLayers = [];
 var lightningTimer2 = null;
 var lightningFeaturesCache = null;
+var regionalLightningLayers = [];
+var regionalLightningWs = null;
+var regionalLightningWsIndex = 0;
+var regionalLightningReconnectTimer = null;
+var regionalLightningPruneTimer = null;
+
+// Nearby external strikes use the community Blitzortung live stream. The
+// rectangle is deliberately a conservative Singapore exclusion zone: points
+// within it are never shown by this layer, even if they are over nearby water.
+// The 30 km distance is measured from the nearest point on that exclusion zone,
+// so Johor and the northern Indonesian islands are included without mixing in
+// Singapore's own lightning data.
+var REGIONAL_LIGHTNING_WS = [
+  'wss://ws1.blitzortung.org/',
+  'wss://ws7.blitzortung.org/',
+  'wss://ws8.blitzortung.org/',
+];
+var SINGAPORE_EXCLUSION = { south: 1.15, north: 1.48, west: 103.55, east: 104.10 };
+var REGIONAL_LIGHTNING_RADIUS_KM = 30;
+var REGIONAL_LIGHTNING_MAX_AGE_MS = 15 * 60 * 1000;
 
 var CAT_COLORS = {
   '1': { fill: '#dc2626', stroke: '#991b1b', fillOpacity: 0.40 },
@@ -322,6 +353,199 @@ async function getLightningFeatures() {
 function clearLightningLayers() {
   lightningLayers.forEach(function(l){ try { map.removeLayer(l); } catch(e){} });
   lightningLayers = [];
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function haversineKm(lat1, lng1, lat2, lng2) {
+  var toRad = Math.PI / 180;
+  var dLat = (lat2 - lat1) * toRad;
+  var dLng = (lng2 - lng1) * toRad;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function nearbyExternalDistanceKm(lat, lng) {
+  if (
+    lat >= SINGAPORE_EXCLUSION.south && lat <= SINGAPORE_EXCLUSION.north &&
+    lng >= SINGAPORE_EXCLUSION.west && lng <= SINGAPORE_EXCLUSION.east
+  ) return null;
+
+  var nearestLat = clamp(lat, SINGAPORE_EXCLUSION.south, SINGAPORE_EXCLUSION.north);
+  var nearestLng = clamp(lng, SINGAPORE_EXCLUSION.west, SINGAPORE_EXCLUSION.east);
+  return haversineKm(lat, lng, nearestLat, nearestLng);
+}
+
+function regionalStrikeTime(strike) {
+  // Blitzortung provides nanoseconds since Unix epoch. Treat malformed or
+  // stale timestamps as untrusted rather than surfacing old alerts.
+  var raw = Number(strike && strike.time);
+  var timestamp = raw > 1e14 ? Math.floor(raw / 1000000) : raw;
+  if (!Number.isFinite(timestamp) || timestamp < Date.now() - REGIONAL_LIGHTNING_MAX_AGE_MS || timestamp > Date.now() + 60000) {
+    return null;
+  }
+  return timestamp;
+}
+
+function updateRegionalLightningStatus(text, state) {
+  var status = document.getElementById('regional-lightning-status');
+  if (!status) return;
+  status.textContent = text;
+  status.className = state === 'off' ? '' : 'on';
+}
+
+function refreshRegionalLightningStatus() {
+  if (!lightningOn) return;
+  var count = regionalLightningLayers.length;
+  updateRegionalLightningStatus(
+    count
+      ? '⚡ Nearby external: ' + count + ' strike' + (count === 1 ? '' : 's') + ' in the last 15 min'
+      : '⚡ Nearby external: watching Malaysia / Indonesia within 30 km',
+    'on'
+  );
+}
+
+function clearRegionalLightningLayers() {
+  regionalLightningLayers.forEach(function(record) {
+    try { map.removeLayer(record.layer); } catch(e) {}
+  });
+  regionalLightningLayers = [];
+}
+
+function pruneRegionalLightning() {
+  var cutoff = Date.now() - REGIONAL_LIGHTNING_MAX_AGE_MS;
+  regionalLightningLayers = regionalLightningLayers.filter(function(record) {
+    if (record.timestamp >= cutoff) return true;
+    try { map.removeLayer(record.layer); } catch(e) {}
+    return false;
+  });
+  refreshRegionalLightningStatus();
+}
+
+// Blitzortung sends LZW-compressed JSON frames through its public live stream.
+function decodeRegionalLightningFrame(frame) {
+  var chars = ('' + frame).split('');
+  if (!chars.length) return '';
+  var current = chars[0];
+  var first = current;
+  var output = [current];
+  var nextCode = 256;
+  var dictionary = {};
+  for (var i = 1; i < chars.length; i++) {
+    var code = chars[i].charCodeAt(0);
+    var entry = code < 256 ? chars[i] : (dictionary[code] ? dictionary[code] : first + current);
+    output.push(entry);
+    current = entry.charAt(0);
+    dictionary[nextCode] = first + current;
+    nextCode++;
+    first = entry;
+  }
+  return output.join('');
+}
+
+function addNearbyExternalStrike(strike) {
+  var lat = Number(strike && strike.lat);
+  var lng = Number(strike && strike.lon);
+  var timestamp = regionalStrikeTime(strike);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || timestamp === null) return;
+
+  var distance = nearbyExternalDistanceKm(lat, lng);
+  if (distance === null || distance > REGIONAL_LIGHTNING_RADIUS_KM) return;
+
+  var duplicate = regionalLightningLayers.some(function(record) {
+    return Math.abs(record.lat - lat) < 0.0001 && Math.abs(record.lng - lng) < 0.0001 &&
+      Math.abs(record.timestamp - timestamp) < 1000;
+  });
+  if (duplicate) return;
+
+  var observedAt = new Date(timestamp).toLocaleTimeString('en-SG', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  var marker = L.marker([lat, lng], {
+    icon: L.divIcon({
+      className: 'regional-lightning-pin',
+      html: '<span>ϟ</span>',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11],
+    }),
+    title: 'Nearby external lightning strike',
+    keyboard: true,
+  }).bindTooltip(
+    'Nearby external lightning<br>' +
+    Math.round(distance) + ' km from Singapore • ' + observedAt + ' SGT',
+    { direction: 'top', offset: [0, -12], opacity: 0.95 }
+  ).addTo(map);
+
+  regionalLightningLayers.push({ lat: lat, lng: lng, timestamp: timestamp, layer: marker });
+  pruneRegionalLightning();
+}
+
+function connectRegionalLightningStream() {
+  if (!lightningOn || regionalLightningWs) return;
+  updateRegionalLightningStatus('⚡ Nearby external: connecting to live strike feed…', 'on');
+  var url = REGIONAL_LIGHTNING_WS[regionalLightningWsIndex % REGIONAL_LIGHTNING_WS.length];
+  try {
+    var ws = new WebSocket(url);
+    regionalLightningWs = ws;
+    ws.onopen = function() {
+      if (ws !== regionalLightningWs) return;
+      ws.send(JSON.stringify({ a: 111 }));
+      refreshRegionalLightningStatus();
+    };
+    ws.onmessage = function(event) {
+      try {
+        addNearbyExternalStrike(JSON.parse(decodeRegionalLightningFrame(event.data)));
+      } catch(e) {
+        // The stream occasionally sends non-strike frames. Ignore them.
+      }
+    };
+    ws.onerror = function() {
+      try { ws.close(); } catch(e) {}
+    };
+    ws.onclose = function() {
+      if (ws !== regionalLightningWs) return;
+      regionalLightningWs = null;
+      if (!lightningOn) return;
+      regionalLightningWsIndex++;
+      updateRegionalLightningStatus('⚡ Nearby external: reconnecting to live strike feed…', 'on');
+      clearTimeout(regionalLightningReconnectTimer);
+      regionalLightningReconnectTimer = setTimeout(connectRegionalLightningStream, 3000);
+    };
+  } catch(e) {
+    regionalLightningWs = null;
+    regionalLightningWsIndex++;
+    if (lightningOn) {
+      clearTimeout(regionalLightningReconnectTimer);
+      regionalLightningReconnectTimer = setTimeout(connectRegionalLightningStream, 3000);
+    }
+  }
+}
+
+function startRegionalLightningStream() {
+  clearTimeout(regionalLightningReconnectTimer);
+  pruneRegionalLightning();
+  connectRegionalLightningStream();
+  if (!regionalLightningPruneTimer) {
+    regionalLightningPruneTimer = setInterval(pruneRegionalLightning, 30000);
+  }
+}
+
+function stopRegionalLightningStream() {
+  clearTimeout(regionalLightningReconnectTimer);
+  regionalLightningReconnectTimer = null;
+  if (regionalLightningPruneTimer) {
+    clearInterval(regionalLightningPruneTimer);
+    regionalLightningPruneTimer = null;
+  }
+  var ws = regionalLightningWs;
+  regionalLightningWs = null;
+  if (ws) { try { ws.close(); } catch(e) {} }
+  clearRegionalLightningLayers();
+  updateRegionalLightningStatus('', 'off');
 }
 
 async function loadLightningSectors() {
@@ -398,8 +622,10 @@ function toggleLightning() {
   if (lightningOn) {
     loadLightningSectors();
     lightningTimer2 = setInterval(loadLightningSectors, 5 * 60 * 1000);
+    startRegionalLightningStream();
   } else {
     clearLightningLayers();
+    stopRegionalLightningStream();
     if (lightningTimer2) { clearInterval(lightningTimer2); lightningTimer2 = null; }
     btn.className = 'ctl-btn';
     badge.textContent = 'OFF';
