@@ -974,6 +974,68 @@ phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, 
   });
 });
 
+// POST /api/ph-roster-ref/realign-subcatchments — repair PH sub-catchment
+// labels without changing the officers, shifts, or remarks already saved on
+// a row. Adapted from Replit's version, not copied verbatim: that source
+// derived each year's rotation start purely from the calendar (walking
+// PH_YEAR_SLOTS forward from a 2026 anchor), specifically to avoid trusting
+// a mutable cursor across partial regenerations. This repo's autoAllocate()
+// above doesn't use that model — it anchors 2027 at PH_2027_ROT_START and
+// reads phRotationStateTable's persisted cursor for every other year. This
+// route has to match THAT exact logic, not Replit's, or it would relabel
+// rows to a rotation position that disagrees with what a future
+// auto-allocate run for the same dates would produce — the opposite of what
+// a repair tool should do.
+phRosterRouter.post("/ph-roster-ref/realign-subcatchments", requireManager, async (req, res) => {
+  const { fromDate } = req.body as { fromDate?: string };
+  if (!fromDate || !/^\d{4}-\d{2}-\d{2}$/.test(fromDate)) {
+    res.status(400).json({ error: "fromDate (YYYY-MM-DD) required" });
+    return;
+  }
+
+  const rotStateRows = await db.select().from(phRotationStateTable);
+  const rotState: Record<number, number> = {};
+  for (const r of rotStateRows) rotState[r.year] = r.cursorIndex;
+  const yearStart = (year: number): number =>
+    year === 2027 ? PH_2027_ROT_START : (rotState[year - 1] ?? PH_2027_ROT_START);
+
+  const slots = Object.values(PH_YEAR_SLOTS)
+    .flat()
+    .filter((slot) => slot.date >= fromDate)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  let changedDates = 0;
+  for (const slot of slots) {
+    const rows = await loadPHRosterRefForDate(slot.date);
+    if (!rows.length) continue;
+
+    if (slot.isOilCopy && slot.copyFromDate) {
+      // OIL days must always retain the same sub-catchment labels as their
+      // source PH — the officer assignments on the OIL rows are preserved.
+      const sourceRows = await loadPHRosterRefForDate(slot.copyFromDate);
+      rows.forEach((row, index) => {
+        if (sourceRows[index]?.subCatchment) row.subCatchment = sourceRows[index].subCatchment;
+      });
+    } else {
+      const year = Number(slot.date.slice(0, 4));
+      const nonOilPosition = (PH_YEAR_SLOTS[year] ?? [])
+        .filter((s) => !s.isOilCopy && s.date < slot.date)
+        .length;
+      const rotationIndex = (yearStart(year) + nonOilPosition * 6) % PH_SEQ_LEN;
+      const units = Array.from({ length: 6 }, (_, i) => PH_ROTATION_SEQUENCE[(rotationIndex + i) % PH_SEQ_LEN]);
+      rows.forEach((row, index) => {
+        const rowIndex = Number.isInteger(row.rowIndex) ? row.rowIndex : index;
+        const unit = units[Math.floor(rowIndex / 2)];
+        if (unit) row.subCatchment = unit;
+      });
+    }
+    await savePHRosterRefForDate(slot.date, rows);
+    changedDates++;
+  }
+
+  res.json({ ok: true, fromDate, changedDates });
+});
+
 // GET /api/ph-roster-ref — all ref data (manager+)
 phRosterRouter.get("/ph-roster-ref", requireManager, async (_req, res) => {
   res.json(await loadAllPHRosterRef());
