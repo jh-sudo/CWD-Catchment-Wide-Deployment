@@ -143,6 +143,14 @@ async function ensureCycleCacheLoaded(): Promise<void> {
   }
 }
 
+/** Drops the in-memory cycle cache so the next read reflects a just-written
+ *  roster_cycle_meta/roster_cycle_duties change. Called by
+ *  rosterPatterns.ts's implement route after it rewrites both tables. */
+export function invalidateCycleCache(): void {
+  _cycleMeta = undefined;
+  _cycleUnitMap = null;
+}
+
 /**
  * Returns the scheduled (target) duty for a unit on a given date using the
  * Excel cycle. Returns null if no cycle data exists, the date is before the
