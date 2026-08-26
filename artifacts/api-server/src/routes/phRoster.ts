@@ -14,6 +14,15 @@ import {
   phHrBallotStateTable,
   phRotationStateTable,
 } from "@workspace/db";
+import {
+  buildHRBallotPoolSummary,
+  drawFromHRBallot as drawHRBallot,
+  rebuildHRBallotPoolFromHistory,
+  type HRBallotState,
+  type HRBallotPoolState,
+  type HRCycleColor,
+  type HRPoolKind,
+} from "../lib/hrBallot.js";
 
 interface PHRefRow {
   rowIndex: number;
@@ -211,6 +220,29 @@ phRosterRouter.get("/ph-roster-ref/counter", async (_req, res) => {
   }
 
   res.json({ counts, detail });
+});
+
+// GET /api/ph-roster-ref/hr-ballot-pool — current HR ballot pool state (any logged-in user).
+// Derived live from the scheduled PH roster (same derivation auto-allocate
+// uses), not read from the persisted ph_hr_ballot_state row — that row is
+// just what the last auto-allocate run wrote, and could drift from the live
+// roster if a PH date's actualName was hand-edited afterward.
+phRosterRouter.get("/ph-roster-ref/hr-ballot-pool", requireManager, async (_req, res) => {
+  const ref = await loadAllPHRosterRef();
+  const hrBallot = createHRBallotStateFromRoster(ref);
+  res.json(buildHRBallotResponse(hrBallot, ref));
+});
+
+// PATCH /api/ph-roster-ref/hr-ballot-pool — pools are roster-derived and cannot be manually reset.
+phRosterRouter.patch("/ph-roster-ref/hr-ballot-pool", requireManager, (req, res) => {
+  const { poolKind } = req.body as { poolKind?: HRPoolKind };
+  if (!isHRPoolKind(poolKind)) {
+    res.status(400).json({ error: "poolKind must be 'puasa' or 'haji'." });
+    return;
+  }
+  res.status(409).json({
+    error: "Hari Raya ballot pools are derived from scheduled Puasa/Haji duties and refresh automatically only after every officer has served that specific holiday.",
+  });
 });
 
 // GET /api/ph-roster-ref/:date — get reference rows for a date
@@ -582,17 +614,126 @@ const ALL_MUSLIM_OFFICERS: readonly string[] = [
   "Qamarul","Nasri","Aliff","Adino","Fadhli",
 ];
 
-// Active pool entering 2027 (12 officers remaining after 2025–2026 draws)
-const HR_BALLOT_POOL_2027_INITIAL: readonly string[] = [
-  "Farhan Y","Saleh","Hilmi","Hizamy","Salim M","Farzlan","Syafeeq",
-  "Qamarul","Nasri","Aliff","Adino","Fadhli",
-];
+// Non-Muslim (fixed DAY slots, never balloted): Ben, Chuiguang, Matthew, Azriel
+// — reuses HR_FIXED_DAY above rather than a second identical constant.
+const HR_FIXED_OFFICERS = HR_FIXED_DAY;
 
-interface HRBallotState {
-  /** Officers still to be drawn, in draw order. */
-  pool: string[];
-  /** True once the 2027 initial pool has been seeded. */
-  initialized: boolean;
+function getHRPoolKind(phName: string): HRPoolKind | null {
+  if (/hari raya puasa/i.test(phName)) return "puasa";
+  if (/hari raya haji/i.test(phName)) return "haji";
+  return null;
+}
+
+function isHRPoolKind(value: unknown): value is HRPoolKind {
+  return value === "puasa" || value === "haji";
+}
+
+/**
+ * For every Hari Raya date in `ref`, records which Muslim officers were
+ * scheduled for each holiday that calendar year, keyed by the OPPOSITE
+ * holiday so the caller can exclude "already did the other one this year"
+ * candidates from a given draw.
+ */
+function buildHRCrossHolidayExclusions(ref: PHRosterRef): Map<string, ReadonlySet<string>> {
+  const assignmentsByYear = new Map<number, Record<HRPoolKind, Set<string>>>();
+  const getAssignments = (year: number) => {
+    let assignments = assignmentsByYear.get(year);
+    if (!assignments) {
+      assignments = { puasa: new Set(), haji: new Set() };
+      assignmentsByYear.set(year, assignments);
+    }
+    return assignments;
+  };
+
+  for (const [date, rows] of Object.entries(ref)) {
+    const kind = getHRPoolKind(PH_DATE_NAMES[date] ?? "");
+    if (!kind) continue;
+    const assignments = getAssignments(Number(date.slice(0, 4)));
+    for (const row of rows) {
+      if (ALL_MUSLIM_OFFICERS.includes(row.scheduledName)) {
+        assignments[kind].add(row.scheduledName);
+      }
+    }
+  }
+
+  const exclusionsByDate = new Map<string, ReadonlySet<string>>();
+  for (const date of Object.keys(ref)) {
+    const kind = getHRPoolKind(PH_DATE_NAMES[date] ?? "");
+    if (!kind) continue;
+    const otherKind: HRPoolKind = kind === "puasa" ? "haji" : "puasa";
+    exclusionsByDate.set(date, new Set(getAssignments(Number(date.slice(0, 4)))[otherKind]));
+  }
+  return exclusionsByDate;
+}
+
+function buildPoolFromRoster(
+  kind: HRPoolKind,
+  ref: PHRosterRef,
+  excludedDates: ReadonlySet<string>,
+  excludedNamesByDate: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
+): HRBallotPoolState {
+  const historicalDraws = Object.entries(ref)
+    .filter(([date]) => date >= "2025-01-01" && !excludedDates.has(date))
+    .filter(([date]) => getHRPoolKind(PH_DATE_NAMES[date] ?? "") === kind)
+    .map(([date, rows]) => ({ date, officers: rows.map((row) => row.scheduledName) }));
+  return rebuildHRBallotPoolFromHistory(historicalDraws, ALL_MUSLIM_OFFICERS, excludedNamesByDate).poolState;
+}
+
+/**
+ * Derives the current two-pool HR ballot state from the actual scheduled PH
+ * roster — never from a possibly-stale saved pool. `excludedDates` lets a
+ * partial regeneration exclude the dates it's about to overwrite so they're
+ * drawn from the correct remaining pool rather than double-counted.
+ */
+function createHRBallotStateFromRoster(
+  ref: PHRosterRef,
+  excludedDates: ReadonlySet<string> = new Set(),
+  excludedNamesByDate?: ReadonlyMap<string, ReadonlySet<string>>,
+): HRBallotState {
+  const crossHolidayExclusions = excludedNamesByDate ?? buildHRCrossHolidayExclusions(ref);
+  return {
+    version: 3,
+    pools: {
+      puasa: buildPoolFromRoster("puasa", ref, excludedDates, crossHolidayExclusions),
+      haji: buildPoolFromRoster("haji", ref, excludedDates, crossHolidayExclusions),
+    },
+  };
+}
+
+function buildHRBallotResponse(state: HRBallotState, ref: PHRosterRef) {
+  const allTracked = [...ALL_MUSLIM_OFFICERS, ...HR_FIXED_OFFICERS];
+  const histories: Record<HRPoolKind, Record<string, Record<string, HRCycleColor>>> = { puasa: {}, haji: {} };
+  const yearSet = new Set<string>();
+
+  for (const kind of ["puasa", "haji"] as const) {
+    for (const name of allTracked) histories[kind][name] = {};
+  }
+
+  for (const [date, phName] of Object.entries(PH_DATE_NAMES)) {
+    const kind = getHRPoolKind(phName);
+    if (!kind) continue;
+    const year = date.slice(0, 4);
+    yearSet.add(year);
+    for (const row of ref[date] ?? []) {
+      const name = row.scheduledName;
+      if (name && histories[kind][name] !== undefined) {
+        histories[kind][name][year] = state.pools[kind].drawHistory[date]?.[name] ?? "green";
+      }
+    }
+  }
+
+  const makePoolResponse = (kind: HRPoolKind) => {
+    const summary = buildHRBallotPoolSummary(state.pools[kind], ALL_MUSLIM_OFFICERS);
+    return { ...summary, officerYears: histories[kind], totalTracked: allTracked.length };
+  };
+
+  return {
+    version: state.version,
+    pools: { puasa: makePoolResponse("puasa"), haji: makePoolResponse("haji") },
+    allMuslimOfficers: [...ALL_MUSLIM_OFFICERS],
+    fixedOfficers: [...HR_FIXED_OFFICERS],
+    years: [...yearSet].sort(),
+  };
 }
 
 /**
@@ -637,7 +778,6 @@ function autoAllocate(
   slots: PHSlot[],
   savedRef: PHRosterRef,
   rotState: Record<number, number>,
-  hrBallotState: HRBallotState,
 ): { result: PHRosterRef; hrBallot: HRBallotState; rotIdx: number; targetYear: number } {
 
   // ── All active officer names ─────────────────────────────────────────
@@ -694,31 +834,62 @@ function autoAllocate(
     prevPHOfficers = new Set(names);
   };
 
-  // ── HR ballot pool ───────────────────────────────────────────────────
-  const hrBallot: HRBallotState = hrBallotState.initialized
-    ? { pool: [...hrBallotState.pool], initialized: true }
-    : { pool: [...HR_BALLOT_POOL_2027_INITIAL], initialized: true };
+  // ── Independent Hari Raya ballot pools ───────────────────────────────
+  // Rebuilding from all completed Hari Raya duties keeps the two independent
+  // pools fair if a future year is regenerated: dates being generated are
+  // deliberately excluded so they are drawn from the correct remaining pool.
+  const generatedDates = new Set(slots.filter(slot => !slot.isOilCopy).map(slot => slot.date));
+  const excludedNamesByDate = buildHRCrossHolidayExclusions(savedRef);
+  const hrBallot = createHRBallotStateFromRoster(savedRef, generatedDates, excludedNamesByDate);
+  for (const kind of ["puasa", "haji"] as const) {
+    if (!hrBallot.pools[kind].initialized) {
+      hrBallot.pools[kind].pool = [...ALL_MUSLIM_OFFICERS];
+      hrBallot.pools[kind].initialized = true;
+    }
+  }
+
+  // Tracks Hari Raya allocations by holiday and calendar year, for the
+  // same-year cross-holiday exclusion (an officer drawn for Puasa can't also
+  // be drawn for Haji that year). Starts with saved rows not being
+  // regenerated, then grows as this run creates new rows, so a partial
+  // regeneration obeys the same rule as a full annual generation.
+  const hrAssignmentsByYear = new Map<number, Record<HRPoolKind, Set<string>>>();
+  const getHRAssignments = (year: number) => {
+    let assignments = hrAssignmentsByYear.get(year);
+    if (!assignments) {
+      assignments = { puasa: new Set(), haji: new Set() };
+      hrAssignmentsByYear.set(year, assignments);
+    }
+    return assignments;
+  };
+  const recordHRAssignment = (date: string, kind: HRPoolKind, names: readonly string[]) => {
+    const assignments = getHRAssignments(Number(date.slice(0, 4)));
+    for (const name of names) {
+      if (ALL_MUSLIM_OFFICERS.includes(name)) assignments[kind].add(name);
+    }
+  };
+  for (const [date, rows] of Object.entries(savedRef)) {
+    if (generatedDates.has(date)) continue;
+    const kind = getHRPoolKind(PH_DATE_NAMES[date] ?? "");
+    if (!kind) continue;
+    recordHRAssignment(date, kind, rows.map(row => row.scheduledName));
+  }
 
   /**
-   * Draw n officers from the HR exhaustion pool.
-   * Restarts from the full Muslim list when pool is empty (excluding already
-   * drawn in the same call to avoid duplicates within a single PH).
+   * Ballot n officers from one holiday-specific HR exhaustion pool. A true
+   * random draw (not sequential); auto-refreshes from the full Muslim list
+   * when exhausted, excluding officers already drawn for the OTHER Hari Raya
+   * holiday this same calendar year.
    */
-  const drawFromHRBallot = (n: number): string[] => {
-    const drawn: string[] = [];
-    while (drawn.length < n) {
-      if (hrBallot.pool.length === 0) {
-        const drawnSet = new Set(drawn);
-        hrBallot.pool = ALL_MUSLIM_OFFICERS.filter(o => !drawnSet.has(o)) as string[];
-      }
-      drawn.push(hrBallot.pool.shift()!);
-    }
-    return drawn;
+  const drawFromHRBallot = (kind: HRPoolKind, date: string, n: number): string[] => {
+    const assignments = getHRAssignments(Number(date.slice(0, 4)));
+    const otherKind: HRPoolKind = kind === "puasa" ? "haji" : "puasa";
+    return drawHRBallot(hrBallot, kind, date, n, ALL_MUSLIM_OFFICERS, Math.random, assignments[otherKind])
+      .map(entry => entry.name);
   };
 
   // ── PH type helpers ──────────────────────────────────────────────────
   const isCNY = (ph: string) => /chinese new year/i.test(ph);
-  const isHR  = (ph: string) => /hari raya/i.test(ph);
   const isDp  = (ph: string) => /deepavali/i.test(ph);
 
   // ── Rule checks ──────────────────────────────────────────────────────
@@ -845,8 +1016,9 @@ function autoAllocate(
   };
 
   // ── Scenario 2b: Hari Raya ────────────────────────────────────────────
-  const allocateHariRaya = (units: string[]): PHRefRow[] => {
-    const balloted = drawFromHRBallot(8); // 6 PD + 2 DAY
+  const allocateHariRaya = (units: string[], kind: HRPoolKind, date: string): PHRefRow[] => {
+    const balloted = drawFromHRBallot(kind, date, 8); // 6 PD + 2 DAY
+    recordHRAssignment(date, kind, balloted);
     const pairs: string[][] = [
       balloted.slice(0, 2),                          // unit 0  PD
       balloted.slice(2, 4),                          // unit 1  PD
@@ -873,7 +1045,8 @@ function autoAllocate(
     rotIdx = (rotIdx + 6) % PH_SEQ_LEN;
 
     let rows: PHRefRow[];
-    if      (isHR(phName))  rows = allocateHariRaya(units);
+    const hrPoolKind = getHRPoolKind(phName);
+    if      (hrPoolKind)    rows = allocateHariRaya(units, hrPoolKind, date);
     else if (isCNY(phName)) rows = allocateRacial(units, phName, CNY_EXCLUDED);
     else if (isDp(phName))  rows = allocateRacial(units, phName, DEEPAVALI_EXCLUDED);
     else                    rows = allocateGeneral(units, phName);
@@ -927,7 +1100,7 @@ function autoAllocate(
           if (!rows) continue;
 
           // Skip HR days — ballot-managed, don't touch
-          if (isHR(phName)) continue;
+          if (getHRPoolKind(phName)) continue;
 
           // Already in this PH
           if (rows.some(r => r.scheduledName === candidate)) continue;
@@ -992,18 +1165,19 @@ phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, 
     return;
   }
 
-  const [savedRef, rotStateRows, [hrBallotRow]] = await Promise.all([
+  const [savedRef, rotStateRows] = await Promise.all([
     loadAllPHRosterRef(),
     db.select().from(phRotationStateTable),
-    db.select().from(phHrBallotStateTable).where(eq(phHrBallotStateTable.id, 1)),
   ]);
   const rotState: Record<number, number> = {};
   for (const r of rotStateRows) rotState[r.year] = r.cursorIndex;
-  const hrBallotState: HRBallotState = hrBallotRow
-    ? { pool: hrBallotRow.pool, initialized: hrBallotRow.initialized }
-    : { pool: [...HR_BALLOT_POOL_2027_INITIAL], initialized: true };
 
-  const { result: generated, hrBallot, rotIdx, targetYear: yr } = autoAllocate(officers, slots, savedRef, rotState, hrBallotState);
+  // Note: the HR ballot pool is no longer loaded here as an autoAllocate
+  // input — it's derived fresh from savedRef inside autoAllocate itself
+  // (createHRBallotStateFromRoster), which is more robust than trusting a
+  // possibly-stale saved pool. The persisted ph_hr_ballot_state row below is
+  // written for GET /ph-roster-ref/hr-ballot-pool to read without re-deriving.
+  const { result: generated, hrBallot, rotIdx, targetYear: yr } = autoAllocate(officers, slots, savedRef, rotState);
 
   if (!dryRun) {
     await db.transaction(async (tx) => {
@@ -1031,10 +1205,10 @@ phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, 
       // Persist HR ballot pool state and rotation end index only on real runs
       await tx
         .insert(phHrBallotStateTable)
-        .values({ id: 1, pool: hrBallot.pool, initialized: hrBallot.initialized })
+        .values({ id: 1, pools: hrBallot.pools })
         .onConflictDoUpdate({
           target: phHrBallotStateTable.id,
-          set: { pool: hrBallot.pool, initialized: hrBallot.initialized },
+          set: { pools: hrBallot.pools },
         });
 
       await tx
