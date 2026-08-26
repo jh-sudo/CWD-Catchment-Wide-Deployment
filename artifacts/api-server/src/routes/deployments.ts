@@ -18,7 +18,7 @@ import {
 import { sendToManagers, broadcastToCrew, sendToCrewVehicle } from "./push";
 import { getRadarStatus } from "../radar-monitor.js";
 import { logger } from "../lib/logger";
-import { requireCrew, requireManager } from "./auth";
+import { requireCrew, requireManager, requireAdminOrManager } from "./auth";
 
 const router = Router();
 
@@ -1714,6 +1714,271 @@ router.post("/deployments/auto-assign", requireManager, (req, res) => {
       unitCode: a.unitCode,
       locationName: a.locationName,
     })),
+  });
+});
+
+// ── Optimize Assign: eligible teams → nearest Tier 1 locations ────────────────
+// Distinct from rain-auto-assign/auto-assign above: this is the one route
+// requireAdminOrManager gates rather than requireManager (all three roles
+// approved for /manager can reach the routes above; this one is admin/manager
+// only, matching Replit's own choice and the SSP least-privilege pass — see
+// CONTEXT.md). Two modes: "rain" (default) restricts to Tier 1 locations the
+// client's rain-radar analysis scored as hit, and only assigns teams that
+// have acknowledged the active alert or already accepted an assignment;
+// "nearest-selected" is the no-rain fallback — the manager hand-picks Tier 1
+// locations and eligible teams with fresh GPS are matched by nearest distance.
+router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) => {
+  const { locationScores, mode, selectedLocationIds } = req.body as {
+    locationScores?: Array<{ id: string; score: number }>;
+    mode?: "rain" | "nearest-selected";
+    selectedLocationIds?: string[];
+  };
+
+  const regionOf = (unitCode: string) => unitCode.match(/^([A-Za-z]+)/)?.[1].toUpperCase() ?? "";
+  const haversine = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2
+      + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const scoreByLocation = new Map(
+    (Array.isArray(locationScores) ? locationScores : [])
+      .filter(s => s && typeof s.id === "string" && Number.isFinite(Number(s.score)))
+      .map(s => [s.id, Number(s.score)] as const),
+  );
+  const rainLocations = Array.from(customLocations.values())
+    .filter(location => (location.tier ?? 1) === 1 && (scoreByLocation.get(location.id) ?? 0) > 0.02);
+
+  const maxSelectedLocations = currentRoster.length;
+  const occupiedLocationIds = new Set([
+    ...Array.from(assignments.values()).map(a => a.locationId),
+    ...Array.from(deploymentEntries.values()).map(e => e.locationId),
+  ]);
+  const occupiedVehicleIds = new Set([
+    ...Array.from(assignments.keys()),
+    ...Array.from(deploymentEntries.values()).map(e => e.vehicleId),
+  ]);
+
+  let targetLocations = rainLocations;
+  if (mode === "nearest-selected") {
+    if (!Array.isArray(selectedLocationIds)
+      || selectedLocationIds.length < 1
+      || selectedLocationIds.length > maxSelectedLocations) {
+      res.status(400).json({
+        success: false,
+        reason: "invalid_selected_locations",
+        message: maxSelectedLocations > 0
+          ? `Choose between 1 and ${maxSelectedLocations} Tier 1 locations, matching the saved roster team count.`
+          : "Import and save a roster before selecting locations.",
+      });
+      return;
+    }
+
+    const uniqueIds = new Set(selectedLocationIds);
+    if (uniqueIds.size !== selectedLocationIds.length) {
+      res.status(400).json({
+        success: false,
+        reason: "invalid_selected_locations",
+        message: "Selected locations must be unique.",
+      });
+      return;
+    }
+
+    const selectedLocations = selectedLocationIds.map(id => customLocations.get(id));
+    const invalidIds = selectedLocationIds.filter((_id, index) => {
+      const location = selectedLocations[index];
+      return !location || (location.tier ?? 1) !== 1;
+    });
+    if (invalidIds.length > 0) {
+      res.status(400).json({
+        success: false,
+        reason: "invalid_selected_locations",
+        locationIds: invalidIds,
+        message: "Each selected location must be a current Tier 1 location.",
+      });
+      return;
+    }
+
+    const occupiedSelectedIds = selectedLocationIds.filter(id => occupiedLocationIds.has(id));
+    if (occupiedSelectedIds.length > 0) {
+      res.status(409).json({
+        success: false,
+        reason: "selected_locations_unavailable",
+        locationIds: occupiedSelectedIds,
+        message: "One or more selected locations are already occupied. Refresh and choose available locations.",
+      });
+      return;
+    }
+
+    targetLocations = selectedLocations as PresetLocation[];
+  }
+
+  const acknowledgedUnits = new Set(activeAlert?.acknowledgments ?? []);
+  const acceptedVehicleIds = new Set(
+    Array.from(assignments.values())
+      .filter(a => a.status === "accepted")
+      .map(a => a.vehicleId),
+  );
+
+  const eligibleTeams = currentRoster.filter(team => {
+    if (!activeShifts.includes(team.shift)) return false;
+    const region = regionOf(team.unitCode);
+    if (activeTeams.length > 0 && !activeTeams.includes(region)) return false;
+    const vehicleId = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
+    const acknowledged = acknowledgedUnits.has(team.unitCode);
+    const accepted = acceptedVehicleIds.has(vehicleId);
+    // No-rain matching is initiated from the live map, so any active roster
+    // team can participate once it has a fresh GPS position. Rain mode keeps
+    // its existing alert acknowledgement/acceptance gate.
+    const eligibleForMode = mode === "nearest-selected" || acknowledged || accepted;
+    return eligibleForMode && !occupiedVehicleIds.has(vehicleId);
+  });
+
+  const newAssignments: Assignment[] = [];
+  let skippedNoGps = 0;
+  const remainingLocations = targetLocations.filter(location => !occupiedLocationIds.has(location.id));
+
+  const assignTeam = (
+    team: typeof eligibleTeams[number],
+    vehicleId: string,
+    position: VehiclePosition,
+    location: PresetLocation,
+  ) => {
+    const assignment: Assignment = {
+      vehicleId,
+      vehicleNumber: team.vehicleNumber || position.vehicleNumber || team.unitCode,
+      unitCode: team.unitCode,
+      locationId: location.id,
+      locationName: location.name,
+      lat: location.lat,
+      lng: location.lng,
+      assignedAt: new Date().toISOString(),
+      status: "pending",
+      assignedBy: "Optimize Assign",
+    };
+    setAssignment(assignment);
+    occupiedVehicleIds.add(vehicleId);
+    occupiedLocationIds.add(location.id);
+    const index = remainingLocations.findIndex(candidate => candidate.id === location.id);
+    if (index >= 0) remainingLocations.splice(index, 1);
+    newAssignments.push(assignment);
+  };
+
+  if (mode === "nearest-selected") {
+    const GPS_FRESHNESS_MS = 10 * 60 * 1000;
+    const now = Date.now();
+    const teamsWithCurrentGps: Array<{
+      team: typeof eligibleTeams[number];
+      vehicleId: string;
+      position: VehiclePosition;
+    }> = [];
+
+    for (const team of eligibleTeams) {
+      const vehicleId = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
+      const position = vehiclePositions.get(vehicleId);
+      const updatedAt = position ? Date.parse(position.updatedAt) : Number.NaN;
+      const validPosition = position
+        && Number.isFinite(position.lat) && Math.abs(position.lat) <= 90
+        && Number.isFinite(position.lng) && Math.abs(position.lng) <= 180
+        && Number.isFinite(updatedAt) && now - updatedAt >= 0 && now - updatedAt <= GPS_FRESHNESS_MS;
+      if (!validPosition || !position) {
+        skippedNoGps++;
+        continue;
+      }
+      teamsWithCurrentGps.push({ team, vehicleId, position });
+    }
+
+    // Rank every remaining crew/location pair by distance so the closest crew
+    // is assigned first, rather than allowing roster order to decide the match.
+    const remainingTeams = [...teamsWithCurrentGps];
+    while (remainingTeams.length > 0 && remainingLocations.length > 0) {
+      let bestPair: {
+        team: typeof eligibleTeams[number];
+        vehicleId: string;
+        position: VehiclePosition;
+        location: PresetLocation;
+        distance: number;
+      } | null = null;
+
+      for (const candidate of remainingTeams) {
+        for (const location of remainingLocations) {
+          const distance = haversine(candidate.position.lat, candidate.position.lng, location.lat, location.lng);
+          if (!bestPair
+            || distance < bestPair.distance
+            || (distance === bestPair.distance && candidate.team.unitCode.localeCompare(bestPair.team.unitCode) < 0)
+            || (distance === bestPair.distance && candidate.team.unitCode === bestPair.team.unitCode
+              && location.name.localeCompare(bestPair.location.name) < 0)) {
+            bestPair = { ...candidate, location, distance };
+          }
+        }
+      }
+
+      if (!bestPair) break;
+      assignTeam(bestPair.team, bestPair.vehicleId, bestPair.position, bestPair.location);
+      const teamIndex = remainingTeams.findIndex(candidate => candidate.vehicleId === bestPair!.vehicleId);
+      if (teamIndex >= 0) remainingTeams.splice(teamIndex, 1);
+    }
+  } else {
+    // Rain mode preserves its established behavior: each team receives its
+    // closest rain-hit Tier 1 location, with rain score as a tie-breaker.
+    for (const team of eligibleTeams) {
+      const vehicleId = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
+      const position = vehiclePositions.get(vehicleId);
+      if (!position) {
+        skippedNoGps++;
+        continue;
+      }
+
+      const rankedLocations = remainingLocations
+        .map(location => ({
+          location,
+          distance: haversine(position.lat, position.lng, location.lat, location.lng),
+          score: scoreByLocation.get(location.id) ?? 0,
+        }))
+        .sort((a, b) =>
+          a.distance - b.distance
+          || b.score - a.score
+          || (a.location.priority ?? 999) - (b.location.priority ?? 999)
+          || a.location.name.localeCompare(b.location.name),
+        );
+      const best = rankedLocations[0];
+      if (!best) continue;
+      assignTeam(team, vehicleId, position, best.location);
+    }
+  }
+
+  if (newAssignments.length > 0) {
+    bumpState();
+    for (const assignment of newAssignments) {
+      sendToCrewVehicle(assignment.vehicleId, {
+        title: "📍 Optimized Assignment",
+        body: `You have been assigned to ${assignment.locationName}. Open the app to accept.`,
+        tag: "assignment",
+        url: "/",
+      }).catch(() => {});
+    }
+  }
+
+  res.json({
+    success: true,
+    mode: mode === "nearest-selected" ? "nearest-selected" : "rain",
+    count: newAssignments.length,
+    rainLocationCount: rainLocations.length,
+    selectedLocationCount: mode === "nearest-selected" ? targetLocations.length : 0,
+    maxSelectedLocationCount: mode === "nearest-selected" ? maxSelectedLocations : 0,
+    eligibleTeamCount: eligibleTeams.length,
+    skippedNoGps,
+    assignments: newAssignments.map(a => ({ unitCode: a.unitCode, locationName: a.locationName })),
+    reason: newAssignments.length > 0
+      ? ""
+      : targetLocations.length === 0
+        ? "no_rain_hit_tier_1_locations"
+        : eligibleTeams.length === 0
+          ? "no_new_acknowledged_teams"
+          : "no_available_locations",
   });
 });
 
