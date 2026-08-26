@@ -130,16 +130,25 @@ export interface ManagerAccount {
   // ic: which catchments they can approve for
   catchments?: string[];
   pendingReset?: { passwordHash: string; requestedAt: string };
-  // MFA (admin/manager/ic only — see
-  // .scratch/flood-commander-web/issues/09-manager-mfa-totp.md).
-  // mfaSecret is encrypted (see lib/mfa.ts), never sent to clients.
+  // MFA — see .scratch/flood-commander-web/issues/09-manager-mfa-totp.md.
+  // Originally admin/manager/ic only (crew's PIN flow was deliberately kept
+  // low-friction); extended to crew too once the app went internet-facing —
+  // the PIN alone is no longer enough for a credential reachable from the
+  // open internet, not just an office network. mfaSecret is encrypted (see
+  // lib/mfa.ts), never sent to clients.
   mfaSecret?: string;
   mfaEnabled: boolean;
 }
 
-/** admin/manager/ic can enroll in MFA; crew's PIN flow is deliberately low-friction and out of scope. */
-function isMfaEligibleRole(role: AccountRole): boolean {
-  return role !== "crew";
+/**
+ * Every role is MFA-eligible today (crew included, since this app is
+ * internet-facing). Kept as a named predicate rather than inlined `true` so
+ * a future non-MFA role (e.g. a read-only viewer) has a single place to
+ * carve out an exception, without threading a new condition through every
+ * call site below.
+ */
+function isMfaEligibleRole(_role: AccountRole): boolean {
+  return true;
 }
 
 function toManagerAccount(row: Manager): ManagerAccount {
@@ -570,12 +579,17 @@ router.post("/manager/auth/change-password", requireManager, async (req, res) =>
   res.json({ success: true });
 });
 
-// ── MFA (TOTP) — admin/manager/ic only ──────────────────────────────────────
+// ── MFA (TOTP) — all roles, including crew ──────────────────────────────────
 // See .scratch/flood-commander-web/issues/09-manager-mfa-totp.md. Mandatory
-// for admin/manager/ic (SSP ac-2): /manager/auth/login forces an unenrolled
-// account through setup/verify-setup below before granting a real session
-// (see the "enroll" branch there); the dashboard's 🛡️ button reaches the
-// same two endpoints afterwards for voluntary re-enrollment/relinking.
+// for every role (SSP ac-2): /manager/auth/login and /api/crew/auth/login
+// both force an unenrolled account through setup/verify-setup below before
+// granting a real session (see the "enroll" branch in each); the dashboard's
+// 🛡️ button (manager) / equivalent crew.ts affordance reaches the same two
+// endpoints afterwards for voluntary re-enrollment/relinking. These endpoints
+// stayed under the /manager/auth/ prefix rather than gaining crew-specific
+// duplicates — they were already role-agnostic (see resolveMfaEnrollmentSubject
+// below), and crew.ts already calls other /manager/auth/* routes directly
+// (e.g. logout) for the same shared-session reason.
 //
 // Who's allowed to call setup/verify-setup for themselves:
 //  - A full, already-authenticated session (self-service re-enroll).
@@ -605,7 +619,9 @@ router.post("/manager/auth/mfa/setup", makeAuthRateLimit(), async (req, res) => 
   const m = resolveMfaEnrollmentSubject(req);
   if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
   if (!isMfaEligibleRole(m.role)) {
-    res.status(403).json({ error: "MFA is not available for crew accounts" }); return;
+    // Defensive — every current role is MFA-eligible, so this only fires if
+    // a future non-MFA role gets carved out in isMfaEligibleRole above.
+    res.status(403).json({ error: "MFA is not available for this account type" }); return;
   }
   if (m.mfaEnabled) {
     res.status(400).json({ error: "MFA is already enabled — disable it before re-enrolling" }); return;
@@ -776,8 +792,21 @@ router.post("/api/crew/auth/login", makeAuthRateLimit(), async (req, res) => {
     res.status(403).json({ error: "Crew access not yet set up for this officer — ask an admin" }); return;
   }
   // Same pre-auth → authenticated boundary as /manager/auth/login — regenerate
-  // before granting the session.
+  // before granting any session state (pending-MFA or fully authenticated).
   await regenerateSession(req);
+  if (m.mfaEnabled) {
+    // PIN alone isn't enough — same pending-MFA mechanism /manager/auth/login
+    // uses; /manager/auth/mfa/challenge completes this from here too (it's
+    // role-agnostic, see resolveMfaEnrollmentSubject above).
+    req.session.pendingMfaManagerId = m.id;
+    res.json({ success: true, mfaStep: "challenge" }); return;
+  }
+  if (isMfaEligibleRole(m.role)) {
+    // Mandatory enrollment (SSP ac-2), same as manager/admin/ic — an officer
+    // who hasn't set up MFA yet doesn't get a session until they do.
+    req.session.pendingMfaManagerId = m.id;
+    res.json({ success: true, mfaStep: "enroll" }); return;
+  }
   req.session.managerId = m.id;
   res.json({ success: true, officerId: m.officerId, officerName: m.officerName });
 });
