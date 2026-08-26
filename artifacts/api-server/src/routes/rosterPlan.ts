@@ -15,6 +15,7 @@ import {
   rosterDayOverrideApplicationsTable,
   leaveRequestsTable,
   phRosterRefTable,
+  rosterRequirementsTable,
   type Officer,
   type RosterOverride,
   type RosterLeave,
@@ -518,6 +519,105 @@ rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => 
 // GET /api/roster-plan/officers
 rosterPlanRouter.get("/roster-plan/officers", async (_req, res) => {
   res.json(await loadOfficers());
+});
+
+// GET /api/roster-plan/officer-names
+// Deduplicated, sorted {id, name, unitCode?, catchment?} list — a lighter
+// picker source than the full officers list for UI dropdowns. Excludes
+// blank names and generic placeholders ("Crew 1", "Crew 2", …).
+// NOTE: the Replit original also merged in every officer name ever saved in
+// a roster-pattern (a second source, for names that only exist in a
+// historical pattern, not the live officers table) — that source doesn't
+// exist here yet since roster-patterns hasn't been ported (see the
+// capability-parity plan's Phase C). Add it back here once it lands.
+rosterPlanRouter.get("/roster-plan/officer-names", async (_req, res) => {
+  const seen = new Set<string>();
+  const result: { id: string; name: string; unitCode?: string; catchment?: string }[] = [];
+
+  for (const o of await loadOfficers()) {
+    const trimmed = o.name.trim();
+    if (!trimmed) continue;
+    if (/^crew\s*\d+$/i.test(trimmed)) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push({
+      id: o.id,
+      name: trimmed,
+      ...(o.unitCode ? { unitCode: o.unitCode } : {}),
+      ...(o.catchment ? { catchment: o.catchment } : {}),
+    });
+  }
+
+  result.sort((a, b) => a.name.localeCompare(b.name));
+  res.json(result);
+});
+
+// ── Roster requirements notice ──────────────────────────────────────────────
+// Ported from Replit's roster-requirements.json — seed text matches verbatim.
+const DEFAULT_REQUIREMENTS = `"Roster Requirements"
+
+To build up the roster, a shift pattern consisting of a rotation of shift duties is arranged to meet both the (1) operational needs for flood operations, and (2) requirements stated under MOM and PUB's HR Personnel Manual for shift staff.
+
+"1. Regulatory Compliance"
+
+_1A. Hours of Work (MOM & PUB HR Personnel Manual)_
+- The average weekly working hours over a complete shift cycle must not exceed 42 hours, excluding overtime.
+- Over a 20-week cycle, every 1 week of 48-hour work is balanced by 3 weeks of 40-hour work, repeated 5 times. This was derived through discussion with the crew and results in a monthly average of 42 hours [(48 + 3 × 40) ÷ 4].
+
+_1B. OFF and REST Days (MOM)_
+- The maximum number of consecutive working days for an 8-hour shift is 7 days.
+- Where both OFF and REST days fall in the same calendar week, the OFF day must come before the REST day, with only 1 REST day permitted per calendar week.
+- OFF days are placed within ND weeks to ensure the limit is not exceeded, and PD/DAY shifts are rotated between ND weeks accordingly.
+
+"2. Operational Requirements"
+
+_2A. Daily Operational Requirement_
+- The number of PD and DAY shifts is guided by management, with more afternoon than morning coverage needed — 4 PD and 8 DAY on weekdays, and 3 PD and 3 DAY on weekends.
+- Each officer covers 12 weekend shifts per cycle, distributed across 5 months.
+
+_2B. Leave Application_
+- Sufficient ND shifts must be available throughout the year to support leave-taking.
+- 8 weeks of ND slots are placed in between PD/DAY shifts to allow for longer periods of leave.
+
+_2C. Operational Expansion_
+- The roster must be able to accommodate an increase in PD and DAY shifts if required.
+- The 8 ND weeks provide 40 available days per cycle for leave-taking without affecting operations, amounting to 104 days per year.
+
+"3. Staff Wellbeing"
+
+_3A. Back-to-Back Shift Limits_
+- Shift duties are structured to avoid being too exhausting for officers.
+- Back-to-back weekday PD/DAY shifts are set at a minimum of 2 and a maximum of 3.
+- A minimum of 1 and maximum of 2 was considered but rejected as it would reduce ND shifts available for leave-taking.
+
+"4. Fairness and Parity"
+
+_4A. Parity Across Shift Teams (PUB HR Personnel Manual)_
+- Every officer must be scheduled an equal number of morning and afternoon shifts over a complete shift cycle.
+- All teams follow the same 20-week roster pattern but start on a different week, ensuring equal distribution of shift types across all teams.
+
+"5. Future Planning"
+
+_5A. Manpower Expansion_
+- The roster is expandable in multiples of 4 teams (8 personnel), constrained by MOM's average hours requirement.
+- Expansion requires the 42-hour average work week condition to be maintained (via a 4-week expansion block) and the number of weeks in the cycle to remain equal to the number of teams.`;
+
+// GET /api/roster-requirements — get requirements text (public)
+rosterPlanRouter.get("/roster-requirements", async (_req, res) => {
+  const [row] = await db.select().from(rosterRequirementsTable).where(eq(rosterRequirementsTable.id, 1));
+  res.json({ text: row?.text ?? DEFAULT_REQUIREMENTS });
+});
+
+// PUT /api/roster-requirements — save requirements text (manager+)
+rosterPlanRouter.put("/roster-requirements", requireManager, async (req, res) => {
+  const { text } = req.body as { text?: string };
+  if (typeof text !== "string") { res.status(400).json({ error: "text string required" }); return; }
+  await db
+    .insert(rosterRequirementsTable)
+    .values({ id: 1, text })
+    .onConflictDoUpdate({ target: rosterRequirementsTable.id, set: { text } });
+  res.json({ ok: true });
 });
 
 // POST /api/roster-plan/officers
