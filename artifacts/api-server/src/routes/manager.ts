@@ -753,9 +753,14 @@ router.get("/manager", requireManager, (req, res) => {
           </span>
         </div>
         <div class="crms-comment-list" id="crms-comment-list"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <textarea id="crms-comment-input" rows="2" placeholder="Add a field comment…" style="flex:1;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.12);border-radius:6px;color:#e2e8f0;font-size:12px;padding:6px 8px;resize:vertical;font-family:inherit;"></textarea>
+          <button onclick="crmsPostComment()" style="padding:0 12px;border-radius:8px;background:rgba(79,110,247,.2);border:1px solid rgba(79,110,247,.4);color:#93c5fd;cursor:pointer;font-weight:600;">Post</button>
+        </div>
         <div style="display:flex;gap:6px;margin-top:12px;">
           <button onclick="closeCrmsDetail()" style="flex:1;padding:8px;border-radius:8px;background:transparent;border:1px solid rgba(255,255,255,.15);color:#94a3b8;cursor:pointer;">Close</button>
           <button onclick="crmsOpenEdit()" style="flex:1;padding:8px;border-radius:8px;background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.4);color:#c4b5fd;cursor:pointer;">✏️ Edit</button>
+          <button onclick="crmsRegeocode()" title="Re-derive coordinates from the address on file" style="padding:8px 10px;border-radius:8px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#64748b;cursor:pointer;">📍↻</button>
           <button onclick="crmsDeleteCase()" style="padding:8px 12px;border-radius:8px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#fca5a5;cursor:pointer;">🗑</button>
         </div>
       </div>
@@ -835,7 +840,10 @@ router.get("/manager", requireManager, (req, res) => {
     <div class="panel" id="panel-roster">
       <div class="sec-header">
         <span class="sec-title">Daily Roster</span>
-        <button class="btn btn-danger btn-sm" onclick="clearRoster()">Clear</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          <button id="import-today-summary-btn" class="btn btn-sm" onclick="importTodayDeploymentSummary()" style="background:#172554;color:#93c5fd;border:1px solid #2563eb;" title="Fetch and parse today's roster-plan Deployment Summary into the roster">↻ Import Today's Summary</button>
+          <button class="btn btn-danger btn-sm" onclick="clearRoster()">Clear</button>
+        </div>
       </div>
       <div id="roster-status" class="roster-status"></div>
       <div id="roster-date" style="font-size:11px;color:var(--muted);margin-bottom:6px;display:none;"></div>
@@ -2843,6 +2851,46 @@ async function clearRoster() {
   document.getElementById('shift-selector').style.display = 'none';
 }
 
+function singaporeToday() {
+  var parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Singapore', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  var values = {};
+  parts.forEach(function(part) { if (part.type !== 'literal') values[part.type] = part.value; });
+  return values.year + '-' + values.month + '-' + values.day;
+}
+
+// Pulls /roster-plan/summary's already-generated text into the same paste
+// box importRoster() already knows how to parse, instead of duplicating its
+// parsing logic here — importRoster() itself decides merge-vs-replace based
+// on whether a roster is already loaded, same as a manual paste would.
+async function importTodayDeploymentSummary() {
+  var btn = document.getElementById('import-today-summary-btn');
+  var errEl = document.getElementById('roster-error');
+  if (!btn || btn.disabled) return;
+  if (_allRosterTeams.length > 0 && !confirm('Merge today\\'s Deployment Summary into the current roster?')) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Loading Summary…';
+  errEl.textContent = '';
+  try {
+    var date = singaporeToday();
+    var res = await fetch(API + '/roster-plan/summary?date=' + encodeURIComponent(date), { cache: 'no-store' });
+    var data = await res.json();
+    if (!res.ok || typeof data.text !== 'string' || !data.text.trim()) {
+      throw new Error(data.message || 'Today\\'s Deployment Summary is empty.');
+    }
+    btn.textContent = 'Parsing Roster…';
+    document.getElementById('roster-input').value = data.text;
+    await importRoster();
+  } catch(e) {
+    errEl.textContent = e.message || 'Could not import today\\'s Deployment Summary.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↻ Import Today\\'s Summary';
+  }
+}
+
 let _allRosterTeams = [];
 let _rosterFilter = new Set(); // empty = ALL
 
@@ -3330,17 +3378,33 @@ async function preAssignRoster(vehicleId, unitCode, vehicleNumber) {
   else { alert('Failed: ' + (data.error || 'unknown error')); }
 }
 
-async function assignVehicle(vehicleId) {
+// force=true is only ever sent on the second call, after the manager has
+// explicitly confirmed the "location already occupied" prompt below — never
+// pre-emptively, so a manager who doesn't hit a conflict never sees it.
+async function assignVehicle(vehicleId, force) {
   if (!assigningLoc) return;
   const v = (state?.vehicles ?? []).find(x => x.vehicleId === vehicleId);
   if (!v) return;
+  const body = { vehicleId, locationId: assigningLoc.id, locationName: assigningLoc.name, lat: assigningLoc.lat, lng: assigningLoc.lng, assignedBy: ME.username || null };
+  if (force) body.force = true;
   const r = await fetch(API + '/deployments/assign', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ vehicleId, locationId: assigningLoc.id, locationName: assigningLoc.name, lat: assigningLoc.lat, lng: assigningLoc.lng, assignedBy: ME.username || null }),
+    body: JSON.stringify(body),
   });
+  const data = await r.json().catch(function() { return {}; });
+  if (r.ok) {
+    closeModal('assign-modal');
+    alert('Assignment sent to ' + v.unitCode + ' · ' + v.vehicleNumber + '. They will receive an alert on their phone.');
+    return;
+  }
+  if (r.status === 409 && data.error === 'location_taken') {
+    if (confirm((data.message || 'Location already occupied.') + ' Reassign anyway?')) {
+      await assignVehicle(vehicleId, true);
+    }
+    return;
+  }
   closeModal('assign-modal');
-  if (r.ok) { alert('Assignment sent to ' + v.unitCode + ' · ' + v.vehicleNumber + '. They will receive an alert on their phone.'); }
-  else { alert('Failed to send assignment.'); }
+  alert('Failed to send assignment.');
 }
 
 
@@ -4184,6 +4248,49 @@ async function confirmRainAssign() {
       crmsPlaceMarker(updated);
       crmsEditCancel();
     } catch(e) { alert('Save failed. Check connection.'); }
+  };
+
+  // Re-derives lat/lng/locationName from the case's address on file (OneMap
+  // geocoding, same lookup /crms/ingest uses). Complements crmsEnterPinMode's
+  // manual click-to-place — a quick first try before falling back to placing
+  // the pin by hand if the address doesn't geocode cleanly.
+  window.crmsRegeocode = async function() {
+    if (!crmsDetailId) return;
+    try {
+      var r = await fetch('/api/crms/' + crmsDetailId + '/regeocode', { method: 'POST' });
+      var data = await r.json();
+      if (!r.ok) { alert(data.error || 'Regeocode failed.'); return; }
+      var updated = data.case;
+      var idx = crmsCases.findIndex(function(c){ return c.id === crmsDetailId; });
+      if (idx >= 0) crmsCases[idx] = updated;
+      document.getElementById('crms-detail-addr').textContent = updated.address;
+      crmsRenderList();
+      crmsPlaceMarker(updated);
+    } catch(e) { alert('Regeocode failed. Check connection.'); }
+  };
+
+  // Manager-authored field comment — the crew-facing comment box already
+  // existed (crew.ts), this is the missing manager-side equivalent onto the
+  // same shared thread (/api/crms/:id/comment accepts either caller).
+  window.crmsPostComment = async function() {
+    if (!crmsDetailId) return;
+    var input = document.getElementById('crms-comment-input');
+    var text = input.value.trim();
+    if (!text) return;
+    try {
+      var r = await fetch('/api/crms/' + crmsDetailId + '/comment', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: text, unitCode: 'Mgr: ' + (ME.username || 'HQ') })
+      });
+      if (!r.ok) { var d = await r.json().catch(function(){return {};}); alert(d.error || 'Could not post comment.'); return; }
+      input.value = '';
+      var id = crmsDetailId;
+      var idx = crmsCases.findIndex(function(c){ return c.id === id; });
+      var r2 = await fetch('/api/crms/' + id);
+      var updated = await r2.json();
+      if (idx >= 0) crmsCases[idx] = updated;
+      crmsOpenDetail(id);
+    } catch(e) { alert('Could not post comment. Check connection.'); }
   };
 
   // ── Pin-mode: click map to set CRMS case location ────────────────────────
