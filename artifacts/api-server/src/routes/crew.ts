@@ -3,10 +3,45 @@ import { requireCrew } from "./auth";
 
 const router = Router();
 
+// ── Crew service worker (must be served from same origin as the crew page) ─────
+// Mirrors /sw-manager.js (see manager.ts) — same push/notificationclick shape,
+// just defaulting notifications back to /crew instead of /manager.
+router.get("/sw-crew.js", (_req, res) => {
+  res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+  res.setHeader("Service-Worker-Allowed", "/");
+  res.send(`
+self.addEventListener('push', event => {
+  const data = event.data ? event.data.json() : {};
+  const title = data.title || 'Flood Commander Dashboard';
+  const options = {
+    body: data.body || '',
+    icon: '/favicon.ico',
+    badge: '/favicon.ico',
+    tag: data.tag || 'crew-push',
+    renotify: true,
+    data: { url: data.url || '/crew' },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const url = event.notification.data && event.notification.data.url ? event.notification.data.url : '/crew';
+  event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(list) {
+    for (var c of list) { if (c.url.includes('/crew') && 'focus' in c) { return c.focus(); } }
+    if (clients.openWindow) return clients.openWindow(url);
+  }));
+});
+`);
+});
+
 // ── Crew login page ─────────────────────────────────────────────────────────
 // Mirrors /manager/login's shape (see auth.ts's LOGIN_HTML) but simpler —
 // crew log in with their own officer ID + PIN (see
-// POST /api/crew/auth/login), not a username/password.
+// POST /api/crew/auth/login), not a username/password. Also mirrors
+// manager's MFA challenge/enroll panes (MFA is mandatory for every role now,
+// see auth.ts's isMfaEligibleRole) — the /manager/auth/mfa/* endpoints are
+// role-agnostic, so crew reuses them directly rather than duplicating them.
 router.get("/crew/login", (_req, res) => {
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.send(/* html */ `<!DOCTYPE html>
@@ -43,22 +78,56 @@ router.get("/crew/login", (_req, res) => {
     }
     button:disabled { opacity: 0.6; }
     .err { color: #ef4444; font-size: 13px; margin-bottom: 12px; min-height: 16px; }
+    .pane { display: none; }
+    .pane.active { display: block; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>🚔 Crew Login</h1>
     <div class="sub">Flood Commander Dashboard</div>
-    <div class="err" id="err"></div>
-    <form id="f">
-      <label for="officerId">Officer ID</label>
-      <input id="officerId" autocomplete="username" autocapitalize="off" placeholder="e.g. bu1a" />
-      <label for="pin">PIN</label>
-      <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••" />
-      <button type="submit" id="btn">Log In</button>
-    </form>
+
+    <!-- PIN login pane -->
+    <div class="pane active" id="pane-login">
+      <div class="err" id="err"></div>
+      <form id="f">
+        <label for="officerId">Officer ID</label>
+        <input id="officerId" autocomplete="username" autocapitalize="off" placeholder="e.g. bu1a" />
+        <label for="pin">PIN</label>
+        <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••" />
+        <button type="submit" id="btn">Log In</button>
+      </form>
+    </div>
+
+    <!-- MFA challenge pane — second step when this officer already has MFA enabled -->
+    <div class="pane" id="pane-mfa">
+      <div class="err" id="mfa-err"></div>
+      <p class="sub" style="margin-bottom:16px;">Enter the 6-digit code from your authenticator app.</p>
+      <label for="mfa-code">Authentication code</label>
+      <input id="mfa-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
+      <button id="mfa-btn">Verify</button>
+    </div>
+
+    <!-- MFA enrollment pane — shown instead of the dashboard when this officer doesn't have MFA set up yet (mandatory) -->
+    <div class="pane" id="pane-mfa-enroll">
+      <div class="err" id="mfa-enroll-err"></div>
+      <p class="sub" style="margin-bottom:14px;">Two-factor authentication is required. Scan this with an authenticator app (Microsoft/Google Authenticator, etc.), or type the setup key below into it.</p>
+      <div style="text-align:center;margin-bottom:12px;">
+        <img id="mfa-enroll-qr" alt="MFA setup QR code" style="width:180px;height:180px;border-radius:8px;background:#fff;padding:8px;" />
+      </div>
+      <label style="margin-bottom:4px;">Setup key</label>
+      <div id="mfa-enroll-secret" style="font-family:monospace;font-size:13px;letter-spacing:1px;word-break:break-all;background:#0f1117;border:1px solid #2a2d3a;border-radius:7px;padding:9px 11px;margin-bottom:16px;"></div>
+      <label for="mfa-enroll-code">Enter the 6-digit code it shows</label>
+      <input id="mfa-enroll-code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6" placeholder="123456" />
+      <button id="mfa-enroll-btn">Confirm &amp; Continue</button>
+    </div>
   </div>
   <script>
+    function showPane(name) {
+      document.querySelectorAll('.pane').forEach(function (p) { p.classList.remove('active'); });
+      document.getElementById('pane-' + name).classList.add('active');
+    }
+
     var f = document.getElementById('f');
     var err = document.getElementById('err');
     var btn = document.getElementById('btn');
@@ -76,9 +145,58 @@ router.get("/crew/login", (_req, res) => {
         .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
         .then(function (res) {
           if (!res.ok) { err.textContent = res.d.error || 'Login failed'; btn.disabled = false; return; }
+          if (res.d.mfaStep === 'challenge') { showPane('mfa'); document.getElementById('mfa-code').focus(); return; }
+          if (res.d.mfaStep === 'enroll') { showPane('mfa-enroll'); startMfaEnrollment(); return; }
           window.location.href = '/crew';
         })
         .catch(function () { err.textContent = 'Could not connect. Check your connection.'; btn.disabled = false; });
+    });
+
+    function startMfaEnrollment() {
+      var eerr = document.getElementById('mfa-enroll-err');
+      eerr.textContent = '';
+      fetch('/manager/auth/mfa/setup', { method: 'POST' })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) { eerr.textContent = res.d.error || 'Could not start MFA setup.'; return; }
+          document.getElementById('mfa-enroll-qr').src = res.d.qrCodeDataUrl;
+          document.getElementById('mfa-enroll-secret').textContent = res.d.secret;
+        })
+        .catch(function () { eerr.textContent = 'Network error — please try again.'; });
+    }
+
+    document.getElementById('mfa-enroll-btn').addEventListener('click', function () {
+      var ebtn = document.getElementById('mfa-enroll-btn');
+      var eerr = document.getElementById('mfa-enroll-err');
+      var code = document.getElementById('mfa-enroll-code').value.trim();
+      eerr.textContent = '';
+      if (!/^[0-9]{6}$/.test(code)) { eerr.textContent = 'Enter the 6-digit code it shows.'; return; }
+      ebtn.disabled = true; ebtn.textContent = 'Verifying…';
+      fetch('/manager/auth/mfa/verify-setup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }) })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) { eerr.textContent = res.d.error || 'Incorrect code.'; return; }
+          window.location.href = '/crew';
+        })
+        .catch(function () { eerr.textContent = 'Network error — please try again.'; })
+        .then(function () { ebtn.disabled = false; ebtn.textContent = 'Confirm & Continue'; });
+    });
+
+    document.getElementById('mfa-btn').addEventListener('click', function () {
+      var mbtn = document.getElementById('mfa-btn');
+      var merr = document.getElementById('mfa-err');
+      var code = document.getElementById('mfa-code').value.trim();
+      merr.textContent = '';
+      if (!/^[0-9]{6}$/.test(code)) { merr.textContent = 'Enter the 6-digit code from your authenticator app.'; return; }
+      mbtn.disabled = true; mbtn.textContent = 'Verifying…';
+      fetch('/manager/auth/mfa/challenge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }) })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) { merr.textContent = res.d.error || 'Verification failed.'; return; }
+          window.location.href = '/crew';
+        })
+        .catch(function () { merr.textContent = 'Network error — please try again.'; })
+        .then(function () { mbtn.disabled = false; mbtn.textContent = 'Verify'; });
     });
   </script>
 </body>
@@ -152,6 +270,20 @@ router.get("/crew", requireCrew, (req, res) => {
       pointer-events: none; z-index: 50;
     }
     .toast.show { opacity: 1; }
+    .overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+      align-items: center; justify-content: center; padding: 20px; z-index: 60;
+    }
+    .overlay.open { display: flex; }
+    .modal {
+      background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+      padding: 20px; width: 100%; max-width: 360px;
+    }
+    .modal h3 { font-size: 16px; margin-bottom: 4px; }
+    .modal input {
+      width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg); color: var(--fg); font-size: 15px; margin-top: 10px; letter-spacing: 2px;
+    }
   </style>
 </head>
 <body>
@@ -159,8 +291,34 @@ router.get("/crew", requireCrew, (req, res) => {
     <div>
       <h1 id="officerName"></h1>
       <div class="me" id="teamLine">No team selected</div>
+      <div class="me" id="tideLine"></div>
     </div>
-    <button class="logout" onclick="logout()">Log out</button>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <button class="logout" id="notif-btn" onclick="togglePush()" style="display:none">🔕 Notif: OFF</button>
+      <button class="logout" onclick="openMfaSettings()" title="Two-factor authentication">🛡️</button>
+      <button class="logout" onclick="logout()">Log out</button>
+    </div>
+  </div>
+
+  <!-- MFA settings — disable-only, matching the "mandatory" policy: an
+       authenticated crew session always already has MFA enabled (login
+       forces enrollment before granting one, see auth.ts), so there's no
+       separate "set up" view to show here, only "turn off" (which just
+       means the next login will force re-enrollment, same as manager). -->
+  <div class="overlay" id="mfa-modal">
+    <div class="modal">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;">
+        <h3>Two-Factor Authentication</h3>
+        <button onclick="closeMfaSettings()" style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--muted); line-height:1;">×</button>
+      </div>
+      <p class="muted" style="margin-bottom:10px;">Enter a current code from your authenticator app to turn it off. You'll be asked to set it up again next time you log in.</p>
+      <input id="mfa-disable-code" type="text" inputmode="numeric" maxlength="6" placeholder="123456" />
+      <div id="mfa-disable-msg" style="font-size:13px; min-height:18px; margin-top:8px;"></div>
+      <div class="row" style="margin-top:12px;">
+        <button class="action secondary" onclick="closeMfaSettings()">Close</button>
+        <button class="action red" onclick="submitMfaDisable()">Disable</button>
+      </div>
+    </div>
   </div>
 
   <div id="alertBanner" style="display:none" class="alert-banner">
@@ -484,6 +642,19 @@ router.get("/crew", requireCrew, (req, res) => {
     }
 
     // ── CRMS (own vehicle only) ─────────────────────────────────────────────
+    // Field names below match the real CrmsCase shape (see crms.ts) — the
+    // previous version of this card referenced c.title/c.description, which
+    // don't exist on that type and always rendered blank.
+    var CRMS_STATUS_LABEL = {
+      TO_BE_ASSIGNED: 'To Be Assigned',
+      TEAM_ACKNOWLEDGE_OTW: 'OTW',
+      FP_UPDATED: 'FP Updated',
+      ASSISTANCE_PROVIDED: 'Assistance Provided',
+      RESOLVED: 'Resolved',
+    };
+    function crmsSgTime(iso) {
+      return new Date(iso).toLocaleString('en-SG', { timeZone: 'Asia/Singapore', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false });
+    }
     function loadCrms() {
       if (!vehicleId) return;
       fetch('/api/crms', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
@@ -491,10 +662,22 @@ router.get("/crew", requireCrew, (req, res) => {
         var body = document.getElementById('crmsBody');
         if (!mine.length) { body.innerHTML = '<div class="muted">No open cases assigned to your vehicle.</div>'; return; }
         body.innerHTML = mine.map(function (c) {
+          var comments = (c.comments || []).map(function (cm) {
+            return '<div style="margin-top:6px; padding-top:6px; border-top:1px solid var(--border);">' +
+              '<div class="muted" style="font-size:11px;">' + cm.unitCode + ' &middot; ' + crmsSgTime(cm.createdAt) + '</div>' +
+              '<div style="font-size:13px;">' + cm.text + '</div>' +
+            '</div>';
+          }).join('');
           return '<div class="crms-item">' +
-            '<div style="font-weight:600; font-size:13px;">' + (c.title || c.id) + '</div>' +
-            '<div class="muted" style="font-size:12px; margin-bottom:6px;">' + (c.description || '') + '</div>' +
-            '<textarea placeholder="Add a comment…" id="cmt_' + c.id + '" rows="2"></textarea>' +
+            '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">' +
+              '<div style="font-weight:600; font-size:13px;">' + (c.isWog ? 'WOG ' : '') + 'CRMS #' + c.caseNumber + '</div>' +
+              '<span class="badge amber">' + (CRMS_STATUS_LABEL[c.status] || c.status) + '</span>' +
+            '</div>' +
+            '<div class="muted" style="font-size:12px; margin:4px 0;">📍 ' + (c.address || c.locationName || '') + '</div>' +
+            (c.fpName || c.fpContact ? '<div class="muted" style="font-size:12px; margin-bottom:6px;">👤 ' + (c.fpName || '') + (c.fpContact ? ' &middot; ' + c.fpContact : '') + '</div>' : '') +
+            (c.details ? '<div style="font-size:13px; margin-bottom:6px;">' + c.details + '</div>' : '') +
+            comments +
+            '<textarea placeholder="Add a comment…" id="cmt_' + c.id + '" rows="2" style="margin-top:8px;"></textarea>' +
             '<div class="row">' +
               '<button class="action secondary" onclick="crmsComment(' + attrArg(c.id) + ')">Comment</button>' +
               '<button class="action green" onclick="crmsResolve(' + attrArg(c.id) + ')">Resolve</button>' +
@@ -506,13 +689,18 @@ router.get("/crew", requireCrew, (req, res) => {
     function crmsComment(id) {
       var val = document.getElementById('cmt_' + id).value.trim();
       if (!val) return;
+      var t = myTeam(); if (!t) return;
       fetch('/api/crms/' + id + '/comment', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: val }),
+        body: JSON.stringify({ text: val, vehicleId: t.vehicleId, unitCode: t.unitCode }),
       }).then(function () { toast('Comment added'); loadCrms(); });
     }
     function crmsResolve(id) {
-      fetch('/api/crms/' + id + '/resolve', { method: 'POST' }).then(function () { toast('Case resolved'); loadCrms(); });
+      var t = myTeam(); if (!t) return;
+      fetch('/api/crms/' + id + '/resolve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vehicleId: t.vehicleId, unitCode: t.unitCode }),
+      }).then(function () { toast('Case resolved'); loadCrms(); });
     }
 
     // ── Top-level render / poll ─────────────────────────────────────────────
@@ -547,6 +735,100 @@ router.get("/crew", requireCrew, (req, res) => {
       if (vehicleId && myTeam() && !myEntry()) { /* no-op — wait for accept */ }
     });
     setInterval(refresh, 15000);
+
+    // ── Tide — the /api/tide endpoint already existed (built for /manager's
+    // report view) but was never surfaced here. Fetched independently of the
+    // main 15s refresh loop since it changes far more slowly. ──────────────
+    function loadTide() {
+      fetch('/api/tide').then(function (r) { return r.json(); }).then(function (t) {
+        var el = document.getElementById('tideLine');
+        if (!el || typeof t.height !== 'number') return;
+        el.textContent = '🌊 Tide ' + t.height.toFixed(2) + 'm ' + (t.rising ? '↑' : '↓');
+      }).catch(function () {});
+    }
+    loadTide();
+    setInterval(loadTide, 60000);
+
+    // ── MFA settings (disable-only — see the overlay markup above for why) ──
+    function openMfaSettings() {
+      document.getElementById('mfa-disable-code').value = '';
+      document.getElementById('mfa-disable-msg').textContent = '';
+      document.getElementById('mfa-modal').classList.add('open');
+    }
+    function closeMfaSettings() {
+      document.getElementById('mfa-modal').classList.remove('open');
+    }
+    function submitMfaDisable() {
+      var code = document.getElementById('mfa-disable-code').value.trim();
+      var msg = document.getElementById('mfa-disable-msg');
+      if (!/^[0-9]{6}$/.test(code)) { msg.style.color = 'var(--red)'; msg.textContent = 'Enter the 6-digit code.'; return; }
+      msg.style.color = 'var(--muted)'; msg.textContent = 'Verifying…';
+      fetch('/manager/auth/mfa/disable', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }),
+      })
+        .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+        .then(function (res) {
+          if (!res.ok) { msg.style.color = 'var(--red)'; msg.textContent = res.d.error || 'Incorrect code.'; return; }
+          msg.style.color = 'var(--green)'; msg.textContent = '✓ Two-factor authentication turned off.';
+          setTimeout(closeMfaSettings, 1800);
+        })
+        .catch(function () { msg.style.color = 'var(--red)'; msg.textContent = 'Network error — please try again.'; });
+    }
+
+    // ── Push notifications — mirrors /manager's initPush (see manager.ts),
+    // scoped to this officer via type:'crew' + officerId so alerts/assignment
+    // pushes still arrive even if the tab is backgrounded/closed. ──────────
+    (async function initPush() {
+      if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+      var btn = document.getElementById('notif-btn');
+      if (btn) btn.style.display = '';
+
+      function updateBtn(state) {
+        if (!btn) return;
+        if (state === 'granted') { btn.textContent = '🔔 Notif: ON'; btn.style.opacity = '1'; btn.style.color = '#34d399'; btn.disabled = false; }
+        else if (state === 'denied') { btn.textContent = '🔕 Notif: Blocked'; btn.style.opacity = '.5'; btn.style.color = ''; btn.disabled = true; }
+        else { btn.textContent = '🔕 Notif: OFF'; btn.style.opacity = '1'; btn.style.color = ''; btn.disabled = false; }
+      }
+      updateBtn(Notification.permission);
+
+      var swReg = null;
+      try { swReg = await navigator.serviceWorker.register('/sw-crew.js', { scope: '/' }); }
+      catch (e) { console.warn('SW register failed', e); return; }
+
+      if (Notification.permission === 'granted') await subscribePush(swReg);
+
+      window.togglePush = async function () {
+        if (Notification.permission === 'denied') {
+          alert('Notifications are blocked in your browser. Please enable them in browser settings, then refresh.'); return;
+        }
+        var existing = await swReg.pushManager.getSubscription();
+        if (existing) {
+          await existing.unsubscribe();
+          await fetch('/api/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: existing.endpoint }) });
+          updateBtn('default');
+        } else {
+          var perm = await Notification.requestPermission();
+          updateBtn(perm);
+          if (perm === 'granted') await subscribePush(swReg);
+        }
+      };
+
+      async function subscribePush(reg) {
+        try {
+          var resp = await fetch('/api/push/vapid-key').then(function (r) { return r.json(); });
+          var sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(resp.publicKey) });
+          await fetch('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: sub, type: 'crew', officerId: OFFICER.id }) });
+          updateBtn('granted');
+        } catch (e) { console.warn('Push subscribe failed', e); }
+      }
+
+      function urlBase64ToUint8Array(b64) {
+        var pad = '='.repeat((4 - b64.length % 4) % 4);
+        var base64 = (b64 + pad).replace(/-/g, '+').replace(/_/g, '/');
+        var raw = atob(base64);
+        return Uint8Array.from(Array.from(raw).map(function (c) { return c.charCodeAt(0); }));
+      }
+    })();
   </script>
 </body>
 </html>`);
