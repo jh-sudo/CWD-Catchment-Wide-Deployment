@@ -1,19 +1,16 @@
 # CWD — Catchment-Wide Deployment
 
 Government-adjacent flood-ops fleet coordination system for Singapore — coordinates vehicle
-deployments, crew rosters, and field inspections across catchments. pnpm monorepo: four hosted
-web services sharing one Express backend. No native mobile client — see
+deployments and crew rosters across catchments. pnpm monorepo: two hosted web services sharing
+one Express backend. No native mobile client — see
 [Crew and manager dashboards](#crew-and-manager-dashboards) below for why.
 
 ## Structure
 
 ```
 artifacts/
-  api-server/          — Express API (shared backend for all 4 hosted services)
+  api-server/          — Express API (shared backend for both hosted services)
   roster-dashboard/     — React + Vite web dashboard (crew roster, leave, PH rotation)
-  apa/                   — React + Vite web app (FRA & coverage map)
-  inspector/             — React + Vite web app (field inspection reports + photos)
-  mockup-sandbox/        — Static "Warehouse IMS" design mockup — prototype only, not hosted, no backend
 lib/
   db/                    — Drizzle ORM schema + Postgres client (source of truth for all tables)
   api-spec/               — OpenAPI 3.1 spec
@@ -26,12 +23,11 @@ scripts/
 ## Tech stack
 
 **Backend** (`api-server`): Node.js 20 + TypeScript (ESM), Express 5, Drizzle ORM + `pg` →
-PostgreSQL, `bcryptjs`, `@aws-sdk/client-s3` (MinIO-compatible object storage for inspection
-photos), `web-push` (VAPID), `docx`/`exceljs` (report generation), `sharp` (image processing),
-`pino` (logging). Bundled with esbuild into a single `dist/index.mjs`.
+PostgreSQL, `bcryptjs`, `web-push` (VAPID), `docx`/`exceljs` (report generation), `pino`
+(logging). Bundled with esbuild into a single `dist/index.mjs`.
 
-**Web frontends** (`roster-dashboard`, `apa`, `inspector`): React 19 + TypeScript, Vite 7,
-Tailwind CSS 4, `wouter` (routing), TanStack Query, Zod (shared schemas from `lib/api-zod`).
+**Web frontend** (`roster-dashboard`): React 19 + TypeScript, Vite 7, Tailwind CSS 4, `wouter`
+(routing), TanStack Query, Zod (shared schemas from `lib/api-zod`).
 
 **Crew and manager dashboards** (`/crew`, `/manager`): server-rendered HTML/JS directly from
 `api-server` — no separate frontend build, no app to install. See below for why.
@@ -48,19 +44,23 @@ where the code lives:
 | | Replit | Now |
 |---|---|---|
 | **Data persistence** | Flat JSON files (`artifacts/api-server/data/*.json`), synced to Replit Object Storage | Real PostgreSQL schema (`lib/db/`, Drizzle ORM) — JSON files were backfilled in once, then retired |
-| **Inspection photos** | In-memory only — never actually persisted, would vanish on restart | MinIO (S3-compatible), via `@aws-sdk/client-s3` |
-| **Routing 4 services under 1 origin** | Replit's built-in path-based artifact router (`router = "path"` in each `.replit-artifact/artifact.toml`) | GOV PaaS/Northflank's native path-based routing — same shape, different platform |
+| **Routing services under 1 origin** | Replit's built-in path-based artifact router (`router = "path"` in each `.replit-artifact/artifact.toml`) | GOV PaaS/Northflank's native path-based routing — same shape, different platform |
 | **Build & deploy** | Automatic — Replit built and deployed on every change | Manual: `docker build` per service → push to GHCR → manual redeploy on GOV PaaS (no CI; the deploy step is a manual "pull this image" action regardless, so CI would only automate half the pipeline — not worth it yet) |
 | **Domain** | `your-dashboard.replit.app` | One GOV PaaS-issued sandbox subdomain, intranet-only |
 | **Secrets** | Replit's built-in Secrets panel | Environment variables set per-service in the GOV PaaS console |
 | **Mobile clients** | Pointed at their Replit domains via a build-time env var / fallback constant | Same mechanism, just repointed at the new subdomain — no architecture change |
 
-**One app was deliberately not carried over to GOV PaaS**, not by oversight:
-- **`mockup-sandbox`** ("Warehouse IMS") — a static design mockup with zero backend calls
-  (`kind = "design"` in its own Replit metadata). Left as-is, under development.
-
-Still exists on the old Replit deployment today; once Replit is decommissioned, that surface
-simply stops being reachable — expected, not a regression.
+**Three apps that existed at migration time were later removed from this repo entirely**
+(a follow-up cleanup, not part of the initial migration): `apa` (FRA & coverage map) and
+`inspector` (field inspection reports + photos) were unrelated to the 4 endpoints this codebase
+actually targets (`/manager`, `/lightning`, `/crew`, `/roster`) — removing them dropped the
+now-unused `multer`/`sharp`/`@aws-sdk/client-s3` dependencies and the MinIO client code too, but
+**not** the underlying `inspections` Postgres table or MinIO bucket contents, which were left
+untouched as a data-retention question separate from removing the app. `mockup-sandbox`
+("Warehouse IMS", a static design mockup with zero backend calls) was removed at the same time —
+previously kept in-repo-but-unhosted deliberately, it was re-confirmed for removal rather than
+carried forward indefinitely. See git history for the actual code if any of the three needs
+resurrecting later.
 
 ## Crew and manager dashboards
 
@@ -125,10 +125,8 @@ account on first boot — see **Manager login** below.
 # 1. API server (port 8080) — point at the local Postgres/MinIO above
 pnpm --filter @workspace/api-server run dev
 
-# 2. Web frontends (each on its own Vite dev port)
+# 2. Web frontend
 pnpm --filter @workspace/roster-dashboard run dev
-pnpm --filter @workspace/apa run dev
-pnpm --filter @workspace/inspector run dev
 ```
 
 The crew (`/crew`) and manager (`/manager`) dashboards are served directly by the API server —
@@ -143,15 +141,15 @@ no separate dev server, just open them once step 1 is running.
 | `DATABASE_URL` | Postgres connection string |
 | `SESSION_SECRET` | Random secret for manager session cookies — no fallback, server fails fast if unset |
 | `MFA_ENCRYPTION_KEY` | Base64-encoded 32-byte AES-256-GCM key used to encrypt TOTP MFA secrets at rest — no fallback, server fails fast if unset. Generate with `openssl rand -base64 32` |
-| `MINIO_ENDPOINT` | MinIO/S3 endpoint URL |
-| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` | MinIO credentials |
-| `MINIO_BUCKET` | Bucket name for inspection photos (e.g. `cwd-inspections`) |
 | `PORT` | Port the API server listens on |
 | `GOOGLE_MAPS_API_KEY` | Client-facing Google Maps JS API key, embedded in the `/manager` dashboard page — optional; the map just won't load if unset |
 
-`roster-dashboard`, `apa`, and `inspector` need no env vars of their own — they call the API
-same-origin via relative paths. Same for `/crew` and `/manager` — served directly by
-`api-server`, no separate config.
+`MINIO_*` vars may still be present in `.env`/`.env.example` from when `inspector` used them for
+photo storage — no code reads them anymore since that app was removed (see "Migrating from
+Replit" above), they're safe to drop whenever the file is next touched.
+
+`roster-dashboard` needs no env vars of its own — it calls the API same-origin via relative
+paths. Same for `/crew` and `/manager` — served directly by `api-server`, no separate config.
 
 ## Manager login
 
@@ -185,26 +183,35 @@ POST /api/crew/auth/login   { "officerId": "...", "pin": "..." }
 All credential-check endpoints (manager login, manager PIN, crew PIN, per-officer crew
 login) are rate-limited independently — 10 attempts per 15 minutes per IP, per endpoint.
 
-## Manager MFA (TOTP)
+## MFA (TOTP)
 
-`admin`/`manager`/`ic` accounts can optionally turn on TOTP-based two-factor authentication
-(🛡️ button in the `/manager` dashboard header) — not `crew`, whose PIN flow is deliberately
-low-friction for field use. Opt-in, not enforced: see
+TOTP-based two-factor authentication is **mandatory for every role** — `admin`/`manager`/`ic` (🛡️
+button in the `/manager` dashboard header) and `crew` (🛡️ button in `/crew`) alike. This was
+opt-in at first (see
 [`.scratch/flood-commander-web/issues/09-manager-mfa-totp.md`](.scratch/flood-commander-web/issues/09-manager-mfa-totp.md)
-for the full design writeup (including why this instead of Entra ID SSO).
+for the original design writeup, including why this instead of Entra ID SSO) but became mandatory
+for admin/manager/ic, then extended to crew too — both dashboards reach the internet from
+personal mobile devices in the field, so credential-only login was the weakest control left once
+GOV PaaS hosting made the app internet-facing rather than intranet/VPN-only.
+`isMfaEligibleRole()` in `auth.ts` is the single source of truth for which roles this applies to
+(currently: all of them) — an account with `mfa_enabled=false` is forced through enrollment on its
+very next login rather than getting a normal session, there's no way to skip it.
 
 ```bash
-# 1. Start enrollment (own session) — returns otpauth:// URI + QR code + the raw setup key
+# 1. Start enrollment (own session, or a session pending MFA) — returns otpauth:// URI + QR code + the raw setup key
 POST /manager/auth/mfa/setup
 
 # 2. Confirm the phone actually scanned it before flipping mfa_enabled on
 POST /manager/auth/mfa/verify-setup   { "code": "123456" }
 
-# Login becomes two steps once enabled:
-POST /manager/auth/login              { "username": "...", "password": "..." }  → { mfaRequired: true }
-POST /manager/auth/mfa/challenge      { "code": "123456" }                       → session established
+# Login always returns a pending step, never a session directly, for every MFA-eligible role:
+POST /manager/auth/login              { "username": "...", "password": "..." }   → { mfaStep: "challenge" }  (already enrolled)
+                                                                                   → { mfaStep: "enroll" }     (not yet enrolled — mandatory)
+POST /api/crew/auth/login             { "officerId": "...", "pin": "..." }        → same two-shape response
+POST /manager/auth/mfa/challenge      { "code": "123456" }                        → session established
+POST /manager/auth/mfa/verify-setup   { "code": "123456" }                        → session established (enroll path)
 
-# Self-service disable (re-verifies a current code first)
+# Self-service disable (re-verifies a current code first) — forces re-enrollment on next login, doesn't skip MFA going forward
 POST /manager/auth/mfa/disable        { "code": "123456" }
 
 # Admin-initiated reset — lockout recovery when someone loses their device, no code required
@@ -220,8 +227,8 @@ enrolled, or fall back to the pod-shell pattern (see Deployment below) to clear
 
 ## Deployment
 
-Each hosted service (`api-server`, `roster-dashboard`, `apa`, `inspector`) has its own
-`Dockerfile` at `artifacts/<service>/Dockerfile`, built from the repo root:
+Each hosted service (`api-server`, `roster-dashboard`) has its own `Dockerfile` at
+`artifacts/<service>/Dockerfile`, built from the repo root:
 
 ```bash
 docker build -f artifacts/api-server/Dockerfile -t ghcr.io/jh-sudo/cwd-api-server:latest .
@@ -231,18 +238,19 @@ docker push ghcr.io/jh-sudo/cwd-api-server:latest
 GOV PaaS deploys by pulling these images from GHCR directly (not a git-connected build) — after
 pushing a new image, trigger a redeploy manually from the GOV PaaS console.
 
-All 4 services sit under one GOV PaaS subdomain via path-based routing:
+Both services sit under one GOV PaaS subdomain via path-based routing:
 
 | Path | Service |
 |---|---|
 | `/`, `/api/*`, `/manager/*`, `/crew/*`, `/lightning/*` | api-server |
 | `/roster/*` | roster-dashboard |
-| `/apa/*` | apa |
-| `/inspector/*` | inspector |
 
 The PostgreSQL and MinIO addons are **private-network-only** — not reachable from outside GOV
-PaaS. One-off admin tasks (applying schema, creating a bucket) are run from a live service pod's
-own Shell tab in the GOV PaaS console, not from a local machine.
+PaaS. One-off admin tasks (applying schema) are run from a live service pod's own Shell tab in
+the GOV PaaS console, not from a local machine. MinIO currently has no active writer (the
+`inspector` app that used it was removed — see "Migrating from Replit" above) but the addon and
+its existing bucket contents are left running, a data-retention question separate from the app
+removal.
 
 ## Codegen
 

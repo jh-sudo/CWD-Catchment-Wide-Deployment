@@ -38,12 +38,6 @@ export interface HRPoolRebuild {
   invalidDraws: Array<{ date: string; officer: string }>;
 }
 
-export function normalizeHRPool(pool: unknown, officers: readonly string[]): string[] {
-  if (!Array.isArray(pool)) return [];
-  const allowed = new Set(officers);
-  return [...new Set(pool.filter((name): name is string => typeof name === "string" && allowed.has(name)))];
-}
-
 /**
  * Mutates only the requested holiday pool and records the cycle of each draw.
  *
