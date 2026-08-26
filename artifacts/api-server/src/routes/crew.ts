@@ -817,7 +817,7 @@ router.get("/crew", requireCrew, (req, res) => {
       allItems.forEach(function (i) { lines.push(i.line); });
       lines.push(sep, '📍 ' + entries.filter(function (e) { return e.arrived; }).length + '/' + entries.length + ' arrived | ' + pendingOnly.length + ' pending');
 
-      var text = lines.join('\n');
+      var text = lines.join('\\n');
       navigator.clipboard.writeText(text).then(function () { toast('Report copied to clipboard!'); }).catch(function () { toast('Copy failed.'); });
     }
 
