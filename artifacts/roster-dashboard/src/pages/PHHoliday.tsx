@@ -437,7 +437,13 @@ function PHRoster({ jumpDate }: { jumpDate?: string }) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ rows: updatedRows }),
+        // isMonOIL is derived from ALL_PH_OPTIONS' real inLieu/actualDate
+        // calendar data (see above), so it's ground truth — passing it
+        // explicitly means the backend's own OIL-Monday detection (which
+        // otherwise has to infer this from whether the prior Sunday has
+        // saved ref rows) doesn't have to guess for a request this page
+        // already knows the answer to.
+        body: JSON.stringify({ rows: updatedRows, isOilMonday: isMonOIL }),
       });
       if (!res.ok) throw new Error("Save failed");
 
