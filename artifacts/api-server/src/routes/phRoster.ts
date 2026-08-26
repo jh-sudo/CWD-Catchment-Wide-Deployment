@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
 import { eq, and, gte, lte } from "drizzle-orm";
-import { requireManager } from "./auth.js";
+import { requireManager, getManager } from "./auth.js";
+import { applyPHRoster } from "./rosterPlan.js";
 import {
   db,
   officersTable,
@@ -219,13 +220,91 @@ phRosterRouter.get("/ph-roster-ref/:date", async (req, res) => {
   res.json({ rows });
 });
 
-// PUT /api/ph-roster-ref/:date — save updated ref rows (manager+)
+// PUT /api/ph-roster-ref/:date — save updated ref rows (manager+). PH Roster
+// is authoritative for Master Actual: saving immediately re-applies that
+// date's Master overrides from the roster's actualName values in the SAME
+// request (via applyPHRoster, shared with the manual re-apply endpoint), so
+// an edited PH assignment can't leave a stale duty value behind in
+// Excel > Master — this used to require a second, separately-fired frontend
+// call to POST /roster-plan/ph-apply/:date.
 phRosterRouter.put("/ph-roster-ref/:date", requireManager, async (req, res) => {
   const { date } = req.params as { date: string };
-  const { rows } = req.body as { rows: PHRefRow[] };
-  if (!Array.isArray(rows)) { res.status(400).json({ error: "rows array required" }); return; }
-  await savePHRosterRefForDate(date, rows);
-  res.json({ ok: true });
+  const { rows, isOilMonday } = req.body as { rows?: unknown; isOilMonday?: unknown };
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    res.status(400).json({ error: "At least one PH roster row is required." });
+    return;
+  }
+
+  const normalizedRows: PHRefRow[] = [];
+  for (const [index, row] of rows.entries()) {
+    const candidate = row as Partial<PHRefRow>;
+    const subCatchment = typeof candidate.subCatchment === "string" ? candidate.subCatchment.trim() : "";
+    const shift = typeof candidate.shift === "string" ? candidate.shift.trim().toUpperCase() : "";
+    const scheduledName = typeof candidate.scheduledName === "string" ? candidate.scheduledName.trim() : "";
+    const actualName = typeof candidate.actualName === "string" ? candidate.actualName.trim() : "";
+    const remarks = typeof candidate.remarks === "string" ? candidate.remarks.trim() : "";
+
+    if (!subCatchment || !scheduledName || !["PD", "DAY", "ND"].includes(shift)) {
+      res.status(400).json({
+        error: `Invalid PH roster row ${index + 1}. Unit, PD/DAY/ND shift, and scheduled officer are required.`,
+      });
+      return;
+    }
+
+    normalizedRows.push({
+      rowIndex: typeof candidate.rowIndex === "number" ? candidate.rowIndex : index,
+      subCatchment,
+      shift,
+      scheduledName,
+      // A blank actual field means the scheduled officer worked — applyPHRoster
+      // falls back to scheduledName when actualName is blank.
+      actualName,
+      ...(remarks ? { remarks } : {}),
+    });
+  }
+
+  const scheduledNames = new Set<string>();
+  const actualWorkerNames = new Set<string>();
+  for (const row of normalizedRows) {
+    const scheduledKey = row.scheduledName.toLowerCase();
+    const actualKey = (row.actualName || row.scheduledName).toLowerCase();
+    if (scheduledNames.has(scheduledKey)) {
+      res.status(400).json({ error: `Duplicate scheduled officer "${row.scheduledName}" in the PH roster.` });
+      return;
+    }
+    if (actualWorkerNames.has(actualKey)) {
+      res.status(400).json({
+        error: `Actual officer "${row.actualName || row.scheduledName}" cannot cover more than one PH roster row.`,
+      });
+      return;
+    }
+    scheduledNames.add(scheduledKey);
+    actualWorkerNames.add(actualKey);
+  }
+
+  await savePHRosterRefForDate(date, normalizedRows);
+
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  // The PH page knows whether this is the Monday in lieu of a Sunday PH —
+  // pass that through so applyPHRoster doesn't have to depend on the Sunday
+  // reference rows still being present when the OIL roster is saved.
+  const masterActual = await applyPHRoster(
+    date,
+    caller?.username,
+    caller?.officerName ?? caller?.username,
+    typeof isOilMonday === "boolean" ? { isOilMonday } : undefined,
+  );
+  if ("error" in masterActual) {
+    res.status(500).json({
+      error: "PH roster was saved, but Excel > Master Actual could not be updated.",
+      detail: masterActual.error,
+    });
+    return;
+  }
+
+  res.json({ ok: true, rows: normalizedRows, masterActual });
 });
 
 // POST /api/ph-roster-ref/:date/swaps — record PH roster changes as swap entries (manager+)
