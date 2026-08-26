@@ -12,9 +12,7 @@ import { rosterPatternsRouter } from "./rosterPatterns";
 import { vehicleArrangementRouter } from "./vehicleArrangement";
 import { leaveRequestRouter } from "./leaveRequests";
 import { phRosterRouter } from "./phRoster";
-import { inspectionsRouter } from "./inspections";
 import { lightningRouter, lightningPublicRouter } from "./lightning";
-import apaRouter from "./apa";
 import { getSingaporeTide } from "../tide";
 
 const router: IRouter = Router();
@@ -29,9 +27,7 @@ router.use(rosterPatternsRouter);
 router.use(vehicleArrangementRouter);
 router.use(leaveRequestRouter);
 router.use(phRosterRouter);
-router.use(inspectionsRouter);
 router.use(lightningRouter);
-router.use(apaRouter);
 
 router.get("/tide", async (_req, res) => {
   try {
