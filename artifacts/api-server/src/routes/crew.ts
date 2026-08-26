@@ -294,6 +294,7 @@ router.get("/crew", requireCrew, (req, res) => {
       <div class="me" id="tideLine"></div>
     </div>
     <div style="display:flex; align-items:center; gap:12px;">
+      <button class="logout" onclick="copyReportCrew()" title="Copy fleet deployment report to clipboard">📋 Report</button>
       <button class="logout" id="notif-btn" onclick="togglePush()" style="display:none">🔕 Notif: OFF</button>
       <button class="logout" onclick="openMfaSettings()" title="Two-factor authentication">🛡️</button>
       <button class="logout" onclick="logout()">Log out</button>
@@ -352,8 +353,24 @@ router.get("/crew", requireCrew, (req, res) => {
     var STORAGE_KEY = 'crew_vehicle_' + OFFICER.id;
     var vehicleId = localStorage.getItem(STORAGE_KEY) || null;
     var state = null; // last /deployments/state payload
+    var crmsCases = []; // last /api/crms payload — shared with copyReportCrew()
+    var latestTide = null; // last /api/tide payload — shared with copyReportCrew()
 
     document.getElementById('officerName').textContent = OFFICER.name;
+
+    // Unit sort order: BU → PJ → WK → CP → KG (mirrors manager.ts's unitSortKey)
+    var UNIT_ORDER_MAP = { BU: 0, PJ: 1, WK: 2, CP: 3, KG: 4 };
+    function unitSortKey(code) {
+      var prefix = code.replace(/[0-9].*$/, '');
+      var num = parseInt(code.replace(/^[^0-9]+/, ''), 10) || 0;
+      return (UNIT_ORDER_MAP[prefix] ?? 99) * 1000 + num;
+    }
+    function weatherEmoji(w) {
+      if (w === 'Heavy Rain') return '🔴';
+      if (w === 'Moderate Rain') return '🟠';
+      if (w === 'Light Rain' || w === 'Nil Rain') return '🟢';
+      return '';
+    }
 
     // Safe way to embed a JSON-stringified value inside a double-quoted
     // onclick="..." HTML attribute — JSON.stringify's own double quotes would
@@ -658,7 +675,8 @@ router.get("/crew", requireCrew, (req, res) => {
     function loadCrms() {
       if (!vehicleId) return;
       fetch('/api/crms', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
-        var mine = (d.cases || []).filter(function (c) { return c.assignedVehicleId === vehicleId && c.status !== 'RESOLVED'; });
+        crmsCases = d.cases || [];
+        var mine = crmsCases.filter(function (c) { return c.assignedVehicleId === vehicleId && c.status !== 'RESOLVED'; });
         var body = document.getElementById('crmsBody');
         if (!mine.length) { body.innerHTML = '<div class="muted">No open cases assigned to your vehicle.</div>'; return; }
         body.innerHTML = mine.map(function (c) {
@@ -741,6 +759,7 @@ router.get("/crew", requireCrew, (req, res) => {
     // main 15s refresh loop since it changes far more slowly. ──────────────
     function loadTide() {
       fetch('/api/tide').then(function (r) { return r.json(); }).then(function (t) {
+        latestTide = t;
         var el = document.getElementById('tideLine');
         if (!el || typeof t.height !== 'number') return;
         el.textContent = '🌊 Tide ' + t.height.toFixed(2) + 'm ' + (t.rising ? '↑' : '↓');
@@ -748,6 +767,59 @@ router.get("/crew", requireCrew, (req, res) => {
     }
     loadTide();
     setInterval(loadTide, 60000);
+
+    // ── Copy fleet deployment report to clipboard ───────────────────────────
+    // Mirrors manager.ts's copyReport() — same text shape, built client-side
+    // from the same /deployments/state payload crew.ts already polls, so a
+    // crew member can paste the same-format SITREP into WhatsApp/Telegram
+    // without needing to open /manager.
+    function copyReportCrew() {
+      if (!state) { toast('Report not ready yet — try again shortly.'); return; }
+      var entries = state.entries || [];
+      var date = state.deploymentDate || '';
+      var allAssignments = state.assignments || [];
+      var deployedVehicleIds = {};
+      entries.forEach(function (e) { deployedVehicleIds[e.vehicleId] = true; });
+      var pendingOnly = allAssignments.filter(function (a) {
+        return a.status === 'pending' && !deployedVehicleIds[a.vehicleId];
+      });
+      if (!entries.length && !pendingOnly.length) { toast('Nothing to copy yet.'); return; }
+
+      var sep = '─'.repeat(48);
+      var today = date || new Date().toLocaleDateString('en-SG', { day: '2-digit', month: 'long', year: 'numeric' });
+      var lines = ['*DEPLOYMENT REPORT — ' + today + '*'];
+      if (state.activeAlert && state.activeAlert.extracted) {
+        lines.push('🚨 HRW: ' + state.activeAlert.extracted);
+      }
+      if (latestTide) {
+        lines.push('🌊 Tide Level: ' + latestTide.height.toFixed(2) + 'm ' + (latestTide.rising ? '↑' : '↓'));
+      }
+
+      var allItems = [];
+      entries.forEach(function (e) {
+        var loc = locationById(e.locationId);
+        var locName = loc ? loc.name : e.locationId;
+        var timeStr = e.arrived && e.arrivedAt ? (e.arrivedAt + ' hrs') : ('ETA ' + e.eta + ' hrs' + (e.fromRoad && !e.arrived ? ' from ' + e.fromRoad : ''));
+        var wSuffix = e.weather ? (' | ' + weatherEmoji(e.weather) + ' ' + e.weather) : '';
+        allItems.push({ sortKey: unitSortKey(e.unitCode), line: '*' + e.unitCode + '* ' + e.vehicleNumber + ' (' + e.shift + '): ' + e.partner + ' → *' + locName + '* | ' + timeStr + wSuffix });
+      });
+      pendingOnly.forEach(function (a) {
+        var rosterTeam = (state.rosterTeams || []).find(function (t) { return (t.unitCode + '-' + t.vehicleNumber) === a.vehicleId || t.unitCode === a.unitCode; });
+        var partner = rosterTeam ? rosterTeam.partner : '';
+        var shift = a.shift || (rosterTeam ? rosterTeam.shift : '');
+        var activeCrms = crmsCases.find(function (c) { return c.assignedVehicleId === a.vehicleId && c.status !== 'RESOLVED'; });
+        var displayLoc = activeCrms ? ('Attend Case "' + (activeCrms.address || activeCrms.locationName || '#' + activeCrms.caseNumber) + '"') : a.locationName;
+        allItems.push({ sortKey: unitSortKey(a.unitCode), line: '*' + a.unitCode + '* ' + a.vehicleNumber + (shift ? ' (' + shift + ')' : '') + ': ' + (partner ? partner + ' → ' : '→ ') + '*' + displayLoc + '*' });
+      });
+      allItems.sort(function (a, b) { return a.sortKey - b.sortKey; });
+
+      lines.push(sep, '✅ DEPLOYED (' + allItems.length + ')');
+      allItems.forEach(function (i) { lines.push(i.line); });
+      lines.push(sep, '📍 ' + entries.filter(function (e) { return e.arrived; }).length + '/' + entries.length + ' arrived | ' + pendingOnly.length + ' pending');
+
+      var text = lines.join('\n');
+      navigator.clipboard.writeText(text).then(function () { toast('Report copied to clipboard!'); }).catch(function () { toast('Copy failed.'); });
+    }
 
     // ── MFA settings (disable-only — see the overlay markup above for why) ──
     function openMfaSettings() {
