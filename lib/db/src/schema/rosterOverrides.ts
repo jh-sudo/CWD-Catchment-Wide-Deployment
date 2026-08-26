@@ -19,6 +19,9 @@ export const rosterOverridesTable = pgTable(
     vehicle: text("vehicle"),
     overtimeHours: text("overtime_hours"),
     swappedWithOfficerName: text("swapped_with_officer_name"),
+    // Free-text note attached to an override, entered via the Master grid
+    // editor's long-press comment modal. Shown elsewhere via NoteIndicator.
+    comment: text("comment"),
     madeBy: text("made_by"),
     madeByName: text("made_by_name"),
     madeAt: timestamp("made_at", { withTimezone: true }),

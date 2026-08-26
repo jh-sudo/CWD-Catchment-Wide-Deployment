@@ -36,6 +36,7 @@ export default function RosterCycle() {
   const [coverForMap, setCoverForMap] = useState<Record<string, boolean>>({});
   const [swapMap, setSwapMap] = useState<Record<string, string>>({});
   const [vehicleMap, setVehicleMap] = useState<Record<string, string>>({});
+  const [commentMap, setCommentMap] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
   const [jumpValue, setJumpValue] = useState("");
   const [dutyFilter, setDutyFilter] = useState<Set<string>>(new Set());
@@ -77,6 +78,7 @@ export default function RosterCycle() {
       const cm: Record<string, string> = {};
       const vm: Record<string, string> = {};
       const sm: Record<string, string> = {};
+      const comm: Record<string, string> = {};
       for (const d of sched.duties ?? []) {
         if (d.date?.startsWith(ds)) {
           dm[d.officerId] = d.duty;
@@ -85,6 +87,7 @@ export default function RosterCycle() {
           if (d.coveredByOfficerName)     cm[d.officerId] = d.coveredByOfficerName;
           if (d.vehicle)                  vm[d.officerId] = d.vehicle;
           if (d.swappedWithOfficerName)   sm[d.officerId] = d.swappedWithOfficerName;
+          if (d.comment)                  comm[d.officerId] = d.comment;
         }
       }
       // Stale guard: if the user has navigated to a different date since this
@@ -95,6 +98,7 @@ export default function RosterCycle() {
       setCrossPostMap(cpm);
       setVehicleMap(vm);
       setSwapMap(sm);
+      setCommentMap(comm);
       const leaveArr = leaveRes.ok ? await leaveRes.json() : [];
       const lm: Record<string, string> = {};
       const cfm: Record<string, boolean> = {};
@@ -406,6 +410,7 @@ export default function RosterCycle() {
                   coverForMap={coverForMap}
                   swapMap={swapMap}
                   vehicleMap={vehicleMap}
+                  commentMap={commentMap}
                   date={format(selectedDate, "yyyy-MM-dd")}
                   hideStrengthBar
                   filterDuty={dutyFilter}
