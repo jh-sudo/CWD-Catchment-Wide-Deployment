@@ -1217,22 +1217,63 @@ rosterPlanRouter.post("/roster-plan/ph-extract-sunday/:date", requireManager, as
   res.json({ ok: true, extractedCount: sundayRows.length, sundayDate: sundayStr });
 });
 
-// POST /api/roster-plan/ph-apply/:date — apply PH ref roster duties as overrides (idempotent)
-// Logic: PH duty officers → PH shift; non-PH officers with DAY/PD target → OIL; others unchanged.
-rosterPlanRouter.post("/roster-plan/ph-apply/:date", requireManager, async (req, res) => {
-  const { date } = req.params as { date: string };
-
+// ── Shared PH-apply logic ────────────────────────────────────────────────────
+// Applies PH ref roster duties as Master overrides, idempotent. Exported so
+// phRoster.ts's PUT /ph-roster-ref/:date can call it directly after saving
+// ref rows — the save and the Master-override sync happen atomically in one
+// request, instead of requiring a second frontend call to
+// POST /roster-plan/ph-apply/:date (which still exists too, for a manual
+// re-apply without re-saving the roster).
+export async function applyPHRoster(
+  date: string,
+  madeBy?: string | null,
+  madeByName?: string | null,
+  options?: { isOilMonday?: boolean },
+): Promise<{ applied: number; phDutyCount: number; oilCount: number } | { error: string }> {
   const refRows = await db.select().from(phRosterRefTable).where(eq(phRosterRefTable.date, date));
   if (refRows.length === 0) {
-    res.status(404).json({ error: "No PH roster data found for this date. Generate the PH roster first." });
-    return;
+    return { error: "No PH roster data found for this date. Generate the PH roster first." };
   }
 
-  // Map: officer name (lowercase) → PH shift
+  const referenceDate = new Date(date + "T00:00:00Z");
+
+  // OIL Monday = PH fell on the preceding Sunday → following Monday is the
+  // statutory OIL day. A bare "is it a Monday" check would mislabel a
+  // genuine Monday PH (e.g. National Day landing on a Monday) as OIL — only
+  // treat it as OIL Monday if the preceding Sunday itself has ph-roster-ref
+  // rows, or the caller explicitly says so (the PH page knows this without
+  // needing the Sunday rows to still exist).
+  let isOilMonday = options?.isOilMonday;
+  if (isOilMonday === undefined) {
+    const sundayOfOil = new Date(referenceDate.getTime() - 24 * 60 * 60 * 1000);
+    const sundayOfOilStr = sundayOfOil.toISOString().slice(0, 10);
+    const sundayRows = await db
+      .select({ date: phRosterRefTable.date })
+      .from(phRosterRefTable)
+      .where(eq(phRosterRefTable.date, sundayOfOilStr))
+      .limit(1);
+    isOilMonday = referenceDate.getUTCDay() === 1 && sundayRows.length > 0;
+  }
+
+  // Map: officer name (lowercase) → PH shift. Use actualName when set (the
+  // officer who truly worked the PH) — fall back to scheduledName only when
+  // actualName is absent/blank.
   const phDutyMap = new Map<string, string>();
+  // A scheduled/actual mismatch is a cover relationship. Both sides of it
+  // need a Master row written — the scheduled officer's row must show who
+  // covered them, and the covering officer's row must show which unit they
+  // covered (see CONTEXT.md's "one-directional fields, watch for it" note;
+  // this was previously only ever written onto one side).
+  const coveredByMap = new Map<string, string>();
+  const coveringUnitMap = new Map<string, string>();
   for (const row of refRows) {
-    if (row.scheduledName) {
-      phDutyMap.set(row.scheduledName.trim().toLowerCase(), row.shift ?? "");
+    const scheduledName = row.scheduledName?.trim() ?? "";
+    const actualName = row.actualName?.trim() || scheduledName;
+    if (actualName) phDutyMap.set(actualName.toLowerCase(), row.shift ?? "");
+
+    if (!isOilMonday && scheduledName && actualName && scheduledName.toLowerCase() !== actualName.toLowerCase()) {
+      coveredByMap.set(scheduledName.toLowerCase(), actualName);
+      if (row.subCatchment) coveringUnitMap.set(actualName.toLowerCase(), row.subCatchment);
     }
   }
 
@@ -1241,25 +1282,10 @@ rosterPlanRouter.post("/roster-plan/ph-apply/:date", requireManager, async (req,
   const officers = await loadOfficers();
   const officersInRotation = officers.filter(o => o.active && o.teamSlot <= config.teamCount);
 
-  const referenceDate = new Date(date + "T00:00:00Z");
-
-  // OIL Monday = PH fell on Sunday → following Monday is the statutory OIL day.
-  // For OIL Monday: ref officers (PH Sunday workers) → OIL (earned by working PH).
-  //                 Non-ref officers with *Monday* target DAY/PD → OIL (statutory holiday).
-  // For normal PH: ref officers → their PH shift (DAY/PD).
-  //                Non-ref officers with *same-day* target DAY/PD → OIL.
-  // Always use the actual date's cycle for the non-ref OIL eligibility check.
-  const isOilMonday = referenceDate.getUTCDay() === 1; // 1 = Monday
-
   const monday = getMondayOf(referenceDate);
   const cycleWeek = computeCycleWeek(config.cycleStartDate, monday, config.teamCount);
   const dayOffset = Math.round((referenceDate.getTime() - monday.getTime()) / (24 * 60 * 60 * 1000));
   const day = DAYS_ORDER[dayOffset] ?? "Mon";
-
-  const mid = req.session?.managerId;
-  const caller = mid ? getManager(mid) : null;
-  const madeBy = caller?.username;
-  const madeByName = caller?.officerName ?? caller?.username;
   const madeAt = new Date();
 
   const newOverrides: (typeof rosterOverridesTable.$inferInsert)[] = [];
@@ -1268,15 +1294,31 @@ rosterPlanRouter.post("/roster-plan/ph-apply/:date", requireManager, async (req,
     const targetDuty = getDutyFromCycle(officer.unitCode, date)
       ?? getDutyForSlotInWeek(officer.teamSlot, cycleWeek, day, config.teamCount);
     const nameLower = officer.name.trim().toLowerCase();
+    const coveredBy = coveredByMap.get(nameLower) ?? null;
+    const coveringUnit = coveringUnitMap.get(nameLower);
+    const coverIsAwayFromHome = coveringUnit !== undefined && coveringUnit !== officer.unitCode;
 
     if (phDutyMap.has(nameLower)) {
-      // OIL Monday: PH Sunday workers take OIL on Monday.
-      // Normal PH: scheduled officers work their PH shift.
+      // OIL Monday: actual PH workers → OIL on Monday.
+      // Normal PH: actual workers → their PH shift.
       const duty = isOilMonday ? "OIL" : phDutyMap.get(nameLower)!;
-      newOverrides.push({ officerId: officer.id, date, duty, targetDuty, madeBy: madeBy ?? null, madeByName: madeByName ?? null, madeAt });
-    } else if (targetDuty === "DAY" || targetDuty === "PD" || targetDuty === "ND") {
-      // Non-ref officers on any working shift (DAY/PD/ND) → OIL (statutory holiday)
-      newOverrides.push({ officerId: officer.id, date, duty: "OIL", targetDuty, madeBy: madeBy ?? null, madeByName: madeByName ?? null, madeAt });
+      newOverrides.push({
+        officerId: officer.id, date, duty, targetDuty,
+        crossPostedToUnit: coverIsAwayFromHome ? coveringUnit! : null,
+        coveredByOfficerName: coveredBy,
+        madeBy: madeBy ?? null, madeByName: madeByName ?? null, madeAt,
+      });
+    } else if (coveredBy || targetDuty === "DAY" || targetDuty === "PD" || targetDuty === "ND") {
+      // A covered scheduled slot always needs a Master row, even if the
+      // scheduled officer's own target was REST/OFF or they're also working
+      // another PH slot elsewhere. Keep REST/OFF as-is in that case;
+      // otherwise a non-ref officer on a working shift is OIL on the holiday.
+      const duty = coveredBy && (targetDuty === "REST" || targetDuty === "OFF") ? targetDuty : "OIL";
+      newOverrides.push({
+        officerId: officer.id, date, duty, targetDuty,
+        coveredByOfficerName: coveredBy,
+        madeBy: madeBy ?? null, madeByName: madeByName ?? null, madeAt,
+      });
     }
   }
 
@@ -1304,7 +1346,21 @@ rosterPlanRouter.post("/roster-plan/ph-apply/:date", requireManager, async (req,
     if (oilLeaves.length > 0) await tx.insert(rosterLeavesTable).values(oilLeaves);
   });
 
-  res.json({ ok: true, applied: newOverrides.length, phDutyCount: refRows.length, oilCount: newOverrides.filter(o => o.duty === "OIL").length });
+  return { applied: newOverrides.length, phDutyCount: refRows.length, oilCount: newOverrides.filter(o => o.duty === "OIL").length };
+}
+
+// POST /api/roster-plan/ph-apply/:date — manual re-apply, without re-saving the ref roster.
+rosterPlanRouter.post("/roster-plan/ph-apply/:date", requireManager, async (req, res) => {
+  const { date } = req.params as { date: string };
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+
+  const result = await applyPHRoster(date, caller?.username, caller?.officerName ?? caller?.username);
+  if ("error" in result) {
+    res.status(404).json(result);
+    return;
+  }
+  res.json({ ok: true, ...result });
 });
 
 // GET /api/roster-plan/overrides — list all active visual-editor overrides
