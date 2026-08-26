@@ -1,4 +1,4 @@
-import { pgTable, text, date, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, date, timestamp, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { officersTable } from "./officers";
@@ -23,6 +23,14 @@ export const rosterLeavesTable = pgTable(
     source: text("source"),
     coveringOfficerId: text("covering_officer_id").references(() => officersTable.id),
     coveringOfficerName: text("covering_officer_name"),
+    // Who/when this leave entry was first applied — distinct from
+    // leave_requests' icName/icReviewedAt (that's the full cover/IC-approval
+    // workflow entity; this table also gets written to directly, e.g. by
+    // /roster-plan/import-brief). Set once on first write and preserved on
+    // every subsequent write for the same officer+date (a re-import must
+    // never overwrite who originally applied the leave).
+    appliedBy: text("applied_by"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }),
   },
   (table) => [
     // The app has always treated (officer_id, date) as unique — POST /leave
