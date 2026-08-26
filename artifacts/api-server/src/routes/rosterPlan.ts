@@ -22,6 +22,7 @@ import {
   type RosterSwap,
 } from "@workspace/db";
 import { getManager, requireManager } from "./auth.js";
+import { appendActivityLog, getActivityLog } from "../lib/activityLog.js";
 
 // ── Cycle patterns ─────────────────────────────────────────────────────────────
 const DAYS_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -852,6 +853,21 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
   const coverOfficer = coveringOfficerId ? officers.find((o) => o.id === coveringOfficerId) : undefined;
   const coveringOfficerName = coverOfficer?.name;
 
+  // Resolve who is applying — used for the activity-log entry below.
+  const applierMid    = req.session?.managerId;
+  const applier       = applierMid ? getManager(applierMid) : null;
+  const appliedByName = applier?.officerName ?? applier?.username;
+
+  // Checked before the upsert so the activity-log entry below only fires on a
+  // genuinely new application, not every time an existing leave is edited —
+  // matches Replit's behavior (its JSON array had an explicit new-vs-update
+  // branch for exactly this reason).
+  const [existingLeave] = await db
+    .select({ id: rosterLeavesTable.id })
+    .from(rosterLeavesTable)
+    .where(and(eq(rosterLeavesTable.officerId, officerId), eq(rosterLeavesTable.date, date)));
+  const isNewLeave = !existingLeave;
+
   // Remove any stale UploadBrief-managed override for this officer on this date so
   // the leave entry takes proper effect and is never masked by an old schedule import.
   await db
@@ -880,6 +896,23 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
       set: { leaveType, coveringOfficerId: coveringOfficerId ?? null, coveringOfficerName: coveringOfficerName ?? null },
     })
     .returning();
+
+  if (isNewLeave) {
+    await appendActivityLog({
+      type: "leave-applied",
+      title: `Leave applied for ${officer.name}`,
+      body: `${leaveType} on ${date}${appliedByName ? ` (by ${appliedByName})` : ""}`,
+      createdAt: new Date(),
+      officerId,
+      officerName: officer.name,
+      leaveDate: date,
+      leaveType,
+      appliedByName: appliedByName ?? null,
+      patternName: null,
+      implementDate: null,
+      implementerName: null,
+    });
+  }
 
   // Set the covering officer's duty override so they appear as working the covered
   // unit's scheduled shift (e.g. DAY) rather than their own home cycle duty (e.g. REST).
@@ -923,6 +956,25 @@ rosterPlanRouter.delete("/roster-plan/leave/:id", requireManager, async (req, re
       );
   }
   return res.json({ success: true, message: "Leave entry deleted" });
+});
+
+// GET /api/activity-log — in-app notification feed (all roles including crew)
+rosterPlanRouter.get("/activity-log", requireManager, async (req, res) => {
+  const mid    = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  const log    = await getActivityLog();
+  if (caller?.role === "crew") {
+    // Crew: only see roster-implement events + leave events for their own officer
+    const myOfficerId = caller.officerId;
+    const filtered = log.filter((e) =>
+      e.type === "roster-implement" ||
+      (e.type === "leave-applied" && e.officerId === myOfficerId)
+    );
+    res.json(filtered);
+  } else {
+    // Admin / Manager / IC: see everything (most recent 50, already ordered by getActivityLog)
+    res.json(log);
+  }
 });
 
 // ── Summary endpoint ──────────────────────────────────────────────────────────

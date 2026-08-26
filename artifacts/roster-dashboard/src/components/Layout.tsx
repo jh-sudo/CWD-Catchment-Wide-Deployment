@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   Calendar, Users, ArrowLeftRight, CalendarDays, CalendarRange,
   Copy, Check, Loader2, FileText, ChevronLeft, ChevronRight,
-  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star,
+  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { format, addDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, isSameMonth, isToday, isSameDay } from "date-fns";
@@ -28,6 +28,22 @@ async function fetchSummary(date: string): Promise<string> {
   if (!res.ok) throw new Error("Failed to fetch summary");
   const data = await res.json();
   return data.text as string;
+}
+
+function formatRelativeTime(ts: string): string {
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60_000) return "Just now";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+interface ActivityEntry {
+  id: string;
+  type: "roster-implement" | "leave-applied";
+  title: string;
+  body: string;
+  createdAt: string;
 }
 
 // ── Lightweight mini-calendar ──────────────────────────────────────────────────
@@ -252,6 +268,43 @@ export function Layout({ children }: LayoutProps) {
   // Close sidebar on route change (mobile nav)
   useEffect(() => { setSidebarOpen(false); }, [location]);
 
+  // ── Notification bell ─────────────────────────────────────────────────────
+  const [notifications,  setNotifications]  = useState<ActivityEntry[]>([]);
+  const [notifOpen,      setNotifOpen]      = useState(false);
+  const [lastSeenTs,     setLastSeenTs]     = useState<string>(
+    () => localStorage.getItem("notif_last_seen") ?? ""
+  );
+
+  const fetchNotifications = useCallback(async () => {
+    if (!user) return;
+    try {
+      const res = await fetch("/api/activity-log", { credentials: "include" });
+      if (res.ok) setNotifications(await res.json());
+    } catch {}
+  }, [user]);
+
+  useEffect(() => {
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 60_000);
+    return () => clearInterval(id);
+  }, [fetchNotifications]);
+
+  const unreadCount = notifications.filter(n => n.createdAt > lastSeenTs).length;
+
+  const openNotifPanel = () => {
+    const now = new Date().toISOString();
+    localStorage.setItem("notif_last_seen", now);
+    setLastSeenTs(now);
+    setNotifOpen(v => !v);
+  };
+
+  const clearNotifications = () => {
+    setNotifications([]);
+    const now = new Date().toISOString();
+    localStorage.setItem("notif_last_seen", now);
+    setLastSeenTs(now);
+  };
+
   const today    = new Date();
   const tomorrow = addDays(today, 1);
 
@@ -267,6 +320,19 @@ export function Layout({ children }: LayoutProps) {
       <div className="h-14 flex items-center px-5 border-b shrink-0 justify-between">
         <h1 className="text-base font-bold tracking-tight text-primary">Duty Roster</h1>
         <div className="flex items-center gap-1">
+          {/* Notification bell */}
+          <button
+            onClick={openNotifPanel}
+            className="relative p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            title="Notifications"
+          >
+            <Bell className="h-3.5 w-3.5" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 h-3.5 w-3.5 rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center leading-none">
+                {unreadCount > 9 ? "9+" : unreadCount}
+              </span>
+            )}
+          </button>
           {/* Dark mode toggle */}
           <button
             onClick={toggleTheme}
@@ -433,6 +499,47 @@ export function Layout({ children }: LayoutProps) {
           {children}
         </div>
       </main>
+
+      {/* ── Notification panel (fixed-position, outside sidebar to avoid overflow-hidden) ── */}
+      {notifOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+          <div className="fixed left-0 top-14 z-50 w-72 border-r border-b rounded-br-xl bg-popover shadow-2xl overflow-hidden flex flex-col max-h-[70vh]">
+            <div className="flex items-center justify-between px-3 py-2.5 border-b bg-muted/50 shrink-0">
+              <span className="text-xs font-bold text-foreground">Notifications</span>
+              <div className="flex items-center gap-1">
+                {notifications.length > 0 && (
+                  <button
+                    onClick={clearNotifications}
+                    className="text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded hover:bg-muted transition-colors"
+                    title="Clear all notifications"
+                  >
+                    Clear all
+                  </button>
+                )}
+                <button onClick={() => setNotifOpen(false)} className="p-0.5 rounded hover:bg-muted">
+                  <X className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-y-auto flex-1">
+              {notifications.length === 0 ? (
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                  No notifications yet
+                </div>
+              ) : (
+                notifications.map(n => (
+                  <div key={n.id} className="px-3 py-2.5 border-b last:border-0 hover:bg-muted/30 transition-colors">
+                    <p className="text-xs font-semibold text-foreground leading-snug">{n.title}</p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5 leading-snug">{n.body}</p>
+                    <p className="text-[10px] text-muted-foreground/60 mt-1">{formatRelativeTime(n.createdAt)}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* ── Summary Modal ── */}
       <Dialog open={summaryOpen} onOpenChange={setSummaryOpen}>
