@@ -21,6 +21,7 @@ import ApplicationsManage from "@/pages/ApplicationsManage";
 import RosterCycle from "@/pages/RosterCycle";
 import UploadBrief from "@/pages/UploadBrief";
 import PHHoliday from "@/pages/PHHoliday";
+import RosterBuilder from "@/pages/RosterBuilder";
 
 const queryClient = new QueryClient();
 
@@ -81,6 +82,9 @@ function AppRoutes() {
 
         {/* Public Holiday — all roles */}
         <Route path="/public-holiday" component={PHHoliday} />
+
+        {/* Roster Builder — management only */}
+        {isManagement && <Route path="/roster-builder" component={RosterBuilder} />}
 
         <Route component={NotFound} />
       </Switch>
