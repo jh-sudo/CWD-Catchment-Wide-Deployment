@@ -10,6 +10,14 @@ export const rosterConfigTable = pgTable(
     id: integer("id").primaryKey().default(1),
     teamCount: smallint("team_count").notNull(),
     cycleStartDate: date("cycle_start_date").notNull(),
+    // Minimum on-duty strength inputs for the FIRB Deployment summary
+    // (rosterPlan.ts's buildSummary): weekend/PH minimum = (weekendPD +
+    // weekendDAY) × 2; weekday minimum = weekdayMinStrength directly.
+    // Nullable — application code falls back to 3 / 3 / 40 respectively
+    // when unset, matching the Replit source these were ported from.
+    weekendPD: smallint("weekend_pd"),
+    weekendDay: smallint("weekend_day"),
+    weekdayMinStrength: smallint("weekday_min_strength"),
   },
   (table) => [
     check("roster_config_singleton_check", sql`${table.id} = 1`),
