@@ -823,6 +823,7 @@ router.get("/manager", requireManager, (req, res) => {
         <div style="display:flex;gap:8px;">
           <button class="btn btn-primary btn-sm" id="auto-assign-btn" onclick="autoAssign()">⚡ Auto-Assign</button>
           <button class="btn btn-sm" id="rain-assign-btn" onclick="openRainAssignModal()" style="background:#082f49;color:#38bdf8;border:1px solid #0284c7;">⛈ Rain</button>
+          <button class="btn btn-sm" id="optimize-assign-btn" onclick="optimizeAssign()" style="background:#14532d;color:#86efac;border:1px solid #16a34a;" title="Assign acknowledged or accepted teams to the nearest rain-hit Tier 1 locations">🎯 Optimize Assign</button>
           <button class="btn btn-sm" onclick="clearAssignments()" style="background:#1a1d2e;color:#f87171;border:1px solid #7f1d1d;" title="Clear all pending assignments">✕ Clear</button>
           <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add</button>
         </div>
@@ -2741,6 +2742,171 @@ async function autoAssign() {
   }
 }
 
+// ── Optimize Assign: one click — rain-path if radar shows heavy rain,
+// otherwise a manual nearest-Tier-1 picker. Distinct from the existing
+// ⛈ Rain button/modal above: this one is Tier-1-only, gated to teams that
+// have acknowledged the active alert (or already accepted an assignment),
+// and skips the review-before-confirm step — it assigns immediately in
+// rain mode, only stopping for input when there's no rain to react to. ──
+async function optimizeAssign() {
+  var btn = document.getElementById('optimize-assign-btn');
+  if (!btn || btn.disabled) return;
+  btn.disabled = true;
+  btn.textContent = 'Analysing…';
+  try {
+    var analysis = await runRainAnalysis();
+    if (!analysis.hasRain) {
+      openNearestTier1Modal();
+      return;
+    }
+
+    btn.textContent = 'Assigning…';
+    var res = await fetch(API + '/deployments/optimize-assign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        locationScores: analysis.locScores.map(function(ls) { return { id: ls.id, score: ls.score }; }),
+      }),
+    });
+    var data = await res.json();
+    await fetchAll();
+    if (data.count > 0) {
+      var lines = data.assignments.map(function(a) { return a.unitCode + ' → ' + a.locationName; }).join('\\n');
+      var gpsNote = data.skippedNoGps ? '\\n\\n' + data.skippedNoGps + ' eligible team(s) skipped until a current GPS position is available.' : '';
+      alert('Optimize Assign: ' + data.count + ' new assignment(s) sent:\\n\\n' + lines + gpsNote);
+    } else if (data.reason === 'no_new_acknowledged_teams') {
+      alert('No new acknowledged or accepted teams are available to assign.');
+    } else if (data.reason === 'no_rain_hit_tier_1_locations') {
+      alert('No Tier 1 locations are currently on the rain path.');
+    } else if (data.skippedNoGps) {
+      alert(data.skippedNoGps + ' eligible team(s) are waiting for a current GPS position before they can be matched to the nearest location.');
+    } else {
+      alert('No new locations available for the acknowledged teams.');
+    }
+  } catch(e) {
+    alert('Optimize Assign failed. Check the radar and connection.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🎯 Optimize Assign';
+  }
+}
+
+function openNearestTier1Modal() {
+  var listEl = document.getElementById('nearest-tier1-list');
+  var countEl = document.getElementById('nearest-tier1-count');
+  var errorEl = document.getElementById('nearest-tier1-error');
+  var submitBtn = document.getElementById('nearest-tier1-submit');
+  if (!listEl || !countEl || !errorEl || !submitBtn) return;
+
+  var savedTeamCount = state && Array.isArray(state.rosterTeams) ? state.rosterTeams.length : 0;
+  var maxSelectable = savedTeamCount;
+  var allLocations = (locations && locations.length) ? locations : (state && state.presetLocations) || [];
+  var occupiedIds = new Set();
+  (state && Array.isArray(state.entries) ? state.entries : []).forEach(function(entry) {
+    if (entry && entry.locationId) occupiedIds.add(entry.locationId);
+  });
+  var assignmentValues = state && state.assignments
+    ? (Array.isArray(state.assignments) ? state.assignments : Object.values(state.assignments))
+    : [];
+  assignmentValues.forEach(function(assignment) {
+    if (assignment && assignment.locationId) occupiedIds.add(assignment.locationId);
+  });
+
+  var tier1 = allLocations
+    .filter(function(loc) { return loc && (loc.tier == null || loc.tier === 1); })
+    .sort(function(a, b) {
+      return (a.priority == null ? 999 : a.priority) - (b.priority == null ? 999 : b.priority)
+        || String(a.name || '').localeCompare(String(b.name || ''));
+    });
+
+  if (!tier1.length) {
+    listEl.innerHTML = '<div class="empty" style="padding:18px 0;">No Tier 1 locations are available.</div>';
+  } else if (maxSelectable === 0) {
+    listEl.innerHTML = '<div class="empty" style="padding:18px 0;">Import and save a roster before selecting locations.</div>';
+  } else {
+    listEl.innerHTML = tier1.map(function(loc) {
+      var occupied = occupiedIds.has(loc.id);
+      var meta = [loc.region, loc.priority != null ? 'Priority ' + loc.priority : ''].filter(Boolean).join(' · ');
+      return '<label style="display:flex;align-items:flex-start;gap:10px;padding:10px 4px;margin:0;border-bottom:1px solid var(--border);text-transform:none;letter-spacing:0;font-size:13px;color:' + (occupied ? 'var(--muted)' : 'var(--fg)') + ';cursor:' + (occupied ? 'not-allowed' : 'pointer') + ';">'
+        + '<input type="checkbox" value="' + esc(loc.id) + '" ' + (occupied ? 'disabled' : '') + ' style="margin-top:2px;accent-color:#16a34a;width:16px;height:16px;flex-shrink:0;">'
+        + '<span style="flex:1;"><strong style="display:block;font-size:13px;">' + esc(loc.name) + '</strong>'
+        + '<small style="display:block;color:var(--muted);margin-top:2px;">' + esc(meta || 'Tier 1') + (occupied ? ' · Already occupied' : '') + '</small></span>'
+        + '</label>';
+    }).join('');
+  }
+
+  listEl.querySelectorAll('input[type=checkbox]').forEach(function(input) {
+    input.addEventListener('change', function() {
+      var checked = listEl.querySelectorAll('input[type=checkbox]:checked');
+      if (checked.length > maxSelectable) {
+        input.checked = false;
+        alert('Choose up to ' + maxSelectable + ' locations to match the ' + savedTeamCount + ' saved roster team(s).');
+        checked = listEl.querySelectorAll('input[type=checkbox]:checked');
+      }
+      countEl.textContent = checked.length + ' of ' + maxSelectable + ' selected';
+      submitBtn.disabled = checked.length === 0;
+      submitBtn.style.opacity = checked.length === 0 ? '.5' : '1';
+    });
+  });
+
+  countEl.textContent = '0 of ' + maxSelectable + ' selected';
+  submitBtn.disabled = true;
+  submitBtn.style.opacity = '.5';
+  errorEl.textContent = '';
+  openModal('nearest-tier1-modal');
+}
+
+function closeNearestTier1Modal() {
+  closeModal('nearest-tier1-modal');
+}
+
+async function confirmNearestTier1Assign() {
+  var listEl = document.getElementById('nearest-tier1-list');
+  var submitBtn = document.getElementById('nearest-tier1-submit');
+  var selected = listEl ? Array.from(listEl.querySelectorAll('input[type=checkbox]:checked')).map(function(input) { return input.value; }) : [];
+  var maxSelectable = state && Array.isArray(state.rosterTeams) ? state.rosterTeams.length : 0;
+  if (!selected.length || selected.length > maxSelectable || !submitBtn || submitBtn.disabled) return;
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Assigning…';
+  try {
+    var res = await fetch(API + '/deployments/optimize-assign', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'nearest-selected', selectedLocationIds: selected }),
+    });
+    var data = await res.json();
+    closeNearestTier1Modal();
+    await fetchAll();
+    if (!res.ok) {
+      if (data.reason === 'selected_locations_unavailable') {
+        alert('One or more selected locations became occupied. Refresh the map and choose again.');
+      } else {
+        alert(data.message || 'Could not assign the selected locations.');
+      }
+    } else if (data.count > 0) {
+      var lines = data.assignments.map(function(a) { return a.unitCode + ' → ' + a.locationName; }).join('\\n');
+      var gpsNote = data.skippedNoGps ? '\\n\\n' + data.skippedNoGps + ' eligible team(s) skipped until a current GPS position is available.' : '';
+      alert('Nearest Tier 1 Assign: ' + data.count + ' assignment(s) sent:\\n\\n' + lines + gpsNote);
+    } else if (data.reason === 'no_new_acknowledged_teams') {
+      alert('No new acknowledged or accepted teams are available to assign.');
+    } else if (data.skippedNoGps) {
+      alert(data.skippedNoGps + ' eligible team(s) are waiting for a current GPS position before they can be matched to the selected locations.');
+    } else {
+      alert('No assignments made. The selected locations may already be unavailable or there are no eligible teams.');
+    }
+  } catch (e) {
+    closeNearestTier1Modal();
+    alert('Nearest Tier 1 assignment failed. Check your connection.');
+  } finally {
+    if (submitBtn) {
+      submitBtn.textContent = 'Assign Nearest Crews';
+      submitBtn.disabled = false;
+      submitBtn.style.opacity = '1';
+    }
+  }
+}
+
 function renderReport(entries, date) {
   document.getElementById('report-date').textContent = 'Deployment: ' + (date ?? '–');
   const el = document.getElementById('report-lines');
@@ -3741,6 +3907,29 @@ async function confirmRainAssign() {
     </div>
 
     <div id="rain-modal-error" style="display:none;padding:20px;text-align:center;color:#f87171;font-size:13px;"></div>
+  </div>
+</div>
+
+<!-- No-rain nearest Tier 1 assignment modal -->
+<div id="nearest-tier1-modal" class="overlay">
+  <div class="modal" style="max-width:440px;">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:4px;">
+      <div>
+        <h3 style="margin-bottom:4px;">☀ No Rain: Nearest Tier 1</h3>
+        <p style="margin-bottom:8px;">Choose up to as many available Tier 1 locations as there are saved roster teams. Eligible crews with live GPS will be matched to the nearest selected location.</p>
+      </div>
+      <button onclick="closeNearestTier1Modal()" style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--muted);line-height:1;padding:0 0 0 12px;flex-shrink:0;" title="Close">×</button>
+    </div>
+    <div style="background:#0c2d48;border:1px solid #0284c7;border-radius:8px;padding:10px 12px;margin:8px 0 12px;font-size:12px;color:#7dd3fc;">
+      No heavy rain is detected on the current radar frames. This is an optional nearest-crew assignment and will not replace existing deployments.
+    </div>
+    <div id="nearest-tier1-count" style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin-bottom:6px;">0 selected</div>
+    <div id="nearest-tier1-list" style="max-height:310px;overflow-y:auto;border-top:1px solid var(--border);border-bottom:1px solid var(--border);"></div>
+    <div id="nearest-tier1-error" style="color:#f87171;font-size:12px;min-height:16px;margin-top:8px;"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <button onclick="closeNearestTier1Modal()" class="btn btn-outline" style="flex:1;">Cancel</button>
+      <button id="nearest-tier1-submit" onclick="confirmNearestTier1Assign()" class="btn" style="flex:1;background:#16a34a;color:#fff;opacity:.5;" disabled>Assign Nearest Crews</button>
+    </div>
   </div>
 </div>
 
