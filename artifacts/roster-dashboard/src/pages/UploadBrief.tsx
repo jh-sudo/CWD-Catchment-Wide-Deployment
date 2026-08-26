@@ -1351,6 +1351,9 @@ export default function UploadBrief() {
   const [unmatched, setUnmatched] = useState<string[]>([]);
   const [applying, setApplying]   = useState(false);
   const [appliedCount, setAppliedCount] = useState<number | null>(null);
+  const [skippedCount, setSkippedCount] = useState<number | null>(null);
+  const [appliedDate, setAppliedDate] = useState<string | null>(null);
+  const [reverting, setReverting] = useState(false);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName]   = useState("");
@@ -1358,7 +1361,7 @@ export default function UploadBrief() {
 
   const resetExcel = () => {
     setParsed(null); setDateOverride("");
-    setUnmatched([]); setAppliedCount(null); setFileName("");
+    setUnmatched([]); setAppliedCount(null); setSkippedCount(null); setAppliedDate(null); setFileName("");
   };
 
   const handleExcelFile = useCallback(async (file: File) => {
@@ -1370,6 +1373,8 @@ export default function UploadBrief() {
       setDateOverride(result.date);
       setUnmatched([]);
       setAppliedCount(null);
+      setSkippedCount(null);
+      setAppliedDate(null);
     } catch {
       toast({ title: "Parse failed", description: "Could not read the Excel file.", variant: "destructive" });
     } finally {
@@ -1465,17 +1470,53 @@ export default function UploadBrief() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Import failed");
       setUnmatched(data.unmatched ?? []);
-      setAppliedCount(data.applied?.length ?? 0);
+      // Backend now diffs against the existing overrides before writing
+      // (read-before-write) and reports changed vs skipped-as-no-op counts
+      // separately, rather than a single "applied" total that couldn't tell
+      // "10 officers processed" from "10 officers actually changed".
+      setAppliedCount(data.changed ?? data.applied?.length ?? 0);
+      setSkippedCount(data.skipped ?? 0);
+      setAppliedDate(date);
       bumpVersion();
       toast({
-        title: "Brief imported",
-        description: `${data.applied?.length ?? 0} officers updated for ${date}.${data.unmatched?.length ? ` ${data.unmatched.length} unmatched.` : ""}`,
+        title: (data.changed ?? 0) > 0 ? "Brief imported" : "No changes — roster already up to date",
+        description: (data.changed ?? 0) > 0
+          ? `${data.changed} officer(s) updated for ${date}.${data.skipped ? ` ${data.skipped} already matched (skipped).` : ""}${data.unmatched?.length ? ` ${data.unmatched.length} unmatched.` : ""}`
+          : `All entries for ${date} already match the current roster.`,
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       toast({ title: "Import failed", description: msg, variant: "destructive" });
     } finally {
       setApplying(false);
+    }
+  };
+
+  // Undo — clears every override/leave this import wrote for its date,
+  // restoring the roster to what it was before Apply. Mirrors handleApply's
+  // single-date scope: only the date just applied can be reverted this way.
+  const handleRevert = async () => {
+    if (!appliedDate) return;
+    setReverting(true);
+    try {
+      const res = await fetch("/api/roster-plan/import-brief", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ dates: [appliedDate] }),
+      });
+      if (!res.ok) throw new Error("Revert failed");
+      const revertedDate = appliedDate;
+      setAppliedCount(null);
+      setSkippedCount(null);
+      setAppliedDate(null);
+      bumpVersion();
+      toast({ title: "Reverted", description: `Cleared overrides for ${revertedDate}. Roster is back to before this import.` });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast({ title: "Revert failed", description: msg, variant: "destructive" });
+    } finally {
+      setReverting(false);
     }
   };
 
@@ -1620,11 +1661,24 @@ export default function UploadBrief() {
               )}
 
               {appliedCount !== null && (
-                <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 p-3 flex gap-2">
+                <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 p-3 flex items-start gap-2">
                   <CheckCircle className="h-4 w-4 text-green-600 shrink-0 mt-0.5" />
-                  <p className="text-xs text-green-800 dark:text-green-300 font-medium">
-                    Applied — {appliedCount} officers updated for {dateLabel}
-                  </p>
+                  <div className="flex-1 flex items-center justify-between gap-2">
+                    <p className="text-xs text-green-800 dark:text-green-300 font-medium">
+                      Applied — {appliedCount} officer(s) updated for {dateLabel}
+                      {skippedCount ? ` (${skippedCount} already matched, skipped)` : ""}
+                    </p>
+                    {appliedDate && (
+                      <button
+                        onClick={handleRevert}
+                        disabled={reverting}
+                        className="shrink-0 text-xs font-medium text-green-800 dark:text-green-300 underline hover:no-underline disabled:opacity-50"
+                        title="Clear the overrides/leave this import wrote and restore the previous roster for this date"
+                      >
+                        {reverting ? "Undoing…" : "Undo"}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
