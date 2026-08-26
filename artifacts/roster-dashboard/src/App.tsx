@@ -22,6 +22,7 @@ import RosterCycle from "@/pages/RosterCycle";
 import UploadBrief from "@/pages/UploadBrief";
 import PHHoliday from "@/pages/PHHoliday";
 import RosterBuilder from "@/pages/RosterBuilder";
+import VehicleArrangement from "@/pages/VehicleArrangement";
 
 const queryClient = new QueryClient();
 
@@ -85,6 +86,9 @@ function AppRoutes() {
 
         {/* Roster Builder — management only */}
         {isManagement && <Route path="/roster-builder" component={RosterBuilder} />}
+
+        {/* Vehicle Arrangement — management only */}
+        {isManagement && <Route path="/vehicle-arrangement" component={VehicleArrangement} />}
 
         <Route component={NotFound} />
       </Switch>

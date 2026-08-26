@@ -130,7 +130,7 @@ function getDutyForSlotInWeek(teamSlot: number, cycleWeek: number, day: string, 
 let _cycleMeta: { cycleStartDate: string; cycleLengthDays: number } | null | undefined = undefined;
 let _cycleUnitMap: Map<string, Map<string, string>> | null = null; // unitCode -> (date -> targetDuty)
 
-async function ensureCycleCacheLoaded(): Promise<void> {
+export async function ensureCycleCacheLoaded(): Promise<void> {
   if (_cycleUnitMap) return;
   const [meta] = await db.select().from(rosterCycleMetaTable).where(eq(rosterCycleMetaTable.id, 1));
   _cycleMeta = meta ?? null;
@@ -177,7 +177,7 @@ function getDutyFromCycle(unitCode: string, dateStr: string): string | null {
 // re-derived from buildSummary's own resolution snippet rather than written
 // independently — see CONTEXT.md's "Duty resolution — 4-tier precedence"
 // note on how easy it is to under-count this to 3 tiers.
-function getOfficerEffectiveDutyForDate(
+export function getOfficerEffectiveDutyForDate(
   officer: Officer,
   dateStr: string,
   overridesForDate: Map<string, RosterOverride>,
@@ -204,12 +204,12 @@ function getOfficerEffectiveDutyForDate(
 }
 
 // ── Officers ─────────────────────────────────────────────────────────────────
-async function loadOfficers(): Promise<Officer[]> {
+export async function loadOfficers(): Promise<Officer[]> {
   return db.select().from(officersTable);
 }
 
 // ── Roster config ────────────────────────────────────────────────────────────
-interface RosterConfigShape {
+export interface RosterConfigShape {
   teamCount: 20 | 24 | 28;
   cycleStartDate: string;
   maintenanceVehicles: string[];
@@ -220,7 +220,7 @@ interface RosterConfigShape {
   weekdayMinStrength?: number;
 }
 
-async function loadConfig(): Promise<RosterConfigShape> {
+export async function loadConfig(): Promise<RosterConfigShape> {
   const [row] = await db.select().from(rosterConfigTable).where(eq(rosterConfigTable.id, 1));
   const vehicles = await db.select().from(rosterMaintenanceVehiclesTable);
   return {
