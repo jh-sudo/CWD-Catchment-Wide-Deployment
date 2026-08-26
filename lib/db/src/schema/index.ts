@@ -27,6 +27,7 @@ export * from "./leaveTypes";
 export * from "./rosterLeaves";
 export * from "./leaveRequests";
 export * from "./rosterDayOverrides";
+export * from "./rosterRequirements";
 
 // ── Core ops state domain ────────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/02-schema-core-ops-state.md
