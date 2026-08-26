@@ -214,6 +214,7 @@ router.get("/crew", requireCrew, (req, res) => {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Crew — Flood Commander Dashboard</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     :root {
@@ -284,6 +285,31 @@ router.get("/crew", requireCrew, (req, res) => {
       width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border);
       background: var(--bg); color: var(--fg); font-size: 15px; margin-top: 10px; letter-spacing: 2px;
     }
+
+    /* ── Fleet map ─────────────────────────────────────────────────────────
+       Full-screen overlay rather than a new page/tab — cheapest way to add a
+       map to a single-scroll dashboard without restructuring it. Leaflet +
+       CARTO dark tiles, same combination lightning.ts already uses (no API
+       key, already vetted for this app). */
+    #map-modal .modal { max-width: 100%; width: 100%; height: 100dvh; padding: 0; border-radius: 0; display: flex; flex-direction: column; }
+    #map-modal .map-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    #map-modal .map-head h3 { font-size: 15px; }
+    #crew-map { flex: 1; background: var(--bg); }
+    .leaflet-container { background: var(--bg); }
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--card); color: var(--fg); }
+    .leaflet-popup-content { font-size: 12px; margin: 10px 12px; }
+    .leaflet-popup-content b { font-size: 13px; }
+    .leaflet-control-zoom a { background: var(--card) !important; color: var(--fg) !important; border-color: var(--border) !important; }
+    .leaflet-control-attribution { background: var(--card) !important; color: var(--muted) !important; font-size: 10px !important; }
+    .leaflet-control-attribution a { color: var(--muted) !important; }
+    .pin-loc { width: 12px; height: 12px; background: #7a7f9a; border: 2px solid #0f1117; border-radius: 50%; }
+    .pin-loc.t2 { border-radius: 2px; transform: rotate(45deg); }
+    .pin-veh { width: 16px; height: 16px; border: 2px solid #0f1117; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 2px rgba(0,0,0,0.3); }
+    .pin-veh.arrived { background: var(--green); }
+    .pin-veh.mine { width: 20px; height: 20px; background: var(--primary); box-shadow: 0 0 0 4px rgba(79,110,247,0.35); }
   </style>
 </head>
 <body>
@@ -294,6 +320,7 @@ router.get("/crew", requireCrew, (req, res) => {
       <div class="me" id="tideLine"></div>
     </div>
     <div style="display:flex; align-items:center; gap:12px;">
+      <button class="logout" onclick="openMap()" title="Fleet map">🗺️ Map</button>
       <button class="logout" onclick="copyReportCrew()" title="Copy fleet deployment report to clipboard">📋 Report</button>
       <button class="logout" id="notif-btn" onclick="togglePush()" style="display:none">🔕 Notif: OFF</button>
       <button class="logout" onclick="openMfaSettings()" title="Two-factor authentication">🛡️</button>
@@ -319,6 +346,19 @@ router.get("/crew", requireCrew, (req, res) => {
         <button class="action secondary" onclick="closeMfaSettings()">Close</button>
         <button class="action red" onclick="submitMfaDisable()">Disable</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Fleet map — read-mostly: preset location pins + team vehicle positions
+       (mine highlighted). No editing, no weather-radar overlay (already
+       covered by /manager and /lightning). -->
+  <div class="overlay" id="map-modal">
+    <div class="modal">
+      <div class="map-head">
+        <h3>🗺️ Fleet Map</h3>
+        <button onclick="closeMap()" style="background:none; border:none; font-size:20px; cursor:pointer; color:var(--muted); line-height:1;">×</button>
+      </div>
+      <div id="crew-map"></div>
     </div>
   </div>
 
@@ -348,6 +388,7 @@ router.get("/crew", requireCrew, (req, res) => {
 
   <div class="toast" id="toast"></div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     var OFFICER = ${officer};
     var STORAGE_KEY = 'crew_vehicle_' + OFFICER.id;
@@ -408,6 +449,89 @@ router.get("/crew", requireCrew, (req, res) => {
     }
     function locationById(id) {
       return (state && state.presetLocations || []).find(function (l) { return l.id === id; }) || null;
+    }
+
+    // ── Fleet map ────────────────────────────────────────────────────────────
+    // New build, not a port — Replit's only equivalent (deployment-tracker's
+    // React Native map.tsx, ~1,800 lines) can't translate to a browser. Scoped
+    // to what a crew member actually needs here: preset-location pins + team
+    // vehicle positions (mine highlighted), read-only. No editing, no radar
+    // overlay (already covered by /manager and /lightning). Leaflet + the
+    // same CARTO dark tiles lightning.ts already uses.
+    var crewMap = null;
+    var crewMapLayer = null;
+    var mapOpen = false;
+
+    function openMap() {
+      document.getElementById('map-modal').classList.add('open');
+      mapOpen = true;
+      if (!crewMap) {
+        crewMap = L.map('crew-map', { center: [1.3521, 103.8198], zoom: 12, zoomControl: true, attributionControl: true });
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+          attribution: '&copy; <a href="https://carto.com">CARTO</a>',
+          subdomains: 'abcd', maxZoom: 19,
+        }).addTo(crewMap);
+        crewMapLayer = L.layerGroup().addTo(crewMap);
+      }
+      // Modal was display:none while the map initialized/last rendered — Leaflet
+      // measures the container on init, so a 0×0 box needs an explicit refresh.
+      setTimeout(function () { crewMap.invalidateSize(); }, 50);
+      renderMapMarkers();
+    }
+    function closeMap() {
+      document.getElementById('map-modal').classList.remove('open');
+      mapOpen = false;
+    }
+
+    function pinIcon(cls) {
+      return L.divIcon({ className: '', html: '<div class="' + cls + '"></div>', iconSize: [16, 16] });
+    }
+    function relativeTime(iso) {
+      if (!iso) return '';
+      var diffMin = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+      if (diffMin < 1) return 'just now';
+      if (diffMin < 60) return diffMin + 'm ago';
+      return Math.round(diffMin / 60) + 'h ago';
+    }
+
+    function renderMapMarkers() {
+      if (!crewMap || !state) return;
+      crewMapLayer.clearLayers();
+      var bounds = [];
+
+      // Preset locations — circle for Tier 1, diamond for Tier 2 (mirrors
+      // manager.ts's tier marker convention, redrawn for Leaflet's divIcon
+      // instead of Google Maps' SymbolPath).
+      (state.presetLocations || []).forEach(function (loc) {
+        if (loc.lat == null || loc.lng == null) return;
+        var cls = 'pin-loc' + (loc.tier === 2 ? ' t2' : '');
+        var m = L.marker([loc.lat, loc.lng], { icon: pinIcon(cls) }).addTo(crewMapLayer);
+        m.bindPopup(
+          '<b>' + loc.name + '</b><br/>' + (loc.address || '') +
+          '<br/><a href="' + navUrl(loc.lat, loc.lng) + '" target="_blank">🧭 Navigate</a>'
+        );
+        bounds.push([loc.lat, loc.lng]);
+      });
+
+      // Team vehicle positions — mine highlighted, others by arrived/en-route.
+      (state.vehicles || []).forEach(function (v) {
+        if (v.lat == null || v.lng == null) return;
+        var isMine = v.vehicleId === vehicleId;
+        var entry = (state.entries || []).find(function (e) { return e.vehicleId === v.vehicleId; });
+        var cls = 'pin-veh' + (isMine ? ' mine' : '') + (entry && entry.arrived ? ' arrived' : '');
+        var m = L.marker([v.lat, v.lng], { icon: pinIcon(cls) }).addTo(crewMapLayer);
+        var statusLine = entry
+          ? (entry.arrived ? 'Arrived' + (entry.arrivedAt ? ' ' + entry.arrivedAt + ' hrs' : '') : 'ETA ' + entry.eta + ' hrs')
+          : 'En route';
+        m.bindPopup(
+          '<b>' + (isMine ? 'You — ' : '') + v.unitCode + ' ' + v.vehicleNumber + '</b><br/>' +
+          (v.partner ? v.partner + '<br/>' : '') + statusLine +
+          '<br/><span style="color:var(--muted)">Updated ' + relativeTime(v.updatedAt) + '</span>'
+        );
+        bounds.push([v.lat, v.lng]);
+      });
+
+      if (bounds.length) crewMap.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
     }
 
     // ── Team selection ──────────────────────────────────────────────────────
@@ -729,6 +853,7 @@ router.get("/crew", requireCrew, (req, res) => {
       document.getElementById('mainSections').style.display = vehicleId ? 'block' : 'none';
       renderTeamPicker();
       if (vehicleId) { renderDeployment(); renderSwap(); loadCrms(); }
+      if (mapOpen) renderMapMarkers();
 
       if (state.activeAlert) {
         var t2 = myTeam();
