@@ -3,6 +3,7 @@ import { parseISO } from "date-fns";
 import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getContrastColor } from "@/lib/contrast";
+import { NoteIndicator } from "@/components/NoteIndicator";
 
 const DUTY_COLORS: Record<string, string> = {
   PD:   "bg-[#FDD9BB] text-orange-900 border-[#FDD9BB]",
@@ -71,6 +72,8 @@ interface Props {
   filterDuty?: Set<string>;
   /** called when a duty badge is toggled (only used when filterDuty is provided) */
   onFilterDutyChange?: (next: Set<string>) => void;
+  /** officer ID → free-text note entered on their Master override cell */
+  commentMap?: Record<string, string>;
 }
 
 export function groupOfficers(officers: RosterOfficer[]) {
@@ -122,6 +125,7 @@ export function RosterListView({
   hideStrengthBar = false,
   filterDuty,
   onFilterDutyChange,
+  commentMap = {},
 }: Props) {
   // Internal filter state — used when parent doesn't control it
   const [localFilter, setLocalFilter] = useState<Set<string>>(new Set());
@@ -540,6 +544,7 @@ export function RosterListView({
                                   {o.name}
                                 </span>
                               )}
+                              <NoteIndicator comment={commentMap[o.id]} />
 
                               {/* [ND Avail] badge — officer is working a shift on their scheduled OFF/REST day */}
                               {!shouldHideSelf && isWorkingFromOff && (
