@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   Calendar, Users, ArrowLeftRight, CalendarDays, CalendarRange,
   Copy, Check, Loader2, FileText, ChevronLeft, ChevronRight,
-  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell, LayoutGrid,
+  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell, LayoutGrid, Truck,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { format, addDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, isSameMonth, isToday, isSameDay } from "date-fns";
@@ -160,6 +160,7 @@ export function Layout({ children }: LayoutProps) {
         { href: "/users",          label: "Users",             icon: UserCog },
         { href: "/public-holiday", label: "Public Holiday",    icon: Star },
         { href: "/roster-builder", label: "Roster Builder",    icon: LayoutGrid },
+        { href: "/vehicle-arrangement", label: "Vehicle Arrangement", icon: Truck },
       ];
     }
     if (role === "manager") {
@@ -173,6 +174,7 @@ export function Layout({ children }: LayoutProps) {
         { href: "/officers",       label: "Officers",          icon: Users },
         { href: "/public-holiday", label: "Public Holiday",    icon: Star },
         { href: "/roster-builder", label: "Roster Builder",    icon: LayoutGrid },
+        { href: "/vehicle-arrangement", label: "Vehicle Arrangement", icon: Truck },
       ];
     }
     if (role === "ic") {
@@ -185,6 +187,7 @@ export function Layout({ children }: LayoutProps) {
         { href: "/applications",   label: "Applications",      icon: ShieldCheck },
         { href: "/public-holiday", label: "Public Holiday",    icon: Star },
         { href: "/roster-builder", label: "Roster Builder",    icon: LayoutGrid },
+        { href: "/vehicle-arrangement", label: "Vehicle Arrangement", icon: Truck },
       ];
     }
     if (role === "crew") {
