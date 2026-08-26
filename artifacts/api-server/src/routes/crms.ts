@@ -714,8 +714,12 @@ router.post("/crms/:id/resolve", requireCrew, async (req, res) => {
   res.json({ ok: true, case: updated });
 });
 
-// POST /api/crms/:id/comment — crew adds a field comment
-router.post("/crms/:id/comment", requireCrew, async (req, res) => {
+// POST /api/crms/:id/comment — a field comment, from crew or a manager.
+// requireManager here doesn't mean "manager role only" (see auth.ts —
+// requireManager/requireManagerSession accept any approved account
+// regardless of role, requireCrew is the one that narrows to crew-only), so
+// this one gate already covers both callers.
+router.post("/crms/:id/comment", requireManager, async (req, res) => {
   const { id } = req.params as { id: string };
   const current = await loadCase(id);
   if (!current) { res.status(404).json({ error: "Not found" }); return; }
