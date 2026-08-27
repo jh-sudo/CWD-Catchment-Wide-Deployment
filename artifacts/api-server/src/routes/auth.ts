@@ -161,8 +161,11 @@ export interface ManagerAccount {
   // lib/mfa.ts), never sent to clients.
   mfaSecret?: string;
   mfaEnabled: boolean;
-  // SSP ac-6 — see managers.ts's schema comment.
+  // SSP ac-6/as-15 — see managers.ts's schema comment.
   mustChangePassword: boolean;
+  failedLoginCount: number;
+  // SSP ac-3/ac-4 — see managers.ts's schema comment.
+  lastLoginAt?: string;
 }
 
 /**
@@ -196,6 +199,8 @@ function toManagerAccount(row: Manager): ManagerAccount {
     mfaSecret: row.mfaSecret ?? undefined,
     mfaEnabled: row.mfaEnabled,
     mustChangePassword: row.mustChangePassword,
+    failedLoginCount: row.failedLoginCount,
+    lastLoginAt: row.lastLoginAt?.toISOString(),
   };
 }
 
@@ -331,21 +336,36 @@ export function requireAdminOrManager(req: Request, res: Response, next: NextFun
   next();
 }
 
+// SSP as-15 — cross this many consecutive failed attempts on one account
+// (any source IP) and the *next successful* login is forced to set a new
+// password, on the theory that a run of failures immediately preceding a
+// success is at least as likely to be a guessed/leaked credential landing
+// as it is a legitimate user mistyping.
+const FAILED_LOGIN_MUST_CHANGE_THRESHOLD = 5;
+
 // ── Auth API ───────────────────────────────────────────────────────────────────
 router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
   const { username, password } = req.body as { username: string; password: string };
   const m = managers.find(a => a.username === username);
   if (!m || !(await bcrypt.compare(password, m.passwordHash))) {
+    // Only increment for a real account — an unknown username shouldn't let
+    // a caller fish for which usernames exist by watching a counter change.
+    if (m) await updateManager(m.id, { failedLoginCount: m.failedLoginCount + 1 });
     res.status(401).json({ error: "Invalid username or password" }); return;
   }
   if (!m.approved) {
     res.status(403).json({ error: "Account pending approval", pending: true }); return;
   }
+  const forceChangeFromFailedLogins = m.failedLoginCount >= FAILED_LOGIN_MUST_CHANGE_THRESHOLD;
+  await updateManager(m.id, {
+    failedLoginCount: 0,
+    ...(forceChangeFromFailedLogins ? { mustChangePassword: true } : {}),
+  });
   // Credentials just verified — regenerate before granting any session state
   // (pending-password-change, pending-MFA, or fully authenticated) so a
   // pre-existing session ID can't ride along into a privileged one.
   await regenerateSession(req);
-  if (m.mustChangePassword) {
+  if (m.mustChangePassword || forceChangeFromFailedLogins) {
     // SSP ac-6 — gate #1, ahead of MFA: a known default credential
     // shouldn't be usable to complete MFA enrollment on this account either
     // (whoever sets the real password first is the one who gets to enroll).
@@ -370,6 +390,7 @@ router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
     req.session.pendingMfaManagerId = m.id;
     res.json({ success: true, mfaStep: "enroll", username: m.username }); return;
   }
+  await updateManager(m.id, { lastLoginAt: new Date() }); // SSP ac-3/ac-4
   req.session.managerId = m.id;
   res.json({
     success: true,
@@ -418,6 +439,7 @@ router.post(
       req.session.pendingMfaManagerId = updated.id;
       res.json({ success: true, mfaStep: "enroll", username: updated.username }); return;
     }
+    await updateManager(updated.id, { lastLoginAt: new Date() }); // SSP ac-3/ac-4
     req.session.managerId = updated.id;
     res.json({
       success: true,
@@ -459,6 +481,7 @@ router.post(
   // The fresh session has no pendingMfaManagerId, so there's nothing left to
   // delete.
   await regenerateSession(req);
+  await updateManager(m.id, { lastLoginAt: new Date() }); // SSP ac-3/ac-4
   req.session.managerId = m.id;
   res.json({
     success: true,
@@ -563,6 +586,7 @@ router.get("/manager/auth/managers", requireAdmin, (_req, res) => {
     catchments: m.catchments,
     hasPendingReset: !!m.pendingReset,
     resetRequestedAt: m.pendingReset?.requestedAt,
+    lastLoginAt: m.lastLoginAt, // SSP ac-3/ac-4 — for a human-driven access review
   })));
 });
 
@@ -745,6 +769,7 @@ router.post(
     // Crossing the pending-enrollment → authenticated boundary — regenerate
     // first, same as the challenge (already-enrolled) path above.
     await regenerateSession(req);
+    await updateManager(m.id, { lastLoginAt: new Date() }); // SSP ac-3/ac-4
     req.session.managerId = m.id;
     res.json({
       success: true,
@@ -892,6 +917,7 @@ router.post("/api/crew/auth/login", makeAuthRateLimit(), async (req, res) => {
     req.session.pendingMfaManagerId = m.id;
     res.json({ success: true, mfaStep: "enroll" }); return;
   }
+  await updateManager(m.id, { lastLoginAt: new Date() }); // SSP ac-3/ac-4
   req.session.managerId = m.id;
   res.json({ success: true, officerId: m.officerId, officerName: m.officerName });
 });
