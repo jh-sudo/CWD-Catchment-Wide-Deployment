@@ -21,7 +21,15 @@ WORKDIR /app
 # ships a low-privilege "node" user/group (uid/gid 1000). --chown here (not a
 # separate `RUN chown -R /app`) sets ownership as part of the copy itself —
 # a follow-up recursive chown over node_modules took ~4 minutes in testing.
-COPY --from=builder --chown=node:node /app /app
+#
+# Only copy dist/ (the esbuild bundle — see build.mjs's `external` list,
+# none of it covers anything this app actually imports, so dependencies AND
+# devDependencies are both fully inlined into dist/index.mjs) plus data/
+# (the one thing NOT bundle-reachable: CSV/JSON files read via `__dirname`-
+# relative fs.readFileSync at runtime, e.g. locations.csv). No node_modules,
+# no source, no devDependency packages ship in the final image at all.
+COPY --from=builder --chown=node:node /app/artifacts/api-server/dist ./artifacts/api-server/dist
+COPY --from=builder --chown=node:node /app/artifacts/api-server/data ./artifacts/api-server/data
 USER node
 
 ENV NODE_ENV=production

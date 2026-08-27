@@ -10,34 +10,58 @@ import { Link } from "wouter";
 
 type Step =
   | { kind: "credentials" }
+  | { kind: "change-password" }
   | { kind: "mfa-challenge" }
   | { kind: "mfa-enroll" };
 
 export default function Login() {
-  const { login, mfaChallenge, mfaSetup, mfaVerifySetup } = useAuth();
+  const { login, forceChangePassword, mfaChallenge, mfaSetup, mfaVerifySetup } = useAuth();
   const [step, setStep] = useState<Step>({ kind: "credentials" });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [code, setCode] = useState("");
   const [enrollInfo, setEnrollInfo] = useState<MfaSetupInfo | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  // Shared by handleCredentialsSubmit and handleChangePasswordSubmit — both
+  // can hand back the same AuthStep union for what comes next.
+  const applyAuthStep = (result: Awaited<ReturnType<typeof login>>) => {
+    if (result?.step === "changePassword") setStep({ kind: "change-password" });
+    else if (result?.step === "challenge") setStep({ kind: "mfa-challenge" });
+    else if (result?.step === "enroll") setStep({ kind: "mfa-enroll" });
+    // result === null: the auth context already set the authenticated user —
+    // the app shell re-renders away from this page on its own.
+  };
 
   const handleCredentialsSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const mfa = await login(username, password);
-      if (mfa?.step === "challenge") {
-        setStep({ kind: "mfa-challenge" });
-      } else if (mfa?.step === "enroll") {
-        setStep({ kind: "mfa-enroll" });
-      }
-      // mfa === null: login() already set the authenticated user — the app
-      // shell re-renders away from this page on its own.
+      applyAuthStep(await login(username, password));
     } catch (err: any) {
       setError(err.message || "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (newPassword.length < 12) { setError("New password must be at least 12 characters"); return; }
+    if (!/[0-9]/.test(newPassword) && !/[^a-zA-Z0-9]/.test(newPassword)) {
+      setError("New password must include a number or special character"); return;
+    }
+    if (newPassword !== confirmPassword) { setError("Passwords do not match"); return; }
+    setLoading(true);
+    try {
+      applyAuthStep(await forceChangePassword(newPassword));
+    } catch (err: any) {
+      setError(err.message || "Could not set password");
     } finally {
       setLoading(false);
     }
@@ -77,6 +101,57 @@ export default function Login() {
       setLoading(false);
     }
   };
+
+  if (step.kind === "change-password") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-muted/40 p-4">
+        <Card className="w-full max-w-sm">
+          <CardHeader className="space-y-1">
+            <CardTitle className="text-2xl font-bold text-primary">Set a New Password</CardTitle>
+            <CardDescription>This account still has a default password and must set a new one before continuing.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleChangePasswordSubmit} className="space-y-4">
+              {error && (
+                <div className="text-sm text-destructive bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2">
+                  {error}
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="new-password">New password</Label>
+                <Input
+                  id="new-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Min. 12 characters, with a number or symbol"
+                  autoFocus
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="confirm-password">Confirm new password</Label>
+                <Input
+                  id="confirm-password"
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  required
+                />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                Set Password &amp; Continue
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   if (step.kind === "mfa-challenge") {
     return (

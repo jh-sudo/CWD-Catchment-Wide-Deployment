@@ -25,6 +25,29 @@ if (!basePath) {
   );
 }
 
+// SSP as-9/as-10: this is a pure React SPA (no inline <script> content, no
+// dangerouslySetInnerHTML anywhere in src/) built and served as static
+// assets, so unlike api-server's server-rendered pages it can run a real
+// script-src without 'unsafe-inline'. style-src still needs it — Tailwind/
+// React inline `style={{...}}` props compile to inline style attributes,
+// which CSP's style-src also gates, and there's no practical nonce/hash
+// story for those.
+const CSP =
+  "default-src 'self'; " +
+  "script-src 'self'; " +
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+  "font-src 'self' https://fonts.gstatic.com; " +
+  "img-src 'self' data:; " +
+  "connect-src 'self'; " +
+  "object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
+const securityHeaders = {
+  "Content-Security-Policy": CSP,
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+};
+
 export default defineConfig({
   base: basePath,
   plugins: [
@@ -55,5 +78,6 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    headers: securityHeaders,
   },
 });
