@@ -54,7 +54,10 @@ export default function Register() {
 
     if (!role) { setError("Please select your role"); return; }
     if (password !== password2) { setError("Passwords do not match"); return; }
-    if (password.length < 8) { setError("Password must be at least 8 characters"); return; }
+    if (password.length < 12) { setError("Password must be at least 12 characters"); return; }
+    if (!/[0-9]/.test(password) && !/[^a-zA-Z0-9]/.test(password)) {
+      setError("Password must include a number or special character"); return;
+    }
     if (role === "crew" && !officerId) { setError("Please select your name from the roster"); return; }
     if (role === "ic" && selectedCatchments.length === 0) {
       setError("Please select at least one catchment group"); return;
@@ -204,7 +207,7 @@ export default function Register() {
                 autoComplete="new-password"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="Min. 8 characters"
+                placeholder="Min. 12 characters, with a number or symbol"
                 required
               />
             </div>

@@ -1202,7 +1202,8 @@ async function submitChangePassword() {
   var msg = document.getElementById('chpw-msg');
   msg.style.color = 'var(--red)';
   if (!cur || !nw || !cfm) { msg.textContent = 'All fields are required.'; return; }
-  if (nw.length < 8)       { msg.textContent = 'New password must be at least 8 characters.'; return; }
+  if (nw.length < 12)      { msg.textContent = 'New password must be at least 12 characters.'; return; }
+  if (!/[0-9]/.test(nw) && !/[^a-zA-Z0-9]/.test(nw)) { msg.textContent = 'New password must include a number or special character.'; return; }
   if (nw !== cfm)          { msg.textContent = 'New passwords do not match.'; return; }
   msg.style.color = 'var(--muted)';
   msg.textContent = 'Updating…';
@@ -1439,7 +1440,8 @@ async function submitResetPassword() {
   var msg = document.getElementById('reset-pw-msg');
   msg.style.color = 'var(--red)';
   if (!nw || !cfm)   { msg.textContent = 'Both fields are required.'; return; }
-  if (nw.length < 8) { msg.textContent = 'Password must be at least 8 characters.'; return; }
+  if (nw.length < 12) { msg.textContent = 'Password must be at least 12 characters.'; return; }
+  if (!/[0-9]/.test(nw) && !/[^a-zA-Z0-9]/.test(nw)) { msg.textContent = 'Password must include a number or special character.'; return; }
   if (nw !== cfm)    { msg.textContent = 'Passwords do not match.'; return; }
   msg.style.color = 'var(--muted)';
   msg.textContent = 'Updating…';
