@@ -116,7 +116,6 @@ export default function MySchedule() {
       setPartnerDutyMap(pdm);
       setLeaveSet(lm);
       setCrossPostDaySet(cpds);
-      setSwapDaySet(swds);
     }).finally(() => setLoading(false));
   }, [user?.officerId, viewMonth, partner?.id, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
