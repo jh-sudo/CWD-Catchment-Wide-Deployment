@@ -1,0 +1,24 @@
+# SSP sd-5/sc-4 — keeps dependency versions current (this repo already
+# enforces a supply-chain-attack minimumReleaseAge floor in
+# pnpm-workspace.yaml; Dependabot is the complementary "don't fall behind"
+# side of the same concern) and keeps ci.yml's SHA-pinned GitHub Actions
+# current without giving up the pinning (Dependabot understands and updates
+# SHA-pinned actions, bumping both the SHA and the trailing version comment).
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # One PR per pnpm-workspace catalog/override bump instead of a flood
+      # of individual ones across every workspace package that shares it.
+      workspace-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

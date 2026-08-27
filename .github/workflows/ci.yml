@@ -1,0 +1,160 @@
+# CI pipeline — SSP sc-5/sd-3/sd-4/sd-5/sd-6/cs-5/cs-7.
+#
+# This repo had no CI at all before this (a deliberate choice at the time —
+# see README's "Migrating from Replit" table: "no CI wired... the deploy
+# step is a manual 'pull this image' action regardless, so CI would only
+# automate half the pipeline"). That's still true for *deployment* — this
+# workflow does not build/push/deploy anything — but it closes the SSP gaps
+# a pre-merge check gate is actually meant to cover: tests/typecheck passing
+# before merge, static analysis, dependency/secret scanning, and container
+# hygiene.
+#
+# Blocking vs report-only, deliberately not uniform: jobs this repo's own
+# tooling could verify clean *before* this workflow was written (typecheck,
+# build, a critical-only dependency-audit threshold — see the "Dependency
+# hygiene pass ahead of CI" commit, which got real findings from 41 down to
+# 2 first) are blocking from day one. Jobs relying on external scanners this
+# environment couldn't dry-run locally (hadolint, trivy, gitleaks) run in
+# report-only mode for their first real pass — `continue-on-error: true`,
+# clearly marked below — so this workflow doesn't repeat the mistake a
+# same-day typecheck gate would have made (immediately and permanently red
+# from pre-existing findings nobody had triaged yet). Once a human reviews
+# that first run's actual findings, flip continue-on-error to false on each
+# job as it's confirmed clean or triaged.
+#
+# Every third-party action below is pinned to a full commit SHA, not a
+# floating tag (sc-4/sc-6-style dependency pinning applied to the pipeline
+# itself, not just npm packages) — dependabot.yml keeps them current
+# without giving up that pinning (Dependabot understands and updates
+# SHA-pinned actions, bumping both the SHA and the trailing version comment).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── sc-5 / sd-3: build & typecheck gate ────────────────────────────────────
+  build:
+    name: Typecheck & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck:libs
+      - run: pnpm --filter @workspace/api-server run typecheck
+      - run: pnpm --filter @workspace/roster-dashboard run typecheck
+      - run: pnpm --filter @workspace/api-server run build
+      - name: Build roster-dashboard
+        run: pnpm --filter @workspace/roster-dashboard run build
+        env:
+          PORT: "5180"
+          BASE_PATH: /roster/
+
+  # ── sd-5: dependency vulnerability scanning ─────────────────────────────────
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Blocking floor: nothing critical, verified clean as of the
+      # "Dependency hygiene pass ahead of CI" commit.
+      - run: pnpm audit --audit-level=critical
+      # Informational: the full report, including the 2 known/accepted
+      # high-severity xlsx findings (see that same commit for why they
+      # can't be resolved via a version bump) — never fails the job, just
+      # keeps the current state visible in the log without needing anyone
+      # to remember to run `pnpm audit` by hand.
+      - run: pnpm audit || true
+
+  # ── sd-6: secret detection ──────────────────────────────────────────────────
+  # GitHub's native secret scanning/push protection requires GitHub Advanced
+  # Security, which isn't available on this repo's plan for a private repo
+  # (verified: security_and_analysis is null, branch protection API itself
+  # 403s asking for a Pro/Team+ plan) — gitleaks is the real substitute, not
+  # a downgrade. fetch-depth: 0 so it can see full history, since this repo
+  # has 30+ commits nobody has audited with this tool yet — but always
+  # report-only (not just "first pass", unlike the other jobs above): a
+  # finding somewhere in existing history can't be fixed by editing the
+  # current tree, only by rewriting it, which is a call for a human to make
+  # deliberately, never something this job should be able to force by going
+  # red. Once a human has triaged the existing history, a *second*,
+  # narrower job scoped to just the new commits in a push/PR (e.g. via
+  # GITLEAKS_ENABLE_UPLOAD_ARTIFACT / a --log-opts commit range) would be
+  # the one worth making blocking — not this one.
+  secret-scan:
+    name: Secret Detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── sd-4: static analysis ───────────────────────────────────────────────────
+  static-analysis:
+    name: Static Analysis (Semgrep)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Run Semgrep
+        continue-on-error: true # first real pass — see header
+        run: |
+          python3 -m pip install --quiet semgrep
+          semgrep scan --config auto --error \
+            --exclude 'node_modules' --exclude 'dist' --exclude '*.tsbuildinfo' .
+
+  # ── cs-5: Dockerfile linting ─────────────────────────────────────────────────
+  dockerfile-lint:
+    name: Dockerfile Lint (hadolint)
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-server, roster-dashboard]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
+        continue-on-error: true # first real pass — see header
+        with:
+          dockerfile: artifacts/${{ matrix.service }}/Dockerfile
+
+  # ── cs-7: container image scanning ──────────────────────────────────────────
+  container-scan:
+    name: Container Image Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        service: [api-server, roster-dashboard]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build image
+        run: docker build -f artifacts/${{ matrix.service }}/Dockerfile -t cwd-${{ matrix.service }}:ci .
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true # first real pass — see header
+        with:
+          image-ref: cwd-${{ matrix.service }}:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
