@@ -252,7 +252,7 @@ function PHRoster({ jumpDate }: { jumpDate?: string }) {
   const [overrides, setOverrides] = useState<Record<string, PHOverride>>({});
   const [localEdits, setLocalEdits] = useState<Record<string, Partial<PHOverride>>>({});
   const [refRows, setRefRows] = useState<PHRefRow[]>([]);
-  const [refEdits, setRefEdits] = useState<Record<string, { actualName?: string; remarks?: string }>>({});
+  const [refEdits, setRefEdits] = useState<Record<string, { scheduledName?: string; actualName?: string; remarks?: string }>>({});
   const [loadingSchedule, setLoadingSchedule] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);

@@ -162,7 +162,6 @@ export default function CrewSchedule() {
       setPartnerDutyMap(pdm);
       setLeaveMap(lm);
       setCrossPostDaySet(cpds);
-      setSwapDaySet(swds);
     }).finally(() => setLoading(false));
   }, [selectedId, viewMonth, partner?.id, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
