@@ -29,6 +29,12 @@ export const managersTable = pgTable(
     // /manager/auth/mfa/setup.
     mfaSecret: text("mfa_secret"),
     mfaEnabled: boolean("mfa_enabled").notNull().default(false),
+    // SSP ac-6: forces a password change on next login rather than letting a
+    // known default credential (the auto-seeded fallback admin) stay valid
+    // indefinitely. Only ever set true by seedAdmin() below — existing
+    // accounts are unaffected, and it's cleared the moment the account
+    // completes a forced change (see /manager/auth/force-change-password).
+    mustChangePassword: boolean("must_change_password").notNull().default(false),
   },
   (table) => [
     check("managers_role_check", sql`${table.role} IN ('admin', 'manager', 'ic', 'crew')`),

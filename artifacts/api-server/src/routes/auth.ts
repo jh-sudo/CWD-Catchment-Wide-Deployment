@@ -12,6 +12,24 @@ import {
   verifyMfaCode,
 } from "../lib/mfa";
 
+// ── Password policy ──────────────────────────────────────────────────────────
+// SSP as-5: at least 12 characters and a number or special character. Applies
+// to every admin/manager/ic/crew *password* field (register, forgot-password,
+// admin reset, self-service change) — not the separate crew-PIN mechanism
+// below (PUT /manager/auth/officers/:officerId/crew-pin), which is a
+// deliberately distinct short numeric field code for fast field use,
+// compensated by mandatory MFA at login rather than password strength.
+const PASSWORD_MIN_LENGTH = 12;
+function passwordPolicyError(password: string | undefined | null): string | null {
+  if (!password || password.length < PASSWORD_MIN_LENGTH) {
+    return `Password must be at least ${PASSWORD_MIN_LENGTH} characters`;
+  }
+  if (!/[0-9]/.test(password) && !/[^a-zA-Z0-9]/.test(password)) {
+    return "Password must include at least one number or special character";
+  }
+  return null;
+}
+
 // ── Rate limiting ────────────────────────────────────────────────────────────
 // Applies to every credential-check endpoint below (manager login, manager PIN,
 // crew PIN, per-officer crew login) — none of them had any limit before, so a
@@ -87,6 +105,11 @@ declare module "express-session" {
     // code. A session carrying this is *not* authenticated — requireManager
     // etc. only look at managerId.
     pendingMfaManagerId?: string;
+    // SSP ac-6 — set after password verifies for an account with
+    // must_change_password=true, in place of managerId/pendingMfaManagerId,
+    // until /manager/auth/force-change-password sets a real password. A
+    // session carrying this is not authenticated either.
+    pendingPasswordChangeManagerId?: string;
   }
 }
 
@@ -138,6 +161,8 @@ export interface ManagerAccount {
   // lib/mfa.ts), never sent to clients.
   mfaSecret?: string;
   mfaEnabled: boolean;
+  // SSP ac-6 — see managers.ts's schema comment.
+  mustChangePassword: boolean;
 }
 
 /**
@@ -170,6 +195,7 @@ function toManagerAccount(row: Manager): ManagerAccount {
       : undefined,
     mfaSecret: row.mfaSecret ?? undefined,
     mfaEnabled: row.mfaEnabled,
+    mustChangePassword: row.mustChangePassword,
   };
 }
 
@@ -221,9 +247,10 @@ async function seedAdmin() {
       role: "admin",
       approved: true,
       createdAt: new Date(),
+      mustChangePassword: true,
     });
     await refreshManagersCache();
-    console.log("[auth] Admin seeded — username: admin  password: Admin@1234");
+    console.log("[auth] Admin seeded — username: admin  password: Admin@1234 (must be changed on first login)");
   }
 }
 
@@ -315,9 +342,16 @@ router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
     res.status(403).json({ error: "Account pending approval", pending: true }); return;
   }
   // Credentials just verified — regenerate before granting any session state
-  // (pending-MFA or fully authenticated) so a pre-existing session ID can't
-  // ride along into a privileged one.
+  // (pending-password-change, pending-MFA, or fully authenticated) so a
+  // pre-existing session ID can't ride along into a privileged one.
   await regenerateSession(req);
+  if (m.mustChangePassword) {
+    // SSP ac-6 — gate #1, ahead of MFA: a known default credential
+    // shouldn't be usable to complete MFA enrollment on this account either
+    // (whoever sets the real password first is the one who gets to enroll).
+    req.session.pendingPasswordChangeManagerId = m.id;
+    res.json({ success: true, mustChangePassword: true }); return;
+  }
   if (m.mfaEnabled) {
     // Password alone isn't enough — hold the session in a pending state
     // (not authenticated: requireManager etc. only ever look at
@@ -346,6 +380,55 @@ router.post("/manager/auth/login", makeAuthRateLimit(), async (req, res) => {
     catchments: m.catchments,
   });
 });
+
+// Second step of login when the account has must_change_password set (SSP
+// ac-6) — completes what /manager/auth/login started (see
+// pendingPasswordChangeManagerId above), then falls through to exactly the
+// same MFA challenge/enroll/session decision /manager/auth/login itself
+// makes, so a forced password change doesn't skip mandatory MFA (ac-2).
+router.post(
+  "/manager/auth/force-change-password",
+  makeAuthRateLimit(),
+  makeAccountRateLimit(req => req.session.pendingPasswordChangeManagerId),
+  async (req, res) => {
+    const pendingId = req.session.pendingPasswordChangeManagerId;
+    if (!pendingId) {
+      res.status(400).json({ error: "No pending password change — sign in again" }); return;
+    }
+    const m = managers.find(a => a.id === pendingId);
+    if (!m || !m.mustChangePassword) {
+      // Account state changed out from under this pending session (e.g. an
+      // admin already cleared the flag) — fail closed, not open.
+      delete req.session.pendingPasswordChangeManagerId;
+      res.status(400).json({ error: "No password change required for this account — sign in again" }); return;
+    }
+    const { newPassword } = req.body as { newPassword?: string };
+    const pwdErr = passwordPolicyError(newPassword);
+    if (pwdErr) { res.status(400).json({ error: pwdErr }); return; }
+    const passwordHash = await bcrypt.hash(newPassword!, 10);
+    await updateManager(m.id, { passwordHash, mustChangePassword: false });
+    delete req.session.pendingPasswordChangeManagerId;
+
+    const updated = getManager(m.id)!;
+    if (updated.mfaEnabled) {
+      req.session.pendingMfaManagerId = updated.id;
+      res.json({ success: true, mfaStep: "challenge" }); return;
+    }
+    if (isMfaEligibleRole(updated.role)) {
+      req.session.pendingMfaManagerId = updated.id;
+      res.json({ success: true, mfaStep: "enroll", username: updated.username }); return;
+    }
+    req.session.managerId = updated.id;
+    res.json({
+      success: true,
+      role: updated.role,
+      username: updated.username,
+      officerId: updated.officerId,
+      officerName: updated.officerName,
+      catchments: updated.catchments,
+    });
+  },
+);
 
 // Second step of login when the account has MFA enabled — completes what
 // /manager/auth/login started (see pendingMfaManagerId above). Rate-limited
@@ -399,9 +482,11 @@ router.post("/manager/auth/register", async (req, res) => {
     officerId?: string;
     catchments?: string[];
   };
-  if (!username || !password || password.length < 8) {
-    res.status(400).json({ error: "Username and password (min 8 chars) required" }); return;
+  if (!username || !password) {
+    res.status(400).json({ error: "Username and password required" }); return;
   }
+  const pwdErr = passwordPolicyError(password);
+  if (pwdErr) { res.status(400).json({ error: pwdErr }); return; }
   if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
     res.status(400).json({ error: "Username: 3-32 chars, letters/numbers/._- only" }); return;
   }
@@ -518,9 +603,11 @@ router.put("/manager/auth/managers/:id", requireAdmin, async (req, res) => {
 
 router.post("/manager/auth/forgot-password", async (req, res) => {
   const { username, newPassword } = req.body as { username: string; newPassword: string };
-  if (!username || !newPassword || newPassword.length < 8) {
-    res.status(400).json({ error: "Username and new password (min 8 chars) required" }); return;
+  if (!username || !newPassword) {
+    res.status(400).json({ error: "Username and new password required" }); return;
   }
+  const pwdErr = passwordPolicyError(newPassword);
+  if (pwdErr) { res.status(400).json({ error: pwdErr }); return; }
   const m = managers.find(a => a.username.toLowerCase() === username.toLowerCase());
   if (!m) {
     res.json({ success: true, message: "If that username exists, a reset request has been submitted." }); return;
@@ -551,9 +638,8 @@ router.post("/manager/auth/managers/:id/decline-reset", requireAdmin, async (req
 
 router.post("/manager/auth/managers/:id/reset-password", requireAdmin, async (req, res) => {
   const { newPassword } = req.body as { newPassword: string };
-  if (!newPassword || newPassword.length < 8) {
-    res.status(400).json({ error: "New password must be at least 8 characters" }); return;
-  }
+  const pwdErr = passwordPolicyError(newPassword);
+  if (pwdErr) { res.status(400).json({ error: pwdErr }); return; }
   const m = managers.find(a => a.id === req.params.id);
   if (!m) { res.status(404).json({ error: "Manager not found" }); return; }
   const passwordHash = await bcrypt.hash(newPassword, 10);
@@ -566,9 +652,8 @@ router.post("/manager/auth/change-password", requireManager, async (req, res) =>
   if (!currentPassword || !newPassword) {
     res.status(400).json({ error: "Both current and new password are required" }); return;
   }
-  if (newPassword.length < 8) {
-    res.status(400).json({ error: "New password must be at least 8 characters" }); return;
-  }
+  const pwdErr = passwordPolicyError(newPassword);
+  if (pwdErr) { res.status(400).json({ error: pwdErr }); return; }
   const m = managers.find(a => a.id === req.session.managerId);
   if (!m) { res.status(401).json({ error: "Not authenticated" }); return; }
   if (!(await bcrypt.compare(currentPassword, m.passwordHash))) {
@@ -927,8 +1012,20 @@ const LOGIN_HTML = /* html */`<!DOCTYPE html>
     <label for="r-user">Username</label>
     <input id="r-user" type="text" autocomplete="off" placeholder="username" />
     <label for="r-pass">Password</label>
-    <input id="r-pass" type="password" autocomplete="new-password" placeholder="min 8 characters" />
+    <input id="r-pass" type="password" autocomplete="new-password" placeholder="min 12 characters, with a number or symbol" />
     <button id="reg-btn" onclick="doRegister()">Request Access</button>
+  </div>
+
+  <!-- Forced password-change pane — shown instead of the dashboard when this
+       account still has a default/unset-by-owner credential (SSP ac-6) -->
+  <div class="pane" id="pane-force-pw">
+    <div class="err" id="force-pw-err"></div>
+    <p class="sub" style="margin-bottom:16px;">This account still has a default password and must set a new one before continuing.</p>
+    <label for="force-pw-new">New password</label>
+    <input id="force-pw-new" type="password" autocomplete="new-password" placeholder="min 12 characters, with a number or symbol" />
+    <label for="force-pw-confirm">Confirm new password</label>
+    <input id="force-pw-confirm" type="password" autocomplete="new-password" placeholder="min 12 characters, with a number or symbol" />
+    <button id="force-pw-btn" onclick="doForceChangePassword()">Set Password &amp; Continue</button>
   </div>
 
   <!-- MFA challenge pane — second step after password verifies for accounts with MFA enabled -->
@@ -973,23 +1070,57 @@ async function doLogin() {
     const r = await fetch('/manager/auth/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ username: user, password: pass }) });
     const d = await r.json();
     if (!r.ok) { err.textContent = d.error || 'Login failed.'; err.style.display = 'block'; return; }
-    if (d.mfaStep === 'challenge') {
+    if (d.mustChangePassword) {
       document.querySelector('.tabs').style.display = 'none';
       document.getElementById('pane-login').classList.remove('active');
-      document.getElementById('pane-mfa').classList.add('active');
-      document.getElementById('mfa-code').focus();
+      document.getElementById('pane-force-pw').classList.add('active');
+      document.getElementById('force-pw-new').focus();
       return;
     }
-    if (d.mfaStep === 'enroll') {
-      document.querySelector('.tabs').style.display = 'none';
-      document.getElementById('pane-login').classList.remove('active');
-      document.getElementById('pane-mfa-enroll').classList.add('active');
-      await startMfaEnrollment();
-      return;
-    }
+    if (handleAuthStepResponse(d)) return;
     window.location.href = '/manager';
   } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
   finally { btn.disabled = false; btn.textContent = 'Sign In'; }
+}
+// Shared by doLogin() and doForceChangePassword() — both endpoints can hand
+// back the same mfaStep shape for what comes next. Returns true if it
+// switched to a follow-up pane (caller should stop, not redirect yet).
+function handleAuthStepResponse(d) {
+  if (d.mfaStep === 'challenge') {
+    document.querySelector('.tabs').style.display = 'none';
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+    document.getElementById('pane-mfa').classList.add('active');
+    document.getElementById('mfa-code').focus();
+    return true;
+  }
+  if (d.mfaStep === 'enroll') {
+    document.querySelector('.tabs').style.display = 'none';
+    document.querySelectorAll('.pane').forEach(p => p.classList.remove('active'));
+    document.getElementById('pane-mfa-enroll').classList.add('active');
+    startMfaEnrollment();
+    return true;
+  }
+  return false;
+}
+async function doForceChangePassword() {
+  const btn = document.getElementById('force-pw-btn');
+  const err = document.getElementById('force-pw-err');
+  const nw  = document.getElementById('force-pw-new').value;
+  const cfm = document.getElementById('force-pw-confirm').value;
+  err.style.display = 'none';
+  if (!nw || !cfm) { err.textContent = 'Both fields are required.'; err.style.display = 'block'; return; }
+  if (nw.length < 12) { err.textContent = 'New password must be at least 12 characters.'; err.style.display = 'block'; return; }
+  if (!/[0-9]/.test(nw) && !/[^a-zA-Z0-9]/.test(nw)) { err.textContent = 'New password must include a number or special character.'; err.style.display = 'block'; return; }
+  if (nw !== cfm) { err.textContent = 'Passwords do not match.'; err.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await fetch('/manager/auth/force-change-password', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ newPassword: nw }) });
+    const d = await r.json();
+    if (!r.ok) { err.textContent = d.error || 'Could not set password.'; err.style.display = 'block'; return; }
+    if (handleAuthStepResponse(d)) return;
+    window.location.href = '/manager';
+  } catch(e) { err.textContent = 'Network error — please try again.'; err.style.display = 'block'; }
+  finally { btn.disabled = false; btn.textContent = 'Set Password & Continue'; }
 }
 async function startMfaEnrollment() {
   const err = document.getElementById('mfa-enroll-err');
@@ -1054,6 +1185,7 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
   const pane = document.querySelector('.pane.active').id;
   if (pane === 'pane-login') doLogin();
+  else if (pane === 'pane-force-pw') doForceChangePassword();
   else if (pane === 'pane-mfa') doMfaChallenge();
   else if (pane === 'pane-mfa-enroll') doMfaEnrollVerify();
   else doRegister();

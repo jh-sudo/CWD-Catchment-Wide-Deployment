@@ -20,7 +20,12 @@ RUN pnpm --filter @workspace/roster-dashboard run build
 FROM node:20-slim AS runtime
 RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
 WORKDIR /app
-COPY --from=builder /app /app
+# Non-root user — see api-server/Dockerfile's comment for the pattern.
+# Unlike api-server, this service's runtime command (`vite preview`) is
+# itself a devDependency, so the whole /app tree (incl. node_modules) still
+# needs to ship here — there's no equivalent dist-only trim available.
+COPY --from=builder --chown=node:node /app /app
+USER node
 
 ENV NODE_ENV=production
 ENV PORT=20315
