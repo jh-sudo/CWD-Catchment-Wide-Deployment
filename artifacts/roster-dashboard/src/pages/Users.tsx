@@ -31,6 +31,8 @@ interface ManagerAccount {
   catchments?: string[];
   hasPendingReset?: boolean;
   resetRequestedAt?: string;
+  // SSP ac-3/ac-4 — undefined means never successfully logged in.
+  lastLoginAt?: string;
 }
 
 const ROLE_LABELS: Record<AccountRole, string> = {
@@ -46,6 +48,19 @@ const ROLE_COLORS: Record<AccountRole, string> = {
   ic: "bg-blue-100 text-blue-700 border-blue-200",
   crew: "bg-green-100 text-green-700 border-green-200",
 };
+
+// SSP ac-3/ac-4 — surfaces enough to support a manual dormant-account review
+// (no automated disablement here, just visibility). 90 days matches ac-3's
+// own default "not used for [90] days" parameter.
+const DORMANT_DAYS = 90;
+function lastLoginLabel(lastLoginAt?: string): { text: string; dormant: boolean } {
+  if (!lastLoginAt) return { text: "Never logged in", dormant: true };
+  const days = (Date.now() - new Date(lastLoginAt).getTime()) / 86_400_000;
+  const text = new Date(lastLoginAt).toLocaleString("en-SG", {
+    day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+  });
+  return { text: `Last login ${text}`, dormant: days > DORMANT_DAYS };
+}
 
 async function apiCall(url: string, method = "GET", body?: object) {
   const res = await fetch(url, {
@@ -332,6 +347,17 @@ export default function Users() {
                           <KeyRound className="h-3 w-3" /> Reset pending
                         </span>
                       )}
+                      {(() => {
+                        const { text, dormant } = lastLoginLabel(u.lastLoginAt);
+                        return (
+                          <span className={cn(
+                            "text-[10px] flex items-center gap-0.5",
+                            dormant ? "text-amber-600 font-medium" : "text-muted-foreground",
+                          )}>
+                            <Clock className="h-3 w-3" /> {text}
+                          </span>
+                        );
+                      })()}
                     </div>
                     {u.role !== "admin" && (
                       <div className="flex gap-2 shrink-0">

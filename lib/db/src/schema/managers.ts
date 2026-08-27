@@ -1,4 +1,4 @@
-import { pgTable, text, boolean, timestamp, check } from "drizzle-orm/pg-core";
+import { pgTable, text, boolean, integer, timestamp, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -29,12 +29,26 @@ export const managersTable = pgTable(
     // /manager/auth/mfa/setup.
     mfaSecret: text("mfa_secret"),
     mfaEnabled: boolean("mfa_enabled").notNull().default(false),
-    // SSP ac-6: forces a password change on next login rather than letting a
-    // known default credential (the auto-seeded fallback admin) stay valid
-    // indefinitely. Only ever set true by seedAdmin() below — existing
-    // accounts are unaffected, and it's cleared the moment the account
-    // completes a forced change (see /manager/auth/force-change-password).
+    // SSP ac-6/as-15: forces a password change on next login. Set true by
+    // seedAdmin() for the auto-seeded fallback admin (ac-6 — a known default
+    // credential shouldn't stay valid indefinitely), and by the login route
+    // when failedLoginCount crosses FAILED_LOGIN_MUST_CHANGE_THRESHOLD right
+    // before a correct password finally succeeds (as-15 — "detect signs of
+    // account compromise, such as ... multiple failed login attempts").
+    // Cleared the moment the account completes a forced change (see
+    // /manager/auth/force-change-password).
     mustChangePassword: boolean("must_change_password").notNull().default(false),
+    // SSP as-15 — consecutive failed login attempts on *this account*,
+    // regardless of source IP (the existing rate limiter is IP-scoped, so it
+    // doesn't catch a slow/distributed guesser). Reset to 0 on every
+    // successful login.
+    failedLoginCount: integer("failed_login_count").notNull().default(0),
+    // SSP ac-3/ac-4 — set on every fully-authenticated login (after MFA, not
+    // at the password step) so admins have something to review dormant
+    // accounts against; there's no automated disablement here, this only
+    // makes the information visible (see /manager/auth/managers' "Last
+    // Login" column) for a human-driven access review.
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
   },
   (table) => [
     check("managers_role_check", sql`${table.role} IN ('admin', 'manager', 'ic', 'crew')`),

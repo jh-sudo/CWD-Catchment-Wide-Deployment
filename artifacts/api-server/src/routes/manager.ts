@@ -1357,6 +1357,13 @@ async function loadUsers() {
       var roleClass = u.role === 'admin' ? 'badge badge-admin' : (u.approved ? 'badge badge-green' : 'badge badge-pending');
       var roleLabel = u.role === 'admin' ? 'Admin' : (u.approved ? 'Manager' : 'Pending');
       var date = u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-SG', { day:'numeric', month:'short', year:'numeric' }) : '';
+      // SSP ac-3/ac-4 — surfaced for a human-driven dormant-account review;
+      // 90 days matches ac-3's own default "not used for [90] days" parameter.
+      var lastLoginText = u.lastLoginAt
+        ? 'Last login ' + new Date(u.lastLoginAt).toLocaleString('en-SG', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
+        : 'Never logged in';
+      var lastLoginDormant = !u.lastLoginAt || ((Date.now() - new Date(u.lastLoginAt).getTime()) / 86400000) > 90;
+      var lastLoginHtml = '<small style="color:' + (lastLoginDormant ? 'var(--amber)' : 'var(--muted)') + ';font-weight:' + (lastLoginDormant ? '700' : '400') + ';">' + esc(lastLoginText) + '</small>';
       var actions = '';
       // Pending reset request — show approve/decline prominently
       if (u.hasPendingReset) {
@@ -1382,7 +1389,7 @@ async function loadUsers() {
         }
       }
       var mfaBadge = u.mfaEnabled ? ' <span title="Two-factor authentication is on" style="font-size:11px;">🛡️</span>' : '';
-      return '<div class="user-row"><div class="info"><strong>'+u.username+mfaBadge+'</strong><small>'+date+'</small></div><span class="'+roleClass+'">'+roleLabel+'</span><div class="user-actions">'+actions+'</div></div>';
+      return '<div class="user-row"><div class="info"><strong>'+esc(u.username)+mfaBadge+'</strong><small>'+esc(date)+'</small>'+lastLoginHtml+'</div><span class="'+roleClass+'">'+roleLabel+'</span><div class="user-actions">'+actions+'</div></div>';
     }).join('');
   } catch(e) {
     list.innerHTML = '<div class="empty">Error loading users.</div>';
