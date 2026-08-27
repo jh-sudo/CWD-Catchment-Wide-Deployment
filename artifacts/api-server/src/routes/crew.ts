@@ -422,6 +422,14 @@ router.get("/crew", requireCrew, (req, res) => {
       return JSON.stringify(val).replace(/"/g, '&quot;');
     }
 
+    // SSP as-3 — every server/DB-sourced string (location names/addresses,
+    // CRMS case fields, comments) rendered into .innerHTML below goes
+    // through this first. Same escaping manager.ts's own esc()/escHtml()
+    // helpers do; this page just never had one.
+    function esc(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
     function toast(msg) {
       var t = document.getElementById('toast');
       t.textContent = msg; t.classList.add('show');
@@ -507,7 +515,7 @@ router.get("/crew", requireCrew, (req, res) => {
         var cls = 'pin-loc' + (loc.tier === 2 ? ' t2' : '');
         var m = L.marker([loc.lat, loc.lng], { icon: pinIcon(cls) }).addTo(crewMapLayer);
         m.bindPopup(
-          '<b>' + loc.name + '</b><br/>' + (loc.address || '') +
+          '<b>' + esc(loc.name) + '</b><br/>' + esc(loc.address || '') +
           '<br/><a href="' + navUrl(loc.lat, loc.lng) + '" target="_blank">🧭 Navigate</a>'
         );
         bounds.push([loc.lat, loc.lng]);
@@ -524,9 +532,9 @@ router.get("/crew", requireCrew, (req, res) => {
           ? (entry.arrived ? 'Arrived' + (entry.arrivedAt ? ' ' + entry.arrivedAt + ' hrs' : '') : 'ETA ' + entry.eta + ' hrs')
           : 'En route';
         m.bindPopup(
-          '<b>' + (isMine ? 'You — ' : '') + v.unitCode + ' ' + v.vehicleNumber + '</b><br/>' +
-          (v.partner ? v.partner + '<br/>' : '') + statusLine +
-          '<br/><span style="color:var(--muted)">Updated ' + relativeTime(v.updatedAt) + '</span>'
+          '<b>' + (isMine ? 'You — ' : '') + esc(v.unitCode) + ' ' + esc(v.vehicleNumber) + '</b><br/>' +
+          (v.partner ? esc(v.partner) + '<br/>' : '') + esc(statusLine) +
+          '<br/><span style="color:var(--muted)">Updated ' + esc(relativeTime(v.updatedAt)) + '</span>'
         );
         bounds.push([v.lat, v.lng]);
       });
@@ -636,9 +644,9 @@ router.get("/crew", requireCrew, (req, res) => {
         var weatherOpts = ['Heavy Rain', 'Moderate Rain', 'Light Rain', 'Nil Rain'];
         card.innerHTML =
           '<h2>Your Deployment</h2>' +
-          '<div style="font-size:16px; font-weight:700; margin-bottom:2px;">' + name + '</div>' +
+          '<div style="font-size:16px; font-weight:700; margin-bottom:2px;">' + esc(name) + '</div>' +
           '<div class="muted" style="margin-bottom:12px;">' +
-            (entry.arrived ? '<span class="badge green">Arrived ' + (entry.arrivedAt || '') + '</span>' : '<span class="badge amber">En route</span>') +
+            (entry.arrived ? '<span class="badge green">Arrived ' + esc(entry.arrivedAt || '') + '</span>' : '<span class="badge amber">En route</span>') +
           '</div>' +
           '<div class="row" style="margin-bottom:10px;">' +
             (loc ? '<button class="action secondary" onclick="window.open(navUrl(' + loc.lat + ',' + loc.lng + '), \\'_blank\\')">🧭 Navigate</button>' : '') +
@@ -655,7 +663,7 @@ router.get("/crew", requireCrew, (req, res) => {
         var aloc = locationById(assignment.locationId) || { name: assignment.locationName, lat: assignment.lat, lng: assignment.lng };
         card.innerHTML =
           '<h2>New Assignment</h2>' +
-          '<div style="font-size:16px; font-weight:700; margin-bottom:12px;">' + aloc.name + '</div>' +
+          '<div style="font-size:16px; font-weight:700; margin-bottom:12px;">' + esc(aloc.name) + '</div>' +
           '<button class="action green" onclick="acceptAssignment(' + attrArg(assignment.locationId) + ')">Accept</button>';
       } else if (t) {
         var available = (state.presetLocations || []).filter(function (l) {
@@ -665,7 +673,7 @@ router.get("/crew", requireCrew, (req, res) => {
           '<h2>Available Locations</h2>' +
           (available.length
             ? available.map(function (l) {
-                return '<div class="loc-item"><div><div class="name">' + l.name + '</div><div class="addr">' + l.address + '</div></div>' +
+                return '<div class="loc-item"><div><div class="name">' + esc(l.name) + '</div><div class="addr">' + esc(l.address) + '</div></div>' +
                   '<button class="action green" style="flex:none; padding:10px 14px;" onclick="acceptLocation(' + attrArg(l.id) + ')">Accept</button></div>';
               }).join('')
             : '<div class="muted">No locations currently available.</div>');
@@ -734,7 +742,7 @@ router.get("/crew", requireCrew, (req, res) => {
       if (incoming) {
         card.style.display = 'block';
         body.innerHTML =
-          '<div class="muted" style="margin-bottom:10px;">' + incoming.fromUnitCode + ' wants to swap you into ' + incoming.fromLocationName + '</div>' +
+          '<div class="muted" style="margin-bottom:10px;">' + esc(incoming.fromUnitCode) + ' wants to swap you into ' + esc(incoming.fromLocationName) + '</div>' +
           '<div class="row">' +
             '<button class="action green" onclick="swapAccept(' + attrArg(incoming.id) + ')">Accept Swap</button>' +
             '<button class="action red" onclick="swapDecline(' + attrArg(incoming.id) + ')">Decline</button>' +
@@ -743,7 +751,7 @@ router.get("/crew", requireCrew, (req, res) => {
       }
       if (outgoing) {
         card.style.display = 'block';
-        body.innerHTML = '<div class="muted">Waiting for ' + outgoing.toUnitCode + ' to respond to your swap request.</div>';
+        body.innerHTML = '<div class="muted">Waiting for ' + esc(outgoing.toUnitCode) + ' to respond to your swap request.</div>';
         return;
       }
       if (!t || !entry) { card.style.display = 'none'; return; }
@@ -754,7 +762,7 @@ router.get("/crew", requireCrew, (req, res) => {
         '<select id="swapTarget">' +
           others.map(function (e) {
             var loc = locationById(e.locationId);
-            return '<option value="' + e.vehicleId + '">' + e.unitCode + ' — ' + (loc ? loc.name : e.locationId) + '</option>';
+            return '<option value="' + esc(e.vehicleId) + '">' + esc(e.unitCode) + ' — ' + esc(loc ? loc.name : e.locationId) + '</option>';
           }).join('') +
         '</select>' +
         '<button class="action" onclick="requestSwap()">Request Swap</button>';
@@ -806,18 +814,18 @@ router.get("/crew", requireCrew, (req, res) => {
         body.innerHTML = mine.map(function (c) {
           var comments = (c.comments || []).map(function (cm) {
             return '<div style="margin-top:6px; padding-top:6px; border-top:1px solid var(--border);">' +
-              '<div class="muted" style="font-size:11px;">' + cm.unitCode + ' &middot; ' + crmsSgTime(cm.createdAt) + '</div>' +
-              '<div style="font-size:13px;">' + cm.text + '</div>' +
+              '<div class="muted" style="font-size:11px;">' + esc(cm.unitCode) + ' &middot; ' + crmsSgTime(cm.createdAt) + '</div>' +
+              '<div style="font-size:13px;">' + esc(cm.text) + '</div>' +
             '</div>';
           }).join('');
           return '<div class="crms-item">' +
             '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">' +
-              '<div style="font-weight:600; font-size:13px;">' + (c.isWog ? 'WOG ' : '') + 'CRMS #' + c.caseNumber + '</div>' +
-              '<span class="badge amber">' + (CRMS_STATUS_LABEL[c.status] || c.status) + '</span>' +
+              '<div style="font-weight:600; font-size:13px;">' + (c.isWog ? 'WOG ' : '') + 'CRMS #' + esc(c.caseNumber) + '</div>' +
+              '<span class="badge amber">' + esc(CRMS_STATUS_LABEL[c.status] || c.status) + '</span>' +
             '</div>' +
-            '<div class="muted" style="font-size:12px; margin:4px 0;">📍 ' + (c.address || c.locationName || '') + '</div>' +
-            (c.fpName || c.fpContact ? '<div class="muted" style="font-size:12px; margin-bottom:6px;">👤 ' + (c.fpName || '') + (c.fpContact ? ' &middot; ' + c.fpContact : '') + '</div>' : '') +
-            (c.details ? '<div style="font-size:13px; margin-bottom:6px;">' + c.details + '</div>' : '') +
+            '<div class="muted" style="font-size:12px; margin:4px 0;">📍 ' + esc(c.address || c.locationName || '') + '</div>' +
+            (c.fpName || c.fpContact ? '<div class="muted" style="font-size:12px; margin-bottom:6px;">👤 ' + esc(c.fpName || '') + (c.fpContact ? ' &middot; ' + esc(c.fpContact) : '') + '</div>' : '') +
+            (c.details ? '<div style="font-size:13px; margin-bottom:6px;">' + esc(c.details) + '</div>' : '') +
             comments +
             '<textarea placeholder="Add a comment…" id="cmt_' + c.id + '" rows="2" style="margin-top:8px;"></textarea>' +
             '<div class="row">' +
