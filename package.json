@@ -10,14 +10,10 @@
   },
   "private": true,
   "devDependencies": {
-    "@rollup/rollup-win32-x64-msvc": "^4.62.4",
+    "@rollup/rollup-win32-x64-msvc": "^4.63.0",
     "@tailwindcss/oxide-win32-x64-msvc": "^4.3.3",
     "lightningcss-win32-x64-msvc": "^1.33.0",
-    "prettier": "^3.8.1",
-    "typescript": "~5.9.2"
-  },
-  "dependencies": {
-    "exceljs": "^4.4.0",
-    "xlsx": "^0.18.5"
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
   }
 }
