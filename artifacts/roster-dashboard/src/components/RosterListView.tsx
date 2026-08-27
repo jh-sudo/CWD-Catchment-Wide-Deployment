@@ -644,10 +644,9 @@ export function RosterListView({
 
                     {/* Understaffed warning */}
                     {isUnderstaffed && (
-                      <AlertTriangle
-                        className="h-3.5 w-3.5 text-amber-500 shrink-0"
-                        title="Understaffed — fewer than 2 officers present for this shift"
-                      />
+                      <span title="Understaffed — fewer than 2 officers present for this shift">
+                        <AlertTriangle className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                      </span>
                     )}
 
                     {/* Duty badge — always shows target (scheduled) duty only */}
