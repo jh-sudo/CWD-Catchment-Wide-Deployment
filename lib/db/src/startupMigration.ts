@@ -67,6 +67,30 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
        ADD COLUMN IF NOT EXISTS last_login_at timestamptz`,
   );
 
+  // --- Phase A additive schema — missed in the first pass (2026-09-01):
+  // caused 500s on roster_config/roster_leaves reads post-boot-fix, not
+  // caught by the local smoke test since local Postgres already had these ---
+  await run(
+    "roster_config.weekend_pd / weekend_day / weekday_min_strength",
+    `ALTER TABLE roster_config
+       ADD COLUMN IF NOT EXISTS weekend_pd smallint,
+       ADD COLUMN IF NOT EXISTS weekend_day smallint,
+       ADD COLUMN IF NOT EXISTS weekday_min_strength smallint`,
+  );
+  await run(
+    "roster_leaves.applied_by / applied_at",
+    `ALTER TABLE roster_leaves
+       ADD COLUMN IF NOT EXISTS applied_by text,
+       ADD COLUMN IF NOT EXISTS applied_at timestamptz`,
+  );
+  await run(
+    "roster_requirements table",
+    `CREATE TABLE IF NOT EXISTS roster_requirements (
+       id integer PRIMARY KEY DEFAULT 1,
+       text text NOT NULL
+     )`,
+  );
+
   // --- Phase B/C additive schema — needed for those features, not boot ---
   await run(
     "roster_overrides.comment",
