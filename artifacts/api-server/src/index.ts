@@ -15,6 +15,12 @@ if (Number.isNaN(port) || port <= 0) {
 }
 
 async function main() {
+  // Catch up the GOV PaaS Postgres addon's schema before anything else
+  // touches it — see startupMigration.ts for why this exists and runs
+  // here rather than as a one-off `drizzle-kit push`.
+  const { pool, runStartupMigration } = await import("@workspace/db");
+  await runStartupMigration(pool);
+
   const { default: app } = await import("./app");
   const { deploymentsReady } = await import("./routes");
 
