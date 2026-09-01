@@ -65,6 +65,11 @@ export default defineConfig({
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
   },
+  // Local-dev-only proxy to a locally-running api-server, same pattern
+  // apa/inspector had before they were removed. In production this is
+  // inert — GOV PaaS's path-based routing sends /api/*, /manager/* to
+  // api-server's own container before a request ever reaches this
+  // service, so these rules never actually fire there.
   server: {
     port,
     strictPort: true,
@@ -73,11 +78,19 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    proxy: {
+      "/api": "http://localhost:8080",
+      "/manager": "http://localhost:8080",
+    },
   },
   preview: {
     port,
     host: "0.0.0.0",
     allowedHosts: true,
     headers: securityHeaders,
+    proxy: {
+      "/api": "http://localhost:8080",
+      "/manager": "http://localhost:8080",
+    },
   },
 });
