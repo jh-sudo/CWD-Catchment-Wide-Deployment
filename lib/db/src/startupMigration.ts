@@ -1,0 +1,126 @@
+import type pg from "pg";
+
+// One-time catch-up for the GOV PaaS Postgres addon, which was never
+// migrated past its original ~2026-08-04 provisioning — every schema
+// change since (mandatory MFA's later columns, Phase B/C's new tables,
+// the SSP remediation batch) only ever landed on local dev Postgres via
+// `drizzle-kit push`, never on the real addon (`drizzle-kit push` can't
+// reach it directly — private-network-only, same reason the original
+// backfill went through a pg_dump + Import Backup instead). First
+// symptom: `managers.must_change_password` missing, crash-looping
+// `seedAdmin()`/`refreshManagersCache()` on every boot. Real incident,
+// 2026-09-01 — see the commit this file shipped in.
+//
+// Runs once, automatically, at the very top of api-server's boot — not
+// interactively via drizzle-kit — because the crash-looping container
+// only gave a Shell tab a few seconds before each restart, too unreliable
+// to run anything by hand in. Every statement is IF NOT EXISTS / additive
+// and independently try/caught: a failure here logs loudly but never
+// throws, so this can only leave the app exactly as broken as it already
+// was, never worse. Safe to leave in permanently — every statement is a
+// no-op once applied. Once GOV PaaS is confirmed healthy on all of this,
+// consider removing it in favour of going back to a real `drizzle-kit
+// push` pass (via the pod-shell technique, run while NOT crash-looping)
+// for anything added after this file was written.
+export async function runStartupMigration(pool: pg.Pool): Promise<void> {
+  const run = async (label: string, sql: string) => {
+    try {
+      await pool.query(sql);
+      console.log(`[startup-migration] ok: ${label}`);
+    } catch (err) {
+      console.error(`[startup-migration] FAILED: ${label}`, err);
+    }
+  };
+
+  // --- Critical path: managers — this is what's been crash-looping boot ---
+  await run(
+    "managers.mfa_secret / mfa_enabled (defensive — expected already present)",
+    `ALTER TABLE managers
+       ADD COLUMN IF NOT EXISTS mfa_secret text,
+       ADD COLUMN IF NOT EXISTS mfa_enabled boolean NOT NULL DEFAULT false`,
+  );
+  await run(
+    "managers.must_change_password / failed_login_count / last_login_at",
+    `ALTER TABLE managers
+       ADD COLUMN IF NOT EXISTS must_change_password boolean NOT NULL DEFAULT false,
+       ADD COLUMN IF NOT EXISTS failed_login_count integer NOT NULL DEFAULT 0,
+       ADD COLUMN IF NOT EXISTS last_login_at timestamptz`,
+  );
+
+  // --- Phase B/C additive schema — needed for those features, not boot ---
+  await run(
+    "roster_overrides.comment",
+    `ALTER TABLE roster_overrides ADD COLUMN IF NOT EXISTS comment text`,
+  );
+
+  await run(
+    "activity_log table",
+    `CREATE TABLE IF NOT EXISTS activity_log (
+       id text PRIMARY KEY,
+       type text NOT NULL,
+       title text NOT NULL,
+       body text NOT NULL,
+       created_at timestamptz NOT NULL,
+       pattern_name text,
+       implement_date text,
+       implementer_name text,
+       officer_id text,
+       officer_name text,
+       leave_date text,
+       leave_type text,
+       applied_by_name text
+     )`,
+  );
+
+  await run(
+    "roster_patterns table",
+    `CREATE TABLE IF NOT EXISTS roster_patterns (
+       id text PRIMARY KEY,
+       name text NOT NULL,
+       team_count smallint NOT NULL,
+       created_at date NOT NULL,
+       is_built_in boolean NOT NULL DEFAULT false,
+       data jsonb NOT NULL
+     )`,
+  );
+
+  await run(
+    "roster_vehicle_defaults table",
+    `CREATE TABLE IF NOT EXISTS roster_vehicle_defaults (
+       plate text PRIMARY KEY,
+       location text NOT NULL
+     )`,
+  );
+
+  await run(
+    "roster_vehicle_arrangements table",
+    `CREATE TABLE IF NOT EXISTS roster_vehicle_arrangements (
+       date date NOT NULL,
+       plate text NOT NULL,
+       location text NOT NULL,
+       PRIMARY KEY (date, plate)
+     )`,
+  );
+
+  // --- ph_hr_ballot_state: pool/initialized -> pools jsonb. Not a boot
+  // blocker; best-effort. Old pool/initialized data is disposable — the
+  // app always re-derives pools live from the scheduled PH roster (see
+  // lib/db/src/schema/phHrBallotState.ts's header comment), this table is
+  // just a cache of the last auto-allocate run, nothing trusts it blindly.
+  await run(
+    "ph_hr_ballot_state.pools",
+    `ALTER TABLE ph_hr_ballot_state ADD COLUMN IF NOT EXISTS pools jsonb;
+     UPDATE ph_hr_ballot_state SET pools = '{}'::jsonb WHERE pools IS NULL;
+     ALTER TABLE ph_hr_ballot_state ALTER COLUMN pools SET NOT NULL;
+     ALTER TABLE ph_hr_ballot_state DROP COLUMN IF EXISTS pool;
+     ALTER TABLE ph_hr_ballot_state DROP COLUMN IF EXISTS initialized;`,
+  );
+
+  // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
+  // These are data-integrity backstops, not required for any query to
+  // succeed, so they don't belong in an emergency unblock-the-boot pass.
+  // Follow up separately once the site is stable and there's time to add
+  // them without time pressure: managers_mfa_enabled_requires_secret_check,
+  // leaveRequests.icAccountId's FK to managers, and the composite PK on
+  // roster_day_override_applications (dayOverrideId, officerId).
+}
