@@ -18,7 +18,19 @@ RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @workspace/roster-dashboard run build
 
 FROM node:20-slim AS runtime
-RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
+# COREPACK_HOME pinned to a path outside /app (the /app COPY below would
+# otherwise clobber it) and chowned to node:node so the *runtime* user can
+# actually read the version `corepack prepare` fetched as root here — by
+# default corepack's "activated version" state lives under $HOME, which
+# differs between root (this RUN) and the `node` user USER switches to
+# below, so without this the node user found no activated version and
+# corepack fell back to fetching latest pnpm (needs Node 22+, this image is
+# Node 20) — real incident, see the commit this comment shipped in.
+# packageManager in root package.json is the belt-and-suspenders fallback:
+# even without this cache, corepack reads that field before ever guessing.
+ENV COREPACK_HOME=/opt/corepack-cache
+RUN corepack enable && corepack prepare pnpm@10.13.1 --activate \
+  && chown -R node:node /opt/corepack-cache
 WORKDIR /app
 # Non-root user — see api-server/Dockerfile's comment for the pattern.
 # Unlike api-server, this service's runtime command (`vite preview`) is
