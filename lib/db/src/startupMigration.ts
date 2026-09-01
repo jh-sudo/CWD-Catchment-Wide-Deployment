@@ -1,4 +1,4 @@
-import type pg from "pg";
+import pg from "pg";
 
 // One-time catch-up for the GOV PaaS Postgres addon, which was never
 // migrated past its original ~2026-08-04 provisioning — every schema
@@ -22,10 +22,30 @@ import type pg from "pg";
 // consider removing it in favour of going back to a real `drizzle-kit
 // push` pass (via the pod-shell technique, run while NOT crash-looping)
 // for anything added after this file was written.
+//
+// Needs an owner/admin role, not the app's regular DATABASE_URL — first
+// real attempt at this (same incident) failed with "must be owner of
+// table managers": the original provisioning loaded schema+data through
+// GOV PaaS's Import Backup feature, which runs as a different, more
+// privileged role than whatever DATABASE_URL grants api-server day to
+// day (DML only, apparently, not DDL/ownership). DATABASE_ADMIN_URL is
+// that separate admin/root credential, added to api-server's env
+// specifically for this. Falls back to the app pool when it's unset
+// (local dev, where one role owns everything) so this stays a no-op
+// change for every environment except real GOV PaaS.
 export async function runStartupMigration(pool: pg.Pool): Promise<void> {
+  const adminUrl = process.env.DATABASE_ADMIN_URL;
+  const adminPool = adminUrl
+    ? new pg.Pool({
+        connectionString: adminUrl,
+        ssl: process.env.DATABASE_SSL === "require" ? { rejectUnauthorized: true } : undefined,
+      })
+    : undefined;
+  const target = adminPool ?? pool;
+
   const run = async (label: string, sql: string) => {
     try {
-      await pool.query(sql);
+      await target.query(sql);
       console.log(`[startup-migration] ok: ${label}`);
     } catch (err) {
       console.error(`[startup-migration] FAILED: ${label}`, err);
@@ -123,4 +143,8 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
   // them without time pressure: managers_mfa_enabled_requires_secret_check,
   // leaveRequests.icAccountId's FK to managers, and the composite PK on
   // roster_day_override_applications (dayOverrideId, officerId).
+
+  if (adminPool) {
+    await adminPool.end();
+  }
 }
