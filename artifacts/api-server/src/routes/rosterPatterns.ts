@@ -282,7 +282,14 @@ async function computeOfficerPlan(pattern: RosterPattern): Promise<{
     : BUILT_IN_SUBS;
   const subMap = new Map(allSubs.map((s) => [s.id, s]));
 
-  const existingOfficers = await db.select({ id: officersTable.id, name: officersTable.name }).from(officersTable);
+  // Name matching (for stable-id reuse) still needs to see inactive officers
+  // too — otherwise re-adding a previously-deactivated officer by name can't
+  // find their existing row and creates a duplicate instead of reactivating
+  // it. Only the "will be deactivated" accounting below is scoped to
+  // currently-active officers — an officer already inactive from a prior
+  // implement isn't newly affected by this one (see
+  // .scratch/code-review-sept/issues/01-...).
+  const existingOfficers = await db.select({ id: officersTable.id, name: officersTable.name, active: officersTable.active }).from(officersTable);
   const existingIdByName = new Map(existingOfficers.map((o) => [o.name.trim().toLowerCase(), o.id]));
 
   const newOfficerRows: (typeof officersTable.$inferInsert)[] = [];
@@ -307,10 +314,9 @@ async function computeOfficerPlan(pattern: RosterPattern): Promise<{
     }
   }
   const keepIds = new Set(newOfficerRows.map((o) => o.id!));
-  const deactivateIds = existingOfficers.map((o) => o.id).filter((id) => !keepIds.has(id));
-  const deactivatedOfficers = existingOfficers
-    .filter((o) => !keepIds.has(o.id))
-    .map((o) => ({ id: o.id, name: o.name }));
+  const currentlyActive = existingOfficers.filter((o) => o.active && !keepIds.has(o.id));
+  const deactivateIds = currentlyActive.map((o) => o.id);
+  const deactivatedOfficers = currentlyActive.map((o) => ({ id: o.id, name: o.name }));
 
   return { newOfficerRows, deactivateIds, deactivatedOfficers };
 }

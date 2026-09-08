@@ -661,24 +661,31 @@ router.get("/crew", requireCrew, (req, res) => {
       if (positionPushInterval) { clearInterval(positionPushInterval); positionPushInterval = null; }
       lastKnownPos = null;
     }
-    function pushLastKnownPosition() {
-      var t = myTeam();
-      var entry = myEntry();
-      if (!t || !lastKnownPos) return;
+    // Shared by the continuous watch push and the manual/accept/refocus ping
+    // below — one place defining what a position ping contains, so the two
+    // paths can't silently diverge (.scratch/code-review-sept/issues/04-...).
+    function buildPositionBody(t, entry, lat, lng) {
       var body = {
         vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode,
         partner: t.partner, shift: t.shift,
-        lat: lastKnownPos.lat, lng: lastKnownPos.lng,
+        lat: lat, lng: lng,
         acceptedLocationId: entry ? entry.locationId : null,
       };
       if (entry && !entry.arrived) {
         var destLoc = locationById(entry.locationId);
         if (destLoc) {
-          var est = estimateEta(lastKnownPos.lat, lastKnownPos.lng, destLoc.lat, destLoc.lng);
+          var est = estimateEta(lat, lng, destLoc.lat, destLoc.lng);
           body.eta = est.eta;
           body.etaMinutes = est.etaMinutes;
         }
       }
+      return body;
+    }
+    function pushLastKnownPosition() {
+      var t = myTeam();
+      var entry = myEntry();
+      if (!t || !lastKnownPos) return;
+      var body = buildPositionBody(t, entry, lastKnownPos.lat, lastKnownPos.lng);
       fetch('/api/deployments/position', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -694,20 +701,7 @@ router.get("/crew", requireCrew, (req, res) => {
       var entry = myEntry();
       if (!t || !navigator.geolocation) return;
       navigator.geolocation.getCurrentPosition(function (pos) {
-        var body = {
-          vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode,
-          partner: t.partner, shift: t.shift,
-          lat: pos.coords.latitude, lng: pos.coords.longitude,
-          acceptedLocationId: entry ? entry.locationId : null,
-        };
-        if (entry && !entry.arrived) {
-          var destLoc = locationById(entry.locationId);
-          if (destLoc) {
-            var est = estimateEta(pos.coords.latitude, pos.coords.longitude, destLoc.lat, destLoc.lng);
-            body.eta = est.eta;
-            body.etaMinutes = est.etaMinutes;
-          }
-        }
+        var body = buildPositionBody(t, entry, pos.coords.latitude, pos.coords.longitude);
         postJson('/api/deployments/position', body)
           .then(function (res) {
             if (!silent) toast(res.ok ? 'Location updated' : errMsg(res.d, 'Could not update location.'));

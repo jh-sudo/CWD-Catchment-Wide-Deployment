@@ -911,7 +911,7 @@ This is an automated message…"></textarea>
         <div class="sec-header" style="margin-bottom:8px;">
           <span class="sec-title" style="font-size:13px;">Mobile Manager PIN</span>
         </div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">4–8 digit PIN required to access the Manager tab on the phone app.</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">4–8 letters/digits required to access the Manager tab on the phone app.</p>
         <div style="display:flex;gap:8px;align-items:center;">
           <input type="password" id="pin-input" maxlength="8" placeholder="Current PIN hidden" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg);color:var(--fg);" />
           <button class="btn btn-primary btn-sm" onclick="updatePin()">Save PIN</button>
@@ -924,7 +924,7 @@ This is an automated message…"></textarea>
         <div class="sec-header" style="margin-bottom:8px;">
           <span class="sec-title" style="font-size:13px;">Mobile Crew PIN</span>
         </div>
-        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">4–8 digit PIN required for crew members to log in on the phone app.</p>
+        <p style="font-size:12px;color:var(--muted);margin:0 0 10px;">4–8 letters/digits required for crew members to log in on the phone app.</p>
         <div style="display:flex;gap:8px;align-items:center;">
           <input type="password" id="crew-pin-input" maxlength="8" placeholder="Current PIN hidden" style="flex:1;padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg);color:var(--fg);" />
           <button class="btn btn-primary btn-sm" onclick="updateCrewPin()">Save PIN</button>

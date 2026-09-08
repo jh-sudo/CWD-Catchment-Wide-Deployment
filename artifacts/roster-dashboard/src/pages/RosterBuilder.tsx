@@ -257,6 +257,10 @@ export default function RosterBuilder() {
   // discovered only after the (irreversible) action already ran.
   const [implPreview, setImplPreview] = useState<{ keepCount: number; deactivatedOfficers: { id: string; name: string }[] } | null>(null);
   const [implPreviewLoading, setImplPreviewLoading] = useState(false);
+  // Distinct from "loaded, nobody deactivated" — a failed fetch must not
+  // silently render the same as a clean preview (.scratch/code-review-sept/issues/02-...).
+  const [implPreviewError, setImplPreviewError] = useState(false);
+  const [implPreviewReloadKey, setImplPreviewReloadKey] = useState(0);
 
   // Regenerate warning
   const [pendingTeamCount, setPendingTeamCount] = useState<number | null>(null);
@@ -1181,16 +1185,17 @@ export default function RosterBuilder() {
   // pattern, so the operator sees real consequences before typing IMPLEMENT,
   // not a generic bullet point.
   useEffect(() => {
-    if (!implDialogOpen || !pattern?.id) { setImplPreview(null); return; }
+    if (!implDialogOpen || !pattern?.id) { setImplPreview(null); setImplPreviewError(false); return; }
     let cancelled = false;
     setImplPreviewLoading(true);
+    setImplPreviewError(false);
     fetch(`/api/roster-patterns/${pattern.id}/implement-preview`)
       .then(r => r.ok ? r.json() : Promise.reject(new Error("Could not load preview")))
       .then(data => { if (!cancelled) setImplPreview(data); })
-      .catch(() => { if (!cancelled) setImplPreview(null); })
+      .catch(() => { if (!cancelled) { setImplPreview(null); setImplPreviewError(true); } })
       .finally(() => { if (!cancelled) setImplPreviewLoading(false); });
     return () => { cancelled = true; };
-  }, [implDialogOpen, pattern?.id]);
+  }, [implDialogOpen, pattern?.id, implPreviewReloadKey]);
 
   // ── Render helpers ──────────────────────────────────────────────────────────
   const selectedPatternName = patterns.find(p => p.id === pattern?.id)?.name ?? pattern?.name ?? "—";
@@ -2151,6 +2156,23 @@ export default function RosterBuilder() {
                   ✓ No officers will be deactivated — everyone currently active is in this pattern.
                 </p>
               )}
+              {!implPreviewLoading && implPreviewError && (
+                <div className="rounded-md border border-destructive bg-destructive/10 text-destructive p-3 text-sm space-y-1.5">
+                  <p className="font-semibold">⚠ Could not check who this would deactivate.</p>
+                  <p className="text-xs">
+                    Proceeding without this check means officers could be deactivated with no warning.
+                    Retry before continuing.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setImplPreviewReloadKey(k => k + 1)}
+                  >
+                    Retry check
+                  </Button>
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className="text-sm font-semibold">Implement from date</label>
@@ -2207,7 +2229,7 @@ export default function RosterBuilder() {
               <Button
                 variant="destructive"
                 onClick={handleImplement}
-                disabled={implementing || !implDate || implConfirmText !== "IMPLEMENT"}
+                disabled={implementing || !implDate || implConfirmText !== "IMPLEMENT" || implPreviewLoading || implPreviewError}
                 className="gap-2"
               >
                 {implementing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
