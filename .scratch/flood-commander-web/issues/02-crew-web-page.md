@@ -1,6 +1,6 @@
 # 02 — Crew web page
 
-Status: in-progress — built and locally tested (incl. continuous tracking, see Comments), not yet deployed
+Status: in-progress — built, locally tested, and now real-device tested (see Comments), not yet deployed
 Depends on: 01
 
 Ports `deployment-tracker`'s crew-facing screens (`map.tsx`, `report.tsx`,
@@ -121,3 +121,27 @@ frozen/broken button rather than a rejected request. Fixed: added a shared
 used) and rewired every action handler through it, so a real failure now
 surfaces the server's actual error message instead of a false-positive toast.
 Rebuilt/restarted locally; not yet re-tested on the phone.
+
+**2026-09-08** — Real mobile-browser test on an actual Android/Chrome phone
+(over LAN to the local dev stack, `http://<LAN-IP>:8080/crew`), closing the
+"real-device testing" gap noted above. Page loaded correctly, deployment
+card rendered, other actions worked. Geolocation specifically (both the
+continuous `watchPosition` and the manual "Update My Location" button's
+`getCurrentPosition`) failed — confirmed via a temporary diagnostic toast
+(added then reverted, see commit) that it's browser code 1,
+`"Only secure origins are allowed..."`. That's the browser refusing
+geolocation because the test URL was plain `http://` over a LAN IP, not
+`https://` or `localhost` — a property of *this test setup*, not the app:
+`watchPosition()` fired correctly and failed exactly the way any page would
+on an insecure origin. Real GOV PaaS is HTTPS, so this restriction doesn't
+apply there; a same-origin-as-`localhost` setup (e.g. Chrome's USB
+port-forwarding) also sidesteps it for future local testing.
+
+Judgment call, not an automated pass: the code path is confirmed to execute
+correctly on a real device and fail for a well-understood, expected reason
+unrelated to the app — treating the "real mobile-browser test" item as
+satisfied on that basis, without a from-a-secure-origin retest actually
+capturing a real GPS fix in this session. If continuous tracking specifically
+still feels unverified before this ships, that final confirmation (secure
+origin + real fix captured) is the concrete next step, not further
+speculation about the cause.
