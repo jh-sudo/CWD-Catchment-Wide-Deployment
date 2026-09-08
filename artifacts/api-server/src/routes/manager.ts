@@ -1474,8 +1474,8 @@ async function updatePin() {
   var msg = document.getElementById('pin-msg');
   var pin = pinInput.value.trim();
   msg.style.display = 'none';
-  if (!/^\d{4,8}$/.test(pin)) {
-    msg.textContent = 'PIN must be 4–8 digits.';
+  if (!/^[A-Za-z0-9]{4,8}$/.test(pin)) {
+    msg.textContent = 'PIN must be 4–8 letters/digits.';
     msg.style.color = '#ef4444'; msg.style.display = 'block'; return;
   }
   var res = await fetch('/manager/auth/pin', {
@@ -1498,8 +1498,8 @@ async function updateCrewPin() {
   var msg = document.getElementById('crew-pin-msg');
   var pin = pinInput.value.trim();
   msg.style.display = 'none';
-  if (!/^\d{4,8}$/.test(pin)) {
-    msg.textContent = 'PIN must be 4–8 digits.';
+  if (!/^[A-Za-z0-9]{4,8}$/.test(pin)) {
+    msg.textContent = 'PIN must be 4–8 letters/digits.';
     msg.style.color = '#ef4444'; msg.style.display = 'block'; return;
   }
   var res = await fetch('/manager/auth/crew-pin', {
@@ -1523,6 +1523,15 @@ let crmsCases = [];   // shared with CRMS IIFE so renderReport can reference it
 let tierFilter = 0; // 0 = all, 1 = T1 only, 2 = T2 only — see cycleTierFilter()
 let map, markers = {}, vehicleMarkers = {}, routeCache = {}, pendingPin = null, pendingMarker = null;
 let hoverIW = null, hoverCloseTimer = null;
+// Flips true once window.initMap's callback has actually run — the Maps
+// script tag loads with async/defer (see the <script> at the bottom of this
+// page), so fetchAll()'s first call (fired immediately on page load, see
+// setInterval(fetchAll, ...) below) can easily land before google exists.
+// render() gates all google.maps.* marker/route work on this so a cold load
+// doesn't throw "google is not defined" out of buildCarIcon — everything
+// else in render() (stats, roster table, alert banner, side panels) still
+// updates normally either way.
+let mapsReady = false;
 let editingLocId = null;
 let assigningLoc = null;
 let radarOn = false;
@@ -1663,6 +1672,12 @@ window.initMap = function () {
     });
     openAddModal(lat.toFixed(6), lng.toFixed(6));
   });
+
+  // Draw immediately rather than waiting up to 10s for the next fetchAll()
+  // poll — state may already be populated if the initial fetchAll() landed
+  // before this callback did.
+  mapsReady = true;
+  render();
 };
 
 // ── NEA Rain Radar animated overlay ──────────────────────────────────────────
@@ -2468,6 +2483,11 @@ function render() {
   }
   renderActiveAlert(state.activeAlert ?? null);
 
+  // Everything below draws google.maps.* objects — skip until initMap's
+  // callback has actually run (see mapsReady's declaration for why the race
+  // exists). The panels below still render from state either way, so
+  // nothing here needs to wait — the map just catches up once ready.
+  if (mapsReady) {
   // Map markers for locations — 7-colour status scheme
   // Red=Arrived+HeavyRain  Orange=Arrived+ModerateRain  Green=Arrived+LightRain
   // LightGreen=Arrived+Nil  Cyan=Accepted(OnTheWay)  Violet=Assigned  Grey=Unassigned
@@ -2621,6 +2641,7 @@ function render() {
   // Remove markers/routes for vehicles no longer online
   Object.keys(vehicleMarkers).forEach(id => { if (!seenVeh.has(id)) { vehicleMarkers[id].setMap(null); delete vehicleMarkers[id]; } });
   Object.keys(routeCache).forEach(id => { if (!seenVeh.has(id)) { if (routeCache[id].polyline) routeCache[id].polyline.setMap(null); delete routeCache[id]; } });
+  } // if (mapsReady)
 
   // Panels
   renderDeployed(entries, pendingAssignments);

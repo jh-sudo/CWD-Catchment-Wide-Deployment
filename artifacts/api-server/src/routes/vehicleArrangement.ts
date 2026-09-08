@@ -288,6 +288,15 @@ vehicleArrangementRouter.post("/vehicle-arrangement", requireManager, async (req
 // and if more than one officer at a unit is somehow working the same date
 // (rare override edge case), only the higher-duty / lower-crewPosition one
 // gets it — never two officers pointing at the same physical plate.
+//
+// Not currently called by any frontend (checked roster-dashboard, manager.ts,
+// crew.ts — none reference it; VehicleArrangement.tsx keeps its own mirrored
+// copy of the cascade for its live preview instead). Built to support
+// per-officer vehicle resolution once something needs it — e.g. the live map
+// or crew location-tracking disambiguating which of a unit's two officers is
+// in the vehicle. Confirmed correct as of 2026-09-08 QA
+// (.scratch/roster-qa/issues/), just orphaned — don't assume dead code, but
+// don't be surprised it has no caller either.
 vehicleArrangementRouter.get("/vehicle-arrangement/officer-map", requireManager, async (req, res) => {
   const date = (req.query.date as string | undefined)?.slice(0, 10);
   if (!date) {

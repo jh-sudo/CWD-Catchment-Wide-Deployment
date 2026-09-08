@@ -94,7 +94,7 @@ router.get("/crew/login", (_req, res) => {
         <label for="officerId">Officer ID</label>
         <input id="officerId" autocomplete="username" autocapitalize="off" placeholder="e.g. bu1a" />
         <label for="pin">PIN</label>
-        <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="••••" />
+        <input id="pin" type="password" autocomplete="current-password" placeholder="••••" />
         <button type="submit" id="btn">Log In</button>
       </form>
     </div>
@@ -324,6 +324,7 @@ router.get("/crew", requireCrew, (req, res) => {
       <button class="logout" onclick="copyReportCrew()" title="Copy fleet deployment report to clipboard">📋 Report</button>
       <button class="logout" id="notif-btn" onclick="togglePush()" style="display:none">🔕 Notif: OFF</button>
       <button class="logout" onclick="openMfaSettings()" title="Two-factor authentication">🛡️</button>
+      <button class="logout" id="change-team-btn" onclick="changeTeam()" style="display:none" title="Pick a different team/vehicle">🔄 Team</button>
       <button class="logout" onclick="logout()">Log out</button>
     </div>
   </div>
@@ -436,7 +437,28 @@ router.get("/crew", requireCrew, (req, res) => {
       setTimeout(function () { t.classList.remove('show'); }, 2200);
     }
 
+    // POST helper that resolves { ok, d } like the login/MFA panes on the login
+    // page already do (see crew/login above) — every action button below used
+    // to skip this and show a success toast regardless of the response status,
+    // so a real failure (e.g. a 400 from missing roster fields) looked
+    // identical to success and just silently didn't advance. The catch on the
+    // json parse covers a non-JSON error body (e.g. a raw 500 HTML page).
+    function postJson(url, body) {
+      return fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (d) { return { ok: r.ok, d: d }; });
+      });
+    }
+    // Pulls a human-readable message out of either error shape this API uses:
+    // { error: "code", message: "readable" } or the older { error: "readable" }.
+    function errMsg(d, fallback) {
+      return (d && (d.message || d.error)) || fallback;
+    }
+
     function logout() {
+      stopLocationWatch();
       fetch('/manager/auth/logout', { method: 'POST' }).then(function () {
         window.location.href = '/crew/login';
       });
@@ -559,6 +581,19 @@ router.get("/crew", requireCrew, (req, res) => {
       if (!sel.value) { toast('No team available — ask your commander to import today\\'s roster.'); return; }
       vehicleId = sel.value;
       localStorage.setItem(STORAGE_KEY, vehicleId);
+      startLocationWatch();
+      render();
+    }
+    // Team/vehicle is remembered per officer in localStorage independently of
+    // login session (see .scratch/flood-commander-web/issues/02-crew-web-page.md)
+    // so it survives a re-login mid-shift — but that also meant there was no
+    // way to ever change it once picked, logout included. This is the explicit
+    // escape hatch.
+    function changeTeam() {
+      if (!confirm('Switch to a different team/vehicle? Your current deployment record is unaffected — you can switch back anytime.')) return;
+      stopLocationWatch();
+      vehicleId = null;
+      localStorage.removeItem(STORAGE_KEY);
       render();
     }
 
@@ -596,8 +631,64 @@ router.get("/crew", requireCrew, (req, res) => {
       return { eta: sgHHMM(new Date(Date.now() + minutes * 60000)), etaMinutes: minutes };
     }
 
-    // ── Location update — accept-ping, tab-refocus-ping, manual button.
-    // Deliberately NOT continuous/background — see spec.md for why. ─────────
+    // ── Continuous foreground tracking ──────────────────────────────────────
+    // Adopted from the old Replit deployment-tracker's web build (it did run in
+    // a mobile browser at /crew, not just as an installed native app — its
+    // Platform.OS === 'web' branch used exactly this: a continuous
+    // watchPosition() feed decoupled from a 20s setInterval that POSTs the
+    // cached fix, rather than requesting a fresh GPS lock every push). Same
+    // foreground-tab caveat as before (see spec.md) — a backgrounded/swapped-away
+    // tab can still have this throttled or suspended by the browser — but while
+    // the tab stays open, this keeps position current without the officer
+    // tapping anything. Accept-ping, refocus-ping, and the manual button all
+    // stay in place underneath this as the fallback for whenever a tab *was*
+    // suspended (e.g. during the Maps handoff itself).
+    var lastKnownPos = null; // {lat, lng} cache fed by watchPosition
+    var geoWatchId = null;
+    var positionPushInterval = null;
+
+    function startLocationWatch() {
+      if (geoWatchId != null || !vehicleId || !navigator.geolocation) return;
+      geoWatchId = navigator.geolocation.watchPosition(
+        function (pos) { lastKnownPos = { lat: pos.coords.latitude, lng: pos.coords.longitude }; },
+        function () { /* non-fatal — refocus-ping/manual button still work */ },
+        { enableHighAccuracy: true }
+      );
+      positionPushInterval = setInterval(pushLastKnownPosition, 20000);
+    }
+    function stopLocationWatch() {
+      if (geoWatchId != null) { navigator.geolocation.clearWatch(geoWatchId); geoWatchId = null; }
+      if (positionPushInterval) { clearInterval(positionPushInterval); positionPushInterval = null; }
+      lastKnownPos = null;
+    }
+    function pushLastKnownPosition() {
+      var t = myTeam();
+      var entry = myEntry();
+      if (!t || !lastKnownPos) return;
+      var body = {
+        vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode,
+        partner: t.partner, shift: t.shift,
+        lat: lastKnownPos.lat, lng: lastKnownPos.lng,
+        acceptedLocationId: entry ? entry.locationId : null,
+      };
+      if (entry && !entry.arrived) {
+        var destLoc = locationById(entry.locationId);
+        if (destLoc) {
+          var est = estimateEta(lastKnownPos.lat, lastKnownPos.lng, destLoc.lat, destLoc.lng);
+          body.eta = est.eta;
+          body.etaMinutes = est.etaMinutes;
+        }
+      }
+      fetch('/api/deployments/position', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+    if (vehicleId) startLocationWatch();
+
+    // ── Location update — accept-ping, tab-refocus-ping, manual button, all on
+    // top of the continuous watch above. ────────────────────────────────────
     function updateLocation(silent) {
       var t = myTeam();
       var entry = myEntry();
@@ -617,11 +708,11 @@ router.get("/crew", requireCrew, (req, res) => {
             body.etaMinutes = est.etaMinutes;
           }
         }
-        fetch('/api/deployments/position', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        }).then(function () { if (!silent) toast('Location updated'); });
+        postJson('/api/deployments/position', body)
+          .then(function (res) {
+            if (!silent) toast(res.ok ? 'Location updated' : errMsg(res.d, 'Could not update location.'));
+          })
+          .catch(function () { if (!silent) toast('Network error — please try again.'); });
       }, function () {
         if (!silent) toast('Could not get GPS location — check location permission.');
       }, { enableHighAccuracy: true, timeout: 10000 });
@@ -695,40 +786,46 @@ router.get("/crew", requireCrew, (req, res) => {
 
     function acceptLocation(locationId) {
       var t = myTeam(); if (!t) return;
-      fetch('/api/deployments/accept', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode, partner: t.partner, shift: t.shift, locationId: locationId, eta: '', etaMinutes: 0 }),
-      }).then(function (r) { return r.json(); }).then(function () {
-        toast('Location accepted');
-        // refresh() first — updateLocation() reads myEntry() from local
-        // state, which doesn't have the just-created entry until this
-        // resolves. Doing it in the other order meant the very first
-        // position ping after accepting always skipped the ETA calculation.
-        refresh().then(function () { updateLocation(true); });
-      });
+      postJson('/api/deployments/accept', { vehicleId: t.vehicleId, vehicleNumber: t.vehicleNumber, unitCode: t.unitCode, partner: t.partner, shift: t.shift, locationId: locationId, eta: '', etaMinutes: 0 })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not accept location.')); return; }
+          toast('Location accepted');
+          // refresh() first — updateLocation() reads myEntry() from local
+          // state, which doesn't have the just-created entry until this
+          // resolves. Doing it in the other order meant the very first
+          // position ping after accepting always skipped the ETA calculation.
+          refresh().then(function () { updateLocation(true); });
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
     function acceptAssignment(locationId) { acceptLocation(locationId); }
     function markArrived() {
       var t = myTeam(); if (!t) return;
       var entry = myEntry(); if (!entry) return;
-      fetch('/api/deployments/arrive', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicleId: t.vehicleId, locationId: entry.locationId }),
-      }).then(function () { toast('Marked arrived'); refresh(); });
+      postJson('/api/deployments/arrive', { vehicleId: t.vehicleId, locationId: entry.locationId })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not mark arrived.')); return; }
+          toast('Marked arrived'); refresh();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
     function reportWeather(weather) {
       var t = myTeam(); var entry = myEntry(); if (!t || !entry) return;
-      fetch('/api/deployments/weather', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicleId: t.vehicleId, locationId: entry.locationId, weather: weather }),
-      }).then(function () { toast('Weather reported'); refresh(); });
+      postJson('/api/deployments/weather', { vehicleId: t.vehicleId, locationId: entry.locationId, weather: weather })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not report weather.')); return; }
+          toast('Weather reported'); refresh();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
     function acknowledgeAlert() {
       var t = myTeam(); if (!t) return;
-      fetch('/api/alert/acknowledge', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unitCode: t.unitCode }),
-      }).then(function () { toast('Alert acknowledged'); refresh(); });
+      postJson('/api/alert/acknowledge', { unitCode: t.unitCode })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not acknowledge alert.')); return; }
+          toast('Alert acknowledged'); refresh();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
 
     // ── Swap ─────────────────────────────────────────────────────────────────
@@ -769,25 +866,28 @@ router.get("/crew", requireCrew, (req, res) => {
     }
     function requestSwap() {
       var target = document.getElementById('swapTarget').value;
-      fetch('/api/deployments/swap-request', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fromVehicleId: vehicleId, toVehicleId: target }),
-      }).then(function (r) { return r.json(); }).then(function (d) {
-        if (d.error) { toast(d.error); return; }
-        toast('Swap requested'); refresh();
-      });
+      postJson('/api/deployments/swap-request', { fromVehicleId: vehicleId, toVehicleId: target })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not request swap.')); return; }
+          toast('Swap requested'); refresh();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
     function swapAccept(id) {
-      fetch('/api/deployments/swap-accept', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ swapRequestId: id, vehicleId: vehicleId }),
-      }).then(function () { toast('Swap complete'); refresh(); });
+      postJson('/api/deployments/swap-accept', { swapRequestId: id, vehicleId: vehicleId })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not accept swap.')); return; }
+          toast('Swap complete'); refresh();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
     function swapDecline(id) {
-      fetch('/api/deployments/swap-decline', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ swapRequestId: id, vehicleId: vehicleId }),
-      }).then(function () { toast('Swap declined'); refresh(); });
+      postJson('/api/deployments/swap-decline', { swapRequestId: id, vehicleId: vehicleId })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not decline swap.')); return; }
+          toast('Swap declined'); refresh();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
 
     // ── CRMS (own vehicle only) ─────────────────────────────────────────────
@@ -840,17 +940,21 @@ router.get("/crew", requireCrew, (req, res) => {
       var val = document.getElementById('cmt_' + id).value.trim();
       if (!val) return;
       var t = myTeam(); if (!t) return;
-      fetch('/api/crms/' + id + '/comment', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: val, vehicleId: t.vehicleId, unitCode: t.unitCode }),
-      }).then(function () { toast('Comment added'); loadCrms(); });
+      postJson('/api/crms/' + id + '/comment', { text: val, vehicleId: t.vehicleId, unitCode: t.unitCode })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not add comment.')); return; }
+          toast('Comment added'); loadCrms();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
     function crmsResolve(id) {
       var t = myTeam(); if (!t) return;
-      fetch('/api/crms/' + id + '/resolve', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vehicleId: t.vehicleId, unitCode: t.unitCode }),
-      }).then(function () { toast('Case resolved'); loadCrms(); });
+      postJson('/api/crms/' + id + '/resolve', { vehicleId: t.vehicleId, unitCode: t.unitCode })
+        .then(function (res) {
+          if (!res.ok) { toast(errMsg(res.d, 'Could not resolve case.')); return; }
+          toast('Case resolved'); loadCrms();
+        })
+        .catch(function () { toast('Network error — please try again.'); });
     }
 
     // ── Top-level render / poll ─────────────────────────────────────────────
@@ -859,6 +963,7 @@ router.get("/crew", requireCrew, (req, res) => {
       document.getElementById('teamLine').textContent = t ? (t.unitCode + ' ' + t.vehicleNumber + ' — ' + t.partner) : 'No team selected';
       document.getElementById('teamPickerCard').style.display = vehicleId ? 'none' : 'block';
       document.getElementById('mainSections').style.display = vehicleId ? 'block' : 'none';
+      document.getElementById('change-team-btn').style.display = vehicleId ? '' : 'none';
       renderTeamPicker();
       if (vehicleId) { renderDeployment(); renderSwap(); loadCrms(); }
       if (mapOpen) renderMapMarkers();

@@ -242,6 +242,91 @@ rosterPatternsRouter.post("/roster-patterns/generate", requireManager, (req, res
   res.json({ baseWeeks: generateBaseWeeks(count) });
 });
 
+// ── Officer plan (shared by the implement-preview dry run and the real
+// implement route below) — resolves which existing officers get upserted vs.
+// deactivated for a given pattern. One source of truth so the preview shown
+// to the operator can never drift from what implementing actually does —
+// see .scratch/roster-qa/issues/01: implementing a pattern with unnamed/
+// unmatched officer slots used to silently deactivate the entire active
+// roster with zero warning. ─────────────────────────────────────────────────
+const BUILT_IN_SUBS: Subcatchment[] = [
+  { id: "sc_default_1", acronym: "BU", name: "Bukit Timah Urban", color: "#FFFFCC" },
+  { id: "sc_default_2", acronym: "PJ", name: "Jurong Pandan", color: "#D0D0D0" },
+  { id: "sc_default_3", acronym: "WK", name: "Woodlands Kranji", color: "#FBE2D5" },
+  { id: "sc_default_4", acronym: "CP", name: "Changi Punggol", color: "#DAF2D0" },
+  { id: "sc_default_5", acronym: "KG", name: "Kallang Geylang", color: "#CAEDFB" },
+];
+
+function resolveTeamUnit(team: PatternTeam, subMap: Map<string, Subcatchment>): { fullUnit: string; fullCatchment: string } {
+  const sub = team.subcatchmentId ? subMap.get(team.subcatchmentId) : undefined;
+  const acronym = sub?.acronym ?? "";
+  const unitNum = team.unit?.replace(/^[A-Za-z]+/, "") || team.unit || "";
+  return {
+    fullUnit: acronym ? `${acronym}${unitNum}` : team.unit || "",
+    fullCatchment: sub?.name || team.catchment || "",
+  };
+}
+
+function nameToOfficerId(name: string): string {
+  const slug = (name ?? "").trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+  return slug || `officer-${Date.now()}`;
+}
+
+async function computeOfficerPlan(pattern: RosterPattern): Promise<{
+  newOfficerRows: (typeof officersTable.$inferInsert)[];
+  deactivateIds: string[];
+  deactivatedOfficers: { id: string; name: string }[];
+}> {
+  const allSubs: Subcatchment[] = pattern.data.subcatchments && pattern.data.subcatchments.length > 0
+    ? pattern.data.subcatchments
+    : BUILT_IN_SUBS;
+  const subMap = new Map(allSubs.map((s) => [s.id, s]));
+
+  const existingOfficers = await db.select({ id: officersTable.id, name: officersTable.name }).from(officersTable);
+  const existingIdByName = new Map(existingOfficers.map((o) => [o.name.trim().toLowerCase(), o.id]));
+
+  const newOfficerRows: (typeof officersTable.$inferInsert)[] = [];
+  for (const team of pattern.data.teams) {
+    const { fullUnit, fullCatchment } = resolveTeamUnit(team, subMap);
+    for (const o of team.officers) {
+      if (!o.name?.trim()) continue;
+      const nameKey = o.name.trim().toLowerCase();
+      const stableId = existingIdByName.get(nameKey)
+        ?? (o.id && !o.id.startsWith("new-") ? o.id : null)
+        ?? nameToOfficerId(o.name);
+      newOfficerRows.push({
+        id: stableId,
+        name: o.name,
+        unitCode: fullUnit,
+        vehicle: o.vehicle ?? "",
+        catchment: fullCatchment,
+        teamSlot: team.slot,
+        crewPosition: o.crewPosition,
+        active: true,
+      });
+    }
+  }
+  const keepIds = new Set(newOfficerRows.map((o) => o.id!));
+  const deactivateIds = existingOfficers.map((o) => o.id).filter((id) => !keepIds.has(id));
+  const deactivatedOfficers = existingOfficers
+    .filter((o) => !keepIds.has(o.id))
+    .map((o) => ({ id: o.id, name: o.name }));
+
+  return { newOfficerRows, deactivateIds, deactivatedOfficers };
+}
+
+// GET /api/roster-patterns/:id/implement-preview — dry run of the officer
+// upsert/deactivate step implement performs, no writes. Lets the frontend
+// warn the operator with exactly who'd be deactivated before they commit.
+rosterPatternsRouter.get("/roster-patterns/:id/implement-preview", requireManager, async (req, res) => {
+  const { id } = req.params as { id: string };
+  const [row] = await db.select().from(rosterPatternsTable).where(eq(rosterPatternsTable.id, id));
+  if (!row) { res.status(404).json({ error: "Pattern not found" }); return; }
+  const pattern = toRosterPattern(row);
+  const { newOfficerRows, deactivatedOfficers } = await computeOfficerPlan(pattern);
+  res.json({ keepCount: newOfficerRows.length, deactivatedOfficers });
+});
+
 // POST /api/roster-patterns/:id/implement — implement pattern from a date.
 //
 // Adapted from Replit's JSON-file version, which wholesale-replaced
@@ -277,37 +362,17 @@ rosterPatternsRouter.post("/roster-patterns/:id/implement", requireManager, asyn
   const { baseWeeks, teams } = pattern.data;
   const cycleLengthDays = teamCount * 7;
 
-  // Hardcoded fallback for the built-in default subcatchments. Older
-  // patterns saved before subcatchment persistence was fixed have
-  // subcatchments: [] but still carry subcatchmentId "sc_default_1" … "sc_default_5"
-  // on their teams.
-  const BUILT_IN_SUBS: Subcatchment[] = [
-    { id: "sc_default_1", acronym: "BU", name: "Bukit Timah Urban", color: "#FFFFCC" },
-    { id: "sc_default_2", acronym: "PJ", name: "Jurong Pandan", color: "#D0D0D0" },
-    { id: "sc_default_3", acronym: "WK", name: "Woodlands Kranji", color: "#FBE2D5" },
-    { id: "sc_default_4", acronym: "CP", name: "Changi Punggol", color: "#DAF2D0" },
-    { id: "sc_default_5", acronym: "KG", name: "Kallang Geylang", color: "#CAEDFB" },
-  ];
+  // Subcatchment resolution — see resolveTeamUnit/BUILT_IN_SUBS above.
   const allSubs: Subcatchment[] = pattern.data.subcatchments && pattern.data.subcatchments.length > 0
     ? pattern.data.subcatchments
     : BUILT_IN_SUBS;
   const subMap = new Map(allSubs.map((s) => [s.id, s]));
 
-  const resolveTeam = (team: PatternTeam) => {
-    const sub = team.subcatchmentId ? subMap.get(team.subcatchmentId) : undefined;
-    const acronym = sub?.acronym ?? "";
-    const unitNum = team.unit?.replace(/^[A-Za-z]+/, "") || team.unit || "";
-    return {
-      fullUnit: acronym ? `${acronym}${unitNum}` : team.unit || "",
-      fullCatchment: sub?.name || team.catchment || "",
-    };
-  };
-
   // 1. Generate per-officer duty rows from the pattern (target === actual on
   // a freshly-implemented cycle — no overrides exist for it yet).
   const cycleDutyRows: (typeof rosterCycleDutiesTable.$inferInsert)[] = [];
   for (const team of teams) {
-    const { fullUnit } = resolveTeam(team);
+    const { fullUnit } = resolveTeamUnit(team, subMap);
     if (!fullUnit) continue;
     for (let dayIdx = 0; dayIdx < cycleLengthDays; dayIdx++) {
       const week = Math.floor(dayIdx / 7);
@@ -326,37 +391,11 @@ rosterPatternsRouter.post("/roster-patterns/:id/implement", requireManager, asyn
   }
 
   // 2. Officers: upsert everyone in the new pattern (stable id — same name
-  // match keeps existing history attached), deactivate everyone else.
-  const nameToId = (name: string): string => {
-    const slug = (name ?? "").trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
-    return slug || `officer-${Date.now()}`;
-  };
-  const existingOfficers = await db.select({ id: officersTable.id, name: officersTable.name }).from(officersTable);
-  const existingIdByName = new Map(existingOfficers.map((o) => [o.name.trim().toLowerCase(), o.id]));
-
-  const newOfficerRows: (typeof officersTable.$inferInsert)[] = [];
-  for (const team of teams) {
-    const { fullUnit, fullCatchment } = resolveTeam(team);
-    for (const o of team.officers) {
-      if (!o.name?.trim()) continue;
-      const nameKey = o.name.trim().toLowerCase();
-      const stableId = existingIdByName.get(nameKey)
-        ?? (o.id && !o.id.startsWith("new-") ? o.id : null)
-        ?? nameToId(o.name);
-      newOfficerRows.push({
-        id: stableId,
-        name: o.name,
-        unitCode: fullUnit,
-        vehicle: o.vehicle ?? "",
-        catchment: fullCatchment,
-        teamSlot: team.slot,
-        crewPosition: o.crewPosition,
-        active: true,
-      });
-    }
-  }
-  const keepIds = new Set(newOfficerRows.map((o) => o.id!));
-  const deactivateIds = existingOfficers.map((o) => o.id).filter((id) => !keepIds.has(id));
+  // match keeps existing history attached), deactivate everyone else. Same
+  // computeOfficerPlan the implement-preview endpoint above uses, so the
+  // confirmation the frontend shows before calling this route can never
+  // disagree with what actually happens here.
+  const { newOfficerRows, deactivateIds } = await computeOfficerPlan(pattern);
 
   // 3. Trim overrides/swaps/day-overrides from implementDate onward — a new
   // cycle makes any future-dated manual edit against the old cycle stale.

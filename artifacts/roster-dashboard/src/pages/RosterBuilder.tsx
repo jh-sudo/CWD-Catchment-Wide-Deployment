@@ -252,6 +252,11 @@ export default function RosterBuilder() {
   const [implementing, setImplementing] = useState(false);
   const [implResult, setImplResult] = useState<{ officersActivated: number; officersDeactivated: number } | null>(null);
   const [implConfirmText, setImplConfirmText] = useState("");
+  // Dry-run preview (.scratch/roster-qa/issues/01) — who Implement would
+  // actually deactivate, fetched before the operator can confirm, not
+  // discovered only after the (irreversible) action already ran.
+  const [implPreview, setImplPreview] = useState<{ keepCount: number; deactivatedOfficers: { id: string; name: string }[] } | null>(null);
+  const [implPreviewLoading, setImplPreviewLoading] = useState(false);
 
   // Regenerate warning
   const [pendingTeamCount, setPendingTeamCount] = useState<number | null>(null);
@@ -1171,6 +1176,21 @@ export default function RosterBuilder() {
       setImplementing(false);
     }
   };
+
+  // Fetch the deactivation preview as soon as the dialog opens on a saved
+  // pattern, so the operator sees real consequences before typing IMPLEMENT,
+  // not a generic bullet point.
+  useEffect(() => {
+    if (!implDialogOpen || !pattern?.id) { setImplPreview(null); return; }
+    let cancelled = false;
+    setImplPreviewLoading(true);
+    fetch(`/api/roster-patterns/${pattern.id}/implement-preview`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error("Could not load preview")))
+      .then(data => { if (!cancelled) setImplPreview(data); })
+      .catch(() => { if (!cancelled) setImplPreview(null); })
+      .finally(() => { if (!cancelled) setImplPreviewLoading(false); });
+    return () => { cancelled = true; };
+  }, [implDialogOpen, pattern?.id]);
 
   // ── Render helpers ──────────────────────────────────────────────────────────
   const selectedPatternName = patterns.find(p => p.id === pattern?.id)?.name ?? pattern?.name ?? "—";
@@ -2104,6 +2124,33 @@ export default function RosterBuilder() {
                   <li>Send a notification to all crew and managers</li>
                 </ul>
               </div>
+
+              {implPreviewLoading && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1.5">
+                  <Loader2 className="h-3 w-3 animate-spin" /> Checking who this would deactivate…
+                </p>
+              )}
+              {!implPreviewLoading && implPreview && implPreview.deactivatedOfficers.length > 0 && (
+                <div className="rounded-md border border-destructive bg-destructive/10 text-destructive p-3 text-sm space-y-1.5">
+                  <p className="font-semibold">
+                    ⚠ This pattern will deactivate {implPreview.deactivatedOfficers.length} officer(s) not in it
+                    {implPreview.keepCount === 0 && " — every currently active officer"}:
+                  </p>
+                  <p className="text-xs font-mono leading-relaxed max-h-24 overflow-y-auto">
+                    {implPreview.deactivatedOfficers.map(o => o.name).join(", ")}
+                  </p>
+                  <p className="text-xs">
+                    If this pattern's officer slots aren't filled in yet, fill them in via the officer
+                    search on each unit first — otherwise everyone listed above loses roster/PH
+                    eligibility until manually reactivated.
+                  </p>
+                </div>
+              )}
+              {!implPreviewLoading && implPreview && implPreview.deactivatedOfficers.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  ✓ No officers will be deactivated — everyone currently active is in this pattern.
+                </p>
+              )}
 
               <div className="space-y-1">
                 <label className="text-sm font-semibold">Implement from date</label>
