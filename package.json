@@ -16,5 +16,10 @@
     "lightningcss-win32-x64-msvc": "^1.33.0",
     "prettier": "^3.9.6",
     "typescript": "~5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "qs": "^6.16.0"
+    }
   }
 }
