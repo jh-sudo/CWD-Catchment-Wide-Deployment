@@ -30,15 +30,27 @@ holds at OC/Non-Sensitive.
   third-party SaaS that would need its own IDSC tool-risk-acceptance, reopening the
   exact kind of hop this whole effort exists to avoid; (c) with the reduced scope
   (no weather/swap/report flows moving anywhere), Slack's main advantage evaporated.
-- **Continuous live GPS tracking is explicitly given up.** `watchPositionAsync`'s
-  background tracking is native-only — mobile browsers suspend background tabs
-  (iOS Safari especially). Replaced with **officer-initiated intermittent updates**:
-  auto-ping on Accept, auto-ping when the tab regains focus (Page Visibility API,
-  e.g. after returning from a nav-app handoff), plus a manual "Update Location"
-  button always available. "Keep the page open" was considered and rejected as
-  official guidance — it structurally conflicts with the nav handoff (opening
-  Google/Apple Maps backgrounds the CWD tab at exactly the moment position is
-  changing) and fails silently rather than obviously.
+- **Background/backgrounded-tab GPS tracking is still given up — continuous
+  foreground tracking is not.** (Revised 2026-09-02, see issue 02's Comments.)
+  Originally this bullet gave up *all* continuous tracking, reasoning that
+  `watchPositionAsync`'s background tracking is native-only and mobile browsers
+  suspend background tabs (iOS Safari especially). That conflated two different
+  things: the never-shipped native EAS build, and what officers actually used —
+  the old app's own Expo *web* export at `/crew` (`server/serve.js`,
+  `static-build/web`), which ran in a plain mobile browser tab and got
+  continuous position updates via ordinary `navigator.geolocation.watchPosition()`
+  the whole time that tab stayed foregrounded, same as any web page. That part
+  wasn't native-only and works the same way in the current build.
+  Current mechanism: continuous `watchPosition()` + a 20s push interval while
+  the tab is open (ported from that old web build), *plus* auto-ping on Accept,
+  auto-ping when the tab regains focus (Page Visibility API, e.g. after
+  returning from a nav-app handoff), plus a manual "Update Location" button
+  always available — the three-trigger fallback is what covers a
+  backgrounded/suspended tab, since that part of the original reasoning still
+  holds. "Keep the page open" is still not official guidance — the continuous
+  watch doesn't depend on the officer being told to babysit the tab, it just
+  stops updating on its own if the browser suspends it, same failure mode as
+  before.
 - **Full manager toolkit ported, not just the map.** `manager.tsx` (3,358 lines) is
   the bulk of the app's real functionality — MAP, LIST, LOCATIONS, ROSTER (crew
   assignment), ALERT (broadcast to crew), WLS, and full CRMS case management, not a

@@ -316,8 +316,13 @@ function PHRoster({ jumpDate }: { jumpDate?: string }) {
         fetch(`/api/ph-roster/${date}`).then(r => r.ok ? r.json() : { overrides: {} }),
         fetch(`/api/ph-roster-ref/${date}`).then(r => r.ok ? r.json() : { rows: [] }),
       ]);
+      // /api/roster-plan/schedule returns a whole week's duties per officer
+      // (rosterPlan.ts's weekDates.map), not just fetchDate — filtering by
+      // duty type alone let every other qualifying day that week through
+      // too, producing multiple rows per officerId (duplicate React keys,
+      // and a "Scheduled" column silently mixing in other days' duties).
       const working: ScheduleEntry[] = ((schedData.duties ?? []) as any[])
-        .filter((d: any) => ["DAY", "PD", "ND"].includes(d.duty ?? d.targetDuty))
+        .filter((d: any) => d.date === fetchDate && ["DAY", "PD", "ND"].includes(d.duty ?? d.targetDuty))
         .map((d: any) => {
           const off = (allOfficers as any[]).find((o: any) => o.id === d.officerId);
           return {
@@ -349,8 +354,15 @@ function PHRoster({ jumpDate }: { jumpDate?: string }) {
                 .then(() => { clearPHCache(date); bumpVersion(); })
                 .catch(() => {});
             }
+          } else {
+            // Was silently swallowed (.scratch/roster-qa/issues/04) — the
+            // 404 case is expected (Sunday not configured yet) and worth
+            // telling the operator, not just leaving the ref roster empty
+            // with no explanation.
+            const err = await extractRes.json().catch(() => null);
+            setMsg({ ok: false, text: err?.error ?? "Could not auto-extract this OIL Monday's roster." });
           }
-        } catch { /* auto-extract failed silently */ }
+        } catch { /* genuine network failure — leave refRowsFinal empty */ }
       }
       setRefRows(refRowsFinal);
     } catch {
