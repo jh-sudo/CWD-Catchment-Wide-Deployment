@@ -1,7 +1,13 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { format, addDays, parseISO, startOfMonth, endOfMonth, eachDayOfInterval, subMonths, addMonths } from "date-fns";
-import * as XLSX from "xlsx";
+// @e965/xlsx — a community republish of SheetJS to npm (kept current with
+// upstream security patches). Same API as "xlsx"; swapped because SheetJS
+// stopped publishing patched releases to the npm registry after 0.18.5, so
+// "xlsx" itself is permanently stuck vulnerable to Dependabot's tracked CVEs
+// (GHSA-4r6h-8v6p-xvw6, GHSA-5pgg-2g8v-p4x9). See
+// .scratch/dependabot-fixes/issues/01-qs-transitive-dos-and-xlsx-unpatched.md.
+import * as XLSX from "@e965/xlsx";
 import {
   Upload, AlertTriangle, CheckCircle, Loader2, RotateCcw,
   ChevronLeft, ChevronRight, CheckCircle2, Search, X, Download,
