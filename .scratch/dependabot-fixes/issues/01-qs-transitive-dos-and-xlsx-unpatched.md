@@ -84,3 +84,46 @@ confirming `@e965/xlsx`'s published `exports` map carries a proper ESM
 that the plain `xlsx` package also provided via its `module` field).
 Recommend a smoke-test of the Upload Brief / roster-download flows after
 this deploys, since the swap wasn't exercised end-to-end.
+
+**Regression found + fixed 2026-09-10, same day, while investigating an
+unrelated Vite build warning.** The `"pnpm": { "overrides": { "qs":
+"^6.16.0" } }` block added to root `package.json` above was a mistake —
+`pnpm-workspace.yaml` already has its own `overrides:` section, including a
+pre-existing, deliberately-documented `uuid: ^11.1.1` fix (tagged "SSP
+sd-5") and a single-pin `esbuild: 0.28.1`. Adding a *second*, competing
+override source in `package.json` caused pnpm to partially disregard the
+first: a plain `pnpm install` silently reintroduced `uuid@8.3.2` (undoing
+the SSP sd-5 fix — [GHSA-w5hq-g745-h8pq](https://github.com/advisories/GHSA-w5hq-g745-h8pq),
+alert #19, open since 2026-08-27 in GitHub's view since it was never truly
+fixed until now) and split `esbuild` across three coexisting versions
+(`0.18.20`, `0.25.12`, `0.28.1`), including the vulnerable `0.18.20`
+([GHSA-67mh-4wv8-2f99](https://github.com/advisories/GHSA-67mh-4wv8-2f99),
+alert #52) — both landed on `main` via this ticket's own PR #8 merge and
+sat there until caught.
+
+Confirmed via `git show 8455c5a:pnpm-lock.yaml` (the pre-fix baseline) that
+both were safe before this ticket's own `pnpm install` ran, and unsafe
+after — a self-inflicted regression, not a pre-existing issue.
+
+**Fix**: removed `package.json`'s `pnpm.overrides` block entirely; added
+`qs: ^6.16.0` into the existing `pnpm-workspace.yaml` overrides list
+instead, right after the `uuid` entry, with a comment explaining why it
+lives there and not in `package.json`. Re-ran `pnpm install` — confirmed
+via a full diff of every resolved package version against the `8455c5a`
+baseline that the only changes left are `qs` (bumped), `xlsx`'s entire
+dependency tree (removed, replaced by dependency-free `@e965/xlsx`), and
+`uuid`/`esbuild` back to exactly matching baseline. Also found and fixed a
+third, genuinely pre-existing, unrelated alert while in here: `js-yaml@4.3.1`
+(pinned by `orval`, the dev-only OpenAPI codegen tool for `lib/api-spec` —
+never shipped in either production image) — [GHSA-2883-xcg3-v3hh](https://github.com/advisories/GHSA-2883-xcg3-v3hh),
+alert #53, high — added `js-yaml: ^4.3.2` to the same overrides list.
+
+Rebuilt and re-pushed both GHCR images (`ghcr.io/jh-sudo/cwd-api-server` and
+`cwd-roster-dashboard`) from the corrected lockfile before this fix had even
+been redeployed to GOV PaaS, so the bad version never actually reached
+production — caught same-day, within the same redeploy cycle.
+
+**Lesson for next time**: this repo keeps its `pnpm` overrides in
+`pnpm-workspace.yaml`, not `package.json`'s `pnpm.overrides` field — check
+for an existing `overrides:` block there before adding a new override
+anywhere else, and don't assume the two sources merge.
