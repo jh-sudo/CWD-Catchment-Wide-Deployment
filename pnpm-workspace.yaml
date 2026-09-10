@@ -122,3 +122,16 @@ overrides:
   # for internal ID generation, never the vulnerable buf-provided form, but
   # there's no reason not to take the fix anyway.
   uuid: ^11.1.1
+  # Dependabot alert (GHSA-x5fp-wj9c-mxmx) — express@5.2.1/body-parser still
+  # pin qs@6.15.3, vulnerable to an array-limit bypass. This lives here, not
+  # in package.json's own `pnpm.overrides`, because pnpm appears to treat
+  # the two override sources as mutually exclusive rather than merging them
+  # — adding a package.json-level override once silently dropped this file's
+  # uuid/esbuild overrides above, reintroducing both vulnerabilities (see
+  # .scratch/dependabot-fixes/issues/01-qs-transitive-dos-and-xlsx-unpatched.md).
+  qs: ^6.16.0
+  # Dependabot alert (GHSA-2883-xcg3-v3hh) — orval (OpenAPI codegen, dev-only
+  # tooling for lib/api-spec, never shipped in either production image) pins
+  # js-yaml@4.3.1, vulnerable to a maxTotalMergeKeys DoS. Unrelated to the qs
+  # fix above — found while investigating it, fixed in the same pass.
+  js-yaml: ^4.3.2
