@@ -494,10 +494,22 @@ const PH_YEAR_SLOTS: Record<number, PHSlot[]> = {
   ],
   2027: [
     // 11 Public Holidays.  OIL only when the PH itself falls on a Sunday.
-    // HR Haji (16 May) falls on a Sunday → OIL on 17 May (Monday). No other 2027 PHs fall on Sunday.
+    // HR Haji (16 May) falls on a Sunday → OIL on 17 May (Monday). CNY Day 2
+    // (7 Feb) also falls on a Sunday → OIL on 8 Feb (Monday). No other 2027
+    // PHs fall on Sunday.
+    //
+    // Corrected 2026-09-08 (.scratch/roster-qa/issues/05) — this table
+    // previously had CNY 2027 on 29-30 Jan with no in-lieu day, which was
+    // wrong and disagreed with roster-dashboard's own SG_PH calendar
+    // (PHHoliday.tsx), which has always had it correctly on 6-7 Feb + 8 Feb
+    // in-lieu. auto-allocate's default targetYear is 2027, so this was
+    // live-broken for the common no-args case, not just a stale comment —
+    // it would generate a real PH roster on dates that aren't CNY at all
+    // and silently skip the actual 6-8 Feb dates entirely.
     { date: "2027-01-01", phName: "New Year's Day",                        isOilCopy: false },
-    { date: "2027-01-29", phName: "Chinese New Year Day 1",                isOilCopy: false },
-    { date: "2027-01-30", phName: "Chinese New Year Day 2",                isOilCopy: false },
+    { date: "2027-02-06", phName: "Chinese New Year Day 1",                isOilCopy: false },
+    { date: "2027-02-07", phName: "Chinese New Year Day 2",                isOilCopy: false },
+    { date: "2027-02-08", phName: "Chinese New Year Day 2 (In Lieu)",      isOilCopy: true,  copyFromDate: "2027-02-07" },
     { date: "2027-03-09", phName: "Hari Raya Puasa",                       isOilCopy: false },
     { date: "2027-03-26", phName: "Good Friday",                           isOilCopy: false },
     { date: "2027-05-01", phName: "Labour Day",                            isOilCopy: false },

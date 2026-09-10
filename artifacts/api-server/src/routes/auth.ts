@@ -836,8 +836,8 @@ router.get("/manager/auth/pin", requireAdmin, (_req, res) => {
 });
 router.put("/manager/auth/pin", requireAdmin, async (req, res) => {
   const { pin } = req.body as { pin: string };
-  if (!pin || !/^\d{4,8}$/.test(pin)) {
-    res.status(400).json({ error: "PIN must be 4-8 digits" }); return;
+  if (!pin || !/^[A-Za-z0-9]{4,8}$/.test(pin)) {
+    res.status(400).json({ error: "PIN must be 4-8 letters/digits" }); return;
   }
   await db
     .insert(appConfigTable)
@@ -866,8 +866,8 @@ router.get("/manager/auth/crew-pin", requireAdmin, (_req, res) => {
 });
 router.put("/manager/auth/crew-pin", requireAdmin, async (req, res) => {
   const { pin } = req.body as { pin: string };
-  if (!pin || !/^\d{4,8}$/.test(pin)) {
-    res.status(400).json({ error: "PIN must be 4-8 digits" }); return;
+  if (!pin || !/^[A-Za-z0-9]{4,8}$/.test(pin)) {
+    res.status(400).json({ error: "PIN must be 4-8 letters/digits" }); return;
   }
   await db
     .insert(appConfigTable)
@@ -929,8 +929,8 @@ router.post("/api/crew/auth/login", makeAuthRateLimit(), async (req, res) => {
 router.put("/manager/auth/officers/:officerId/crew-pin", requireAdmin, async (req, res) => {
   const officerId = req.params.officerId as string;
   const { pin } = req.body as { pin?: string };
-  if (!pin || !/^\d{4,8}$/.test(pin)) {
-    res.status(400).json({ error: "PIN must be 4-8 digits" }); return;
+  if (!pin || !/^[A-Za-z0-9]{4,8}$/.test(pin)) {
+    res.status(400).json({ error: "PIN must be 4-8 letters/digits" }); return;
   }
   const [officer] = await db.select().from(officersTable).where(eq(officersTable.id, officerId));
   if (!officer) { res.status(404).json({ error: "Officer not found" }); return; }
