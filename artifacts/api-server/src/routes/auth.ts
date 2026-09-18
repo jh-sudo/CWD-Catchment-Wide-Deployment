@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
+import { randomInt } from "crypto";
 import { eq } from "drizzle-orm";
 import { db, managersTable, appConfigTable, officersTable, type Manager } from "@workspace/db";
 import {
@@ -210,7 +211,14 @@ function toManagerAccount(row: Manager): ManagerAccount {
 // manager.ts, ...) — this cache preserves that contract while Postgres is
 // the actual source of truth. Refreshed after every mutation below.
 let managers: ManagerAccount[] = [];
-let appConfig: { managerPin: string; crewPin: string } = { managerPin: "123456", crewPin: "1234" };
+// Empty, not a real PIN — never matches a submitted pin, since the PIN-check
+// endpoints already reject an empty submission before comparing. Only lives
+// briefly until seedAdmin()'s DB read completes at boot.
+let appConfig: { managerPin: string; crewPin: string } = { managerPin: "", crewPin: "" };
+
+function generatePin(digits: number): string {
+  return randomInt(0, 10 ** digits).toString().padStart(digits, "0");
+}
 
 async function refreshManagersCache(): Promise<void> {
   const rows = await db.select().from(managersTable);
@@ -219,7 +227,7 @@ async function refreshManagersCache(): Promise<void> {
 
 async function refreshAppConfigCache(): Promise<void> {
   const [row] = await db.select().from(appConfigTable).where(eq(appConfigTable.id, 1));
-  appConfig = row ? { managerPin: row.managerPin, crewPin: row.crewPin } : { managerPin: "123456", crewPin: "1234" };
+  appConfig = row ? { managerPin: row.managerPin, crewPin: row.crewPin } : { managerPin: "", crewPin: "" };
 }
 
 export function getManager(id: string): ManagerAccount | undefined {
@@ -237,9 +245,13 @@ async function seedAdmin() {
 
   const [configRow] = await db.select().from(appConfigTable).where(eq(appConfigTable.id, 1));
   if (!configRow) {
-    // Seed the default PIN row — matches the hardcoded defaults the old
-    // JSON-backed appConfig started with when config.json didn't exist yet.
-    await db.insert(appConfigTable).values({ id: 1, managerPin: "123456", crewPin: "1234" });
+    // Random, not a fixed default — a hardcoded value here would be a known
+    // working credential for anyone who reads the source, not just an
+    // internal convenience. Printed once so whoever deploys can retrieve it.
+    const managerPin = generatePin(6);
+    const crewPin = generatePin(4);
+    await db.insert(appConfigTable).values({ id: 1, managerPin, crewPin });
+    console.log(`[auth] Manager/crew PINs seeded — manager: ${managerPin}  crew: ${crewPin} (change these via the admin panel)`);
   }
   await refreshAppConfigCache();
 
