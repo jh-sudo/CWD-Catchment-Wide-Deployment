@@ -1083,22 +1083,31 @@ rosterPlanRouter.get("/activity-log", requireManager, async (req, res) => {
 
 // ── Summary endpoint ──────────────────────────────────────────────────────────
 
-// GET /api/roster-plan/summary?date=YYYY-MM-DD
-rosterPlanRouter.get("/roster-plan/summary", async (req, res) => {
-  res.set("Cache-Control", "no-store");
+// Factored out of the route below so server-side callers (deployments.ts's
+// syncDeploymentRosterFromCentralSource) can generate the same FIRB
+// deployment text without an HTTP self-call — the per-unit lines
+// ("BU1 GBL378Z: Name & Name (DAY)") double as both a human-readable report
+// and a machine-reparseable roster-import source via parseRoster().
+// .scratch/replit-resync-2026-09-21/issues/27.
+export async function getRosterSummary(dateStr: string): Promise<string> {
   await ensureCycleCacheLoaded();
   const config = await loadConfig();
   const officers = await loadOfficers();
-
-  const dateParam = req.query.date as string | undefined;
-  const dateStr = dateParam ?? new Date().toISOString().slice(0, 10);
 
   const overrides = await loadOverridesForDates([dateStr]);
   const leaves = await loadLeavesForDates([dateStr]);
   const officerVehicleMap = await resolveOfficerVehicleMap(dateStr);
 
   const officersInRotation = officers.filter((o) => o.active && o.teamSlot <= config.teamCount);
-  const text = buildSummary(dateStr, officersInRotation, config, overrides, leaves, officerVehicleMap);
+  return buildSummary(dateStr, officersInRotation, config, overrides, leaves, officerVehicleMap);
+}
+
+// GET /api/roster-plan/summary?date=YYYY-MM-DD
+rosterPlanRouter.get("/roster-plan/summary", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const dateParam = req.query.date as string | undefined;
+  const dateStr = dateParam ?? new Date().toISOString().slice(0, 10);
+  const text = await getRosterSummary(dateStr);
   res.json({ date: dateStr, text });
 });
 
