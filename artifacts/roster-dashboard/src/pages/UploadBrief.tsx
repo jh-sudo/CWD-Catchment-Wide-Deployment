@@ -477,7 +477,7 @@ const CVR_CATCHMENT_BG: Record<string, string> = {
 
 // ── Override Editor ───────────────────────────────────────────────────────────
 
-function OverrideEditor() {
+export function OverrideEditor() {
   const { data: rawOfficers } = useGetRosterOfficers();
   const officers = useMemo(
     () => ((rawOfficers ?? []) as any[]).sort((a: any, b: any) => {
