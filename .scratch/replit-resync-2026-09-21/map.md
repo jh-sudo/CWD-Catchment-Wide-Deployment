@@ -62,9 +62,14 @@ silent drop-in"), roughly in the order I'd guess they matter:
    inside the roster-dashboard SPA at client routes `/manager` + `/manager/calendar` (5
    interdependent files: `meetings.ts`, `useMeetings.ts`, `Meetings.tsx`, `ManagerDashboard.tsx`,
    `ManagerCalendar.tsx`).
-5. **PH Builder** — a configurable/preset-driven auto-generation layer for the PH roster
-   (`PHBuilder.tsx` + `phRoster.ts`'s `builder-config`/`builder-presets`/`builder-run`),
-   alongside the existing manual PH roster editor.
+5. ~~**PH Builder**~~ — **Done, see [31](issues/31-ph-builder.md).** Configurable rotation pattern
+   (drag-and-drop, each active unit once), rule toggles, staff exceptions, presets, and a narrow
+   "apply exceptions only" mode, alongside the existing manual PH roster editor. **User decision
+   made**: adopting Builder's pattern model removes the CP4/KG4/BU4/PJ4 double-weighting our
+   `PH_ROTATION_SEQUENCE` had "per spec" — user confirmed adopting it. `autoAllocate` made
+   config-driven via a new parameter (not internal loading, keeping it pure); deliberately did not
+   port reference's parallel rotation-index rewrite (solves a partial-regeneration edge case this
+   repo's route never hits) or its removal of the `pick()` last-resort fallback tier.
 6. ~~**Strength/minimum-manning overhaul**~~ — **Done, see
    [30](issues/30-strength-minimum-manning-overhaul.md).** Per-shift weekday/weekend-or-PH minimum
    bands, 3-tier coloring, named date exceptions, all config-driven via a new Strength tab —

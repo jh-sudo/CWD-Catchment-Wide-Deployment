@@ -56,6 +56,7 @@ export * from "./phBallot";
 export * from "./phFaq";
 export * from "./phHrBallotState";
 export * from "./phRotationState";
+export * from "./phBuilderConfig";
 
 // ── Inspections & push domain ────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/05-schema-inspections-push.md

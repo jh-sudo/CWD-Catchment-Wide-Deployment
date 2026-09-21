@@ -174,6 +174,26 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
     "roster_config.strength",
     `ALTER TABLE roster_config ADD COLUMN IF NOT EXISTS strength jsonb`,
   );
+  await run(
+    "ph_builder_config table",
+    `CREATE TABLE IF NOT EXISTS ph_builder_config (
+       id integer PRIMARY KEY DEFAULT 1,
+       pattern text[] NOT NULL,
+       consecutive_ph boolean NOT NULL DEFAULT true,
+       same_holiday_previous_year boolean NOT NULL DEFAULT true,
+       excluded_officers text[] NOT NULL,
+       start_year smallint NOT NULL DEFAULT 2027
+     )`,
+  );
+  await run(
+    "ph_builder_presets table",
+    `CREATE TABLE IF NOT EXISTS ph_builder_presets (
+       id text PRIMARY KEY,
+       name text NOT NULL,
+       config jsonb NOT NULL,
+       updated_at text NOT NULL
+     )`,
+  );
 
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to
