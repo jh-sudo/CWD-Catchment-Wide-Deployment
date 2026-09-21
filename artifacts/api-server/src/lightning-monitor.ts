@@ -51,6 +51,18 @@ function sectorDisplayName(code: string): string {
   return SECTOR_NAMES[code] ?? code;
 }
 
+// e.g. "4 Aug 2026 until 1200hrs" — previously the push body embedded the raw
+// ISO timestamp verbatim (e.g. "until 2026-08-04T12:00:00.000Z").
+// .scratch/replit-resync-2026-09-21/issues/17.
+function formatCat1End(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Singapore" });
+  const hhmm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Singapore" }).replace(":", "");
+  return `${day} until ${hhmm}hrs`;
+}
+
 const MAX_CAT1_ALERTS = 3;
 
 let lastNotifiedCatStartOn: string | null = null;
@@ -123,14 +135,17 @@ export async function checkLightningAndNotify(): Promise<void> {
 
     cat1AlertCount += 1;
 
-    const names = cat1Sectors.map(s => sectorDisplayName(s.name)).join(", ");
-    const endTime = cat1Sectors[0]?.catEndOn
-      ? ` until ${cat1Sectors[0].catEndOn}`
-      : "";
+    // Each sector's own end time, not the first sector's reused for all —
+    // .scratch/replit-resync-2026-09-21/issues/17.
+    const names = cat1Sectors.map(s => {
+      const label = sectorDisplayName(s.name);
+      const end = formatCat1End(s.catEndOn);
+      return end ? `${label} (${end})` : label;
+    }).join(", ");
 
     const alert = {
       title: `⚡ Lightning CAT 1 Alert (${cat1AlertCount}/${MAX_CAT1_ALERTS})`,
-      body: `CAT 1 active in: ${names}${endTime}. Seek shelter immediately.`,
+      body: `CAT 1 active in: ${names}. Seek shelter immediately.`,
       tag: "lightning-cat1",
       url: "/lightning",
     };
