@@ -95,9 +95,7 @@ silent drop-in"), roughly in the order I'd guess they matter:
 13. ~~**`optimize-assign` reassignment enhancement**~~ — **Done, see
     [22](issues/22-optimize-assign-reassignment.md).** User approved porting the rest of the list
     2026-09-21.
-14. **`MasterView.tsx`** — a small crew-role-only read-only wrapper around the existing
-    Master/Excel grid editor. Low priority; worth checking if crew currently has *any* read
-    access to that grid, but not a high-value item on its own.
+14. ~~**`MasterView.tsx`**~~ — **Done, see [23](issues/23-master-view-crew-readonly.md).**
 
 ## Bug/fix tickets — all 21 done
 

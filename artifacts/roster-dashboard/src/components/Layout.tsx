@@ -3,7 +3,7 @@ import { Link, useLocation } from "wouter";
 import {
   Calendar, Users, ArrowLeftRight, CalendarDays, CalendarRange,
   Copy, Check, Loader2, FileText, ChevronLeft, ChevronRight,
-  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell, LayoutGrid, Truck,
+  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell, LayoutGrid, Truck, Eye,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
 import { format, addDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, isSameMonth, isToday, isSameDay } from "date-fns";
@@ -198,6 +198,7 @@ export function Layout({ children }: LayoutProps) {
         { href: "/",               label: "Deployment Roster", icon: Calendar },
         { href: "/schedule",       label: "My Schedule",       icon: CalendarDays },
         { href: "/roster-cycle",   label: "Roster Cycle",      icon: CalendarRange },
+        { href: "/master-view",    label: "Excel",             icon: Eye },
         { href: "/my-applications",label: "My Leave Status",   icon: ClipboardList },
         { href: "/public-holiday", label: "Public Holiday",    icon: Star },
       ];

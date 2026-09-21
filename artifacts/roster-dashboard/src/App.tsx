@@ -23,6 +23,7 @@ import UploadBrief from "@/pages/UploadBrief";
 import PHHoliday from "@/pages/PHHoliday";
 import RosterBuilder from "@/pages/RosterBuilder";
 import VehicleArrangement from "@/pages/VehicleArrangement";
+import MasterView from "@/pages/MasterView";
 
 const queryClient = new QueryClient();
 
@@ -68,6 +69,8 @@ function AppRoutes() {
 
         {/* Crew-only routes */}
         {user.role === "crew" && <Route path="/schedule" component={MySchedule} />}
+        {/* Read-only Master/Excel grid for crew — .scratch/replit-resync-2026-09-21/issues/23 */}
+        {user.role === "crew" && <Route path="/master-view" component={MasterView} />}
 
         {/* Brief upload — management only */}
         {isManagement && <Route path="/upload-brief" component={UploadBrief} />}
