@@ -1814,22 +1814,59 @@ router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) =>
     const acknowledged = acknowledgedUnits.has(team.unitCode);
     const accepted = acceptedVehicleIds.has(vehicleId);
     // No-rain matching is initiated from the live map, so any active roster
-    // team can participate once it has a fresh GPS position. Rain mode keeps
-    // its existing alert acknowledgement/acceptance gate.
+    // team can participate once it has a fresh GPS position, including teams
+    // already deployed elsewhere (nearest-selected can reassign them to a
+    // closer location) — a pending assignment still makes a team
+    // unavailable. Rain mode keeps its existing acknowledgement/acceptance
+    // and occupied-vehicle gates. .scratch/replit-resync-2026-09-21/issues/22.
     const eligibleForMode = mode === "nearest-selected" || acknowledged || accepted;
-    return eligibleForMode && !occupiedVehicleIds.has(vehicleId);
+    const unavailableForMode = mode === "nearest-selected"
+      ? assignments.has(vehicleId)
+      : occupiedVehicleIds.has(vehicleId);
+    return eligibleForMode && !unavailableForMode;
   });
 
   const newAssignments: Assignment[] = [];
   let skippedNoGps = 0;
   const remainingLocations = targetLocations.filter(location => !occupiedLocationIds.has(location.id));
 
+  // Reassignment support (nearest-selected mode only) — reuses the same
+  // reassignment-history pattern the manual /deployments/assign route
+  // already uses below, so an already-deployed team picked for a closer
+  // location gets its old entry cleared and the move recorded, instead of
+  // ending up with both an old deployment entry and a new pending
+  // assignment at once. .scratch/replit-resync-2026-09-21/issues/22.
   const assignTeam = (
     team: typeof eligibleTeams[number],
     vehicleId: string,
     position: VehiclePosition,
     location: PresetLocation,
   ) => {
+    const oldEntry = mode === "nearest-selected"
+      ? Array.from(deploymentEntries.values()).find(entry => entry.vehicleId === vehicleId)
+      : undefined;
+    const previousLocationName = oldEntry
+      ? (customLocations.get(oldEntry.locationId)?.name ?? oldEntry.locationId)
+      : null;
+    if (oldEntry) {
+      const record: ReassignmentRecord = {
+        vehicleId,
+        vehicleNumber: oldEntry.vehicleNumber || team.vehicleNumber || position.vehicleNumber,
+        unitCode: oldEntry.unitCode || team.unitCode,
+        fromLocationId: oldEntry.locationId,
+        fromLocationName: previousLocationName!,
+        toLocationId: location.id,
+        toLocationName: location.name,
+        reassignedAt: new Date().toISOString(),
+        reassignedBy: "Optimize Assign",
+      };
+      reassignmentHistory.push(record);
+      persist(
+        () => db.insert(deploymentReassignmentHistoryTable).values({ ...record, reassignedAt: new Date(record.reassignedAt) }),
+        "reassignment history",
+      );
+      removeVehicleEntries(vehicleId);
+    }
     const assignment: Assignment = {
       vehicleId,
       vehicleNumber: team.vehicleNumber || position.vehicleNumber || team.unitCode,
@@ -1841,6 +1878,8 @@ router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) =>
       assignedAt: new Date().toISOString(),
       status: "pending",
       assignedBy: "Optimize Assign",
+      previousLocationId: oldEntry?.locationId ?? null,
+      previousLocationName,
     };
     setAssignment(assignment);
     occupiedVehicleIds.add(vehicleId);
@@ -1936,9 +1975,16 @@ router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) =>
   if (newAssignments.length > 0) {
     bumpState();
     for (const assignment of newAssignments) {
+      // Distinguish a reassignment from a fresh assignment — matches the
+      // wording the manual /deployments/assign route already uses, so a
+      // crew already in position isn't told "New Assignment" as if they
+      // had nothing before. .scratch/replit-resync-2026-09-21/issues/22.
+      const isReassignment = !!assignment.previousLocationId;
       sendToCrewVehicle(assignment.vehicleId, {
-        title: "📍 Optimized Assignment",
-        body: `You have been assigned to ${assignment.locationName}. Open the app to accept.`,
+        title: isReassignment ? `📍 Reassigned to ${assignment.locationName}` : "📍 Optimized Assignment",
+        body: isReassignment
+          ? `You have been reassigned to ${assignment.locationName}. Your previous location has been freed.`
+          : `You have been assigned to ${assignment.locationName}. Open the app to accept.`,
         tag: "assignment",
         url: "/",
       }).catch(() => {});

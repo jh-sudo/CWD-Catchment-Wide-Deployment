@@ -22,6 +22,25 @@ excluded per the original migration decision.
 - `strength.ts` / `phStrength.ts` / `phUnitOrder.ts` / `clipboard.ts` — not a separate feature,
   just plumbing the in-scope pages below now depend on. Ported alongside those tickets rather
   than as its own decision.
+- **Auto-deployment on Heavy Rain Warning — approved, with a condition: must default OFF, admin
+  AND manager can toggle.** User's call: port it, but the enable toggle (already present in
+  Replit's own version — `/auto-deployment/status`, `/auto-deployment/enabled`, surfaced in
+  `manager.ts`'s UI) must default to disabled; admin/manager can turn it on explicitly.
+  **Verified**: Replit's own `auto-deployment.ts` already defaults `enabled: false` (line 26), so
+  no override needed there — just port as-is. **One real gap to fix while porting**: Replit gates
+  `POST /auto-deployment/enabled` with `requireAdmin` only — widen to `requireAdminOrManager` (or
+  equivalent) to match the user's explicit ask that manager can toggle it too, not just admin.
+- **AI Flood Scan — declined, not porting.** User's call after hearing the cost-tracking
+  implication (implies a metered/paid call per scan) and the social-media-scraping ToS question —
+  held back rather than approved.
+- **Partner reports / PUB Tier 3 — deprioritized, not a hard no.** Its whole purpose is external
+  (LTA/NParks) access, and this repo isn't internet-facing yet, so it'd be unreachable by its
+  intended users if built now. Its auth model (one shared 6-digit PIN per agency, no MFA) is also
+  a real step down from the MFA-mandatory model everywhere else here, so unlike most items on
+  this list it isn't a straightforward "port the code" job — it needs its own security-hardening
+  pass first. Revisit once internet-facing clearance is closer. See
+  `.scratch/replit-resync-2026-09-21/HANDOVER-PHASE2.md`-adjacent memory note for the
+  `deployment-tracker`/Expo-web deep-dive this came out of.
 
 ## Not yet specified — new-capability scope decisions (need your call, not silently ported)
 
@@ -73,10 +92,9 @@ silent drop-in"), roughly in the order I'd guess they matter:
 12. **Deployments auto-sync + reverse geocoding** — `syncDeploymentRosterFromCentralSource()`
     (auto-pull today's roster into live deployments instead of manual paste-import) and a
     `/search/sg/reverse` endpoint.
-13. **`optimize-assign` reassignment enhancement** — letting the no-rain "nearest selected" mode
-    reassign already-deployed teams to a closer location, not just fill unassigned ones. Smaller
-    than the others; could be folded into ticket
-    [16](issues/16-manager-rain-assign-noise-gate.md)'s pass if wanted.
+13. ~~**`optimize-assign` reassignment enhancement**~~ — **Done, see
+    [22](issues/22-optimize-assign-reassignment.md).** User approved porting the rest of the list
+    2026-09-21.
 14. **`MasterView.tsx`** — a small crew-role-only read-only wrapper around the existing
     Master/Excel grid editor. Low priority; worth checking if crew currently has *any* read
     access to that grid, but not a high-value item on its own.
