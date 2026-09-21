@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, or, ne, inArray, desc, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, or, ne, inArray, desc, isNull, isNotNull, sql } from "drizzle-orm";
 import {
   db,
   officersTable,
@@ -581,6 +581,41 @@ const SHIFTS = new Set(["DAY", "PD", "ND"]);
 
 // ── Router ────────────────────────────────────────────────────────────────────
 export const rosterPlanRouter = Router();
+
+// Every table that materially affects what a roster screen shows. Replit's
+// original signal stat()s its flat JSON files (mtime+size) — no direct
+// equivalent in Postgres, so this uses Postgres's own per-table
+// insert/update/delete counters (pg_stat_user_tables) instead: a system
+// catalog lookup, not a data scan, and needs zero changes to any existing
+// write path (unlike an explicit updated_at column threaded through every
+// mutation here). .scratch/replit-resync-2026-09-21/issues/28.
+const ROSTER_REVISION_TABLES = [
+  "officers", "roster_patterns", "roster_config", "roster_requirements",
+  "roster_swaps", "roster_overrides", "roster_leaves", "roster_day_overrides",
+  "roster_cycle_meta", "roster_cycle_duties", "ph_roster_ref", "leave_requests",
+  "roster_vehicle_arrangements", "roster_vehicle_defaults",
+];
+// pg_stat_user_tables' counters reset to 0 on every restart, same class of
+// bug as the deployments.ts ETag fix (issue 15) — without this, a client's
+// cached revision from before a restart could coincidentally match the
+// fresh counters and hide a real change. .scratch/replit-resync-2026-09-21/issues/28.
+const rosterVersionProcessEpoch = Date.now();
+
+// A lightweight revision shared by every roster client. Screens poll this
+// endpoint so changes made in another browser/session invalidate local data.
+rosterPlanRouter.get("/roster-plan/version", async (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  const result = await db.execute<{ relname: string; n_tup_ins: string; n_tup_upd: string; n_tup_del: string }>(sql`
+    SELECT relname, n_tup_ins, n_tup_upd, n_tup_del
+    FROM pg_stat_user_tables
+    WHERE relname = ANY(${ROSTER_REVISION_TABLES})
+  `);
+  const revision = result.rows
+    .map((r) => `${r.relname}:${r.n_tup_ins}:${r.n_tup_upd}:${r.n_tup_del}`)
+    .sort()
+    .join("|") + `|epoch:${rosterVersionProcessEpoch}`;
+  res.json({ revision });
+});
 
 // GET /api/roster-plan/config
 rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
