@@ -428,7 +428,10 @@ export default function ApplicationsManage() {
   // Clear history
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const canClearHistory = user?.role === "admin" || user?.role === "manager" || user?.role === "ic";
+  // Matches the backend's own check (admin/manager only) — previously also
+  // showed this button to "ic", who the server always 403'd.
+  // .scratch/replit-resync-2026-09-21/issues/19.
+  const canClearHistory = user?.role === "admin" || user?.role === "manager";
 
   const fetchLeaves = useCallback(async () => {
     setLeavesLoading(true);
@@ -554,10 +557,10 @@ export default function ApplicationsManage() {
     refetchSwaps();
   }, [bumpVersion, fetchLeaves, fetchOverrides, fetchVisualOverrides, refetchSwaps]);
 
-  const handleClearHistory = useCallback(async (mode: "log" | "all") => {
+  const handleClearHistory = useCallback(async () => {
     setClearing(true);
     try {
-      await fetch(`/api/roster-plan/history/clear?mode=${mode}`, {
+      await fetch(`/api/roster-plan/history/clear`, {
         method: "DELETE",
         credentials: "include",
       });
@@ -714,7 +717,7 @@ export default function ApplicationsManage() {
                 onClick={() => setClearConfirmOpen(true)}
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                Clear History
+                Clear Log
               </Button>
             )}
             <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
@@ -967,29 +970,23 @@ export default function ApplicationsManage() {
       <Dialog open={clearConfirmOpen} onOpenChange={v => { if (!clearing) setClearConfirmOpen(v); }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>Clear History</DialogTitle>
+            <DialogTitle>Clear Application Log</DialogTitle>
           </DialogHeader>
           <div className="space-y-2 text-sm text-muted-foreground">
-            <p>All current data will be saved to the server before any changes are made.</p>
-            <p className="font-medium text-destructive">These actions cannot be undone.</p>
+            <p>Permanently deletes the leave-application log entries shown on this page.</p>
+            <p>This does not affect committed leave records, overrides, or swaps — only the
+              request/audit history.</p>
+            <p className="font-medium text-destructive">This cannot be undone.</p>
           </div>
           <div className="space-y-2 pt-1">
             <Button
-              className="w-full justify-start gap-2 bg-amber-600 hover:bg-amber-700 text-white"
-              onClick={() => handleClearHistory("log")}
-              disabled={clearing}
-            >
-              {clearing ? <Loader2 className="h-4 w-4 animate-spin shrink-0" /> : <Trash2 className="h-4 w-4 shrink-0" />}
-              <span className="text-left leading-tight">Save all history and delete log</span>
-            </Button>
-            <Button
               variant="destructive"
               className="w-full justify-start gap-2"
-              onClick={() => handleClearHistory("all")}
+              onClick={handleClearHistory}
               disabled={clearing}
             >
               {clearing ? <Loader2 className="h-4 w-4 animate-spin shrink-0" /> : <Trash2 className="h-4 w-4 shrink-0" />}
-              <span className="text-left leading-tight">Delete all history and revert to original</span>
+              <span className="text-left leading-tight">Delete application log</span>
             </Button>
           </div>
           <DialogFooter>
