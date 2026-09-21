@@ -49,11 +49,14 @@ const SG_PH_META: Record<string, PHMeta> = {
   "2027-02-06": { name: "Chinese New Year Day 1" },
   "2027-02-07": { name: "Chinese New Year Day 2" },
   "2027-02-08": { name: "Chinese New Year Day 2 (In Lieu)", originalDate: "2027-02-07" },
-  "2027-03-09": { name: "Hari Raya Puasa" },
+  // Hari Raya dates corrected 2026-09-21 (.scratch/replit-resync-2026-09-21/
+  // issues/02) — verified against MOM's official 18-June-2026 gazette.
+  // Neither date falls on a Sunday in 2027, so neither gets an in-lieu day.
+  // Must stay in sync with phRoster.ts's PH_YEAR_SLOTS[2027] on the backend.
+  "2027-03-10": { name: "Hari Raya Puasa" },
   "2027-03-26": { name: "Good Friday" },
   "2027-05-01": { name: "Labour Day" },
-  "2027-05-16": { name: "Hari Raya Haji" },
-  "2027-05-17": { name: "Hari Raya Haji (In Lieu)", originalDate: "2027-05-16" },
+  "2027-05-17": { name: "Hari Raya Haji" },
   "2027-05-20": { name: "Vesak Day" },
   "2027-08-09": { name: "National Day" },
   "2027-10-28": { name: "Deepavali" },

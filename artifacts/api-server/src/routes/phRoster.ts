@@ -494,9 +494,9 @@ const PH_YEAR_SLOTS: Record<number, PHSlot[]> = {
   ],
   2027: [
     // 11 Public Holidays.  OIL only when the PH itself falls on a Sunday.
-    // HR Haji (16 May) falls on a Sunday → OIL on 17 May (Monday). CNY Day 2
-    // (7 Feb) also falls on a Sunday → OIL on 8 Feb (Monday). No other 2027
-    // PHs fall on Sunday.
+    // CNY Day 2 (7 Feb) falls on a Sunday → OIL on 8 Feb (Monday). Neither
+    // Hari Raya date falls on a Sunday in 2027, so neither gets an in-lieu
+    // day.
     //
     // Corrected 2026-09-08 (.scratch/roster-qa/issues/05) — this table
     // previously had CNY 2027 on 29-30 Jan with no in-lieu day, which was
@@ -506,15 +506,27 @@ const PH_YEAR_SLOTS: Record<number, PHSlot[]> = {
     // live-broken for the common no-args case, not just a stale comment —
     // it would generate a real PH roster on dates that aren't CNY at all
     // and silently skip the actual 6-8 Feb dates entirely.
+    //
+    // Hari Raya dates corrected 2026-09-21 (.scratch/replit-resync-2026-09-21/
+    // issues/02) — this table previously had Hari Raya Puasa on 9 Mar (with
+    // no in-lieu day) and Hari Raya Haji on 16 May + an in-lieu day on 17 May
+    // (on the assumption 16 May fell on a Sunday). Verified against MOM's
+    // official 18-June-2026 gazette (mom.gov.sg/newsroom/press-releases/2026/
+    // 0618-public-holidays-for-2027): Hari Raya Puasa is 10 Mar 2027 (Wed),
+    // Hari Raya Haji is 17 May 2027 (Mon) — neither is a Sunday, so there is
+    // no in-lieu day for either. Same underlying mistake as the CNY bug
+    // above: an independently-estimated lunar date that disagreed with the
+    // later-published official calendar. If MOM's moon-sighting confirmation
+    // ever shifts either date, this table (and usePHActuals.ts's SG_PH_META,
+    // which must stay in sync) will need updating again.
     { date: "2027-01-01", phName: "New Year's Day",                        isOilCopy: false },
     { date: "2027-02-06", phName: "Chinese New Year Day 1",                isOilCopy: false },
     { date: "2027-02-07", phName: "Chinese New Year Day 2",                isOilCopy: false },
     { date: "2027-02-08", phName: "Chinese New Year Day 2 (In Lieu)",      isOilCopy: true,  copyFromDate: "2027-02-07" },
-    { date: "2027-03-09", phName: "Hari Raya Puasa",                       isOilCopy: false },
+    { date: "2027-03-10", phName: "Hari Raya Puasa",                       isOilCopy: false },
     { date: "2027-03-26", phName: "Good Friday",                           isOilCopy: false },
     { date: "2027-05-01", phName: "Labour Day",                            isOilCopy: false },
-    { date: "2027-05-16", phName: "Hari Raya Haji",                        isOilCopy: false },
-    { date: "2027-05-17", phName: "Hari Raya Haji (In Lieu)",              isOilCopy: true,  copyFromDate: "2027-05-16" },
+    { date: "2027-05-17", phName: "Hari Raya Haji",                        isOilCopy: false },
     { date: "2027-05-20", phName: "Vesak Day",                             isOilCopy: false },
     { date: "2027-08-09", phName: "National Day",                          isOilCopy: false },
     { date: "2027-10-28", phName: "Deepavali",                             isOilCopy: false },
