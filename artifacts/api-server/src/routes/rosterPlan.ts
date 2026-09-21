@@ -216,6 +216,149 @@ export async function loadOfficers(): Promise<Officer[]> {
 }
 
 // ── Roster config ────────────────────────────────────────────────────────────
+
+// Per-shift weekday/weekend(+PH) minimum-manning bands driving the 3-tier
+// (below/minimum/full) strength coloring shown across roster/vehicle/
+// deployment views, plus named date exceptions. Mirrors the shape of
+// roster-dashboard's lib/strength.ts (kept as a separate, hand-duplicated
+// interface here rather than a shared package, matching how this route file
+// already duplicates its other frontend-facing shapes).
+// .scratch/replit-resync-2026-09-21/issues/30.
+export interface StrengthBand {
+  minimum: number;
+  full: number;
+  shiftMinimums: { PD: number; DAY: number; ND: number };
+}
+export interface StrengthSpecialRule extends StrengthBand {
+  id: string;
+  name: string;
+  dates: string[];
+}
+export interface StrengthConfigShape {
+  weekday: { default: StrengthBand; special: StrengthSpecialRule[] };
+  weekend: { default: StrengthBand; special: StrengthSpecialRule[] };
+  colors: { below: string; minimum: string; full: string };
+}
+
+const DEFAULT_STRENGTH_WEEKDAY: StrengthBand = { minimum: 24, full: 27, shiftMinimums: { PD: 4, DAY: 8, ND: 1 } };
+const DEFAULT_STRENGTH_WEEKEND: StrengthBand = { minimum: 12, full: 12, shiftMinimums: { PD: 3, DAY: 3, ND: 0 } };
+
+function normalizeStrengthBand(value: unknown, fallback: StrengthBand): StrengthBand {
+  const candidate = value as Partial<StrengthBand> | null;
+  const minimum = Number.isInteger(candidate?.minimum) && Number(candidate?.minimum) >= 0
+    ? Number(candidate?.minimum)
+    : fallback.minimum;
+  const full = Number.isInteger(candidate?.full) && Number(candidate?.full) >= minimum
+    ? Number(candidate?.full)
+    : Math.max(minimum, fallback.full);
+  const shiftMinimums = {
+    PD: Number.isInteger(candidate?.shiftMinimums?.PD) && Number(candidate?.shiftMinimums?.PD) >= 0
+      ? Number(candidate?.shiftMinimums?.PD) : fallback.shiftMinimums.PD,
+    DAY: Number.isInteger(candidate?.shiftMinimums?.DAY) && Number(candidate?.shiftMinimums?.DAY) >= 0
+      ? Number(candidate?.shiftMinimums?.DAY) : fallback.shiftMinimums.DAY,
+    ND: Number.isInteger(candidate?.shiftMinimums?.ND) && Number(candidate?.shiftMinimums?.ND) >= 0
+      ? Number(candidate?.shiftMinimums?.ND) : fallback.shiftMinimums.ND,
+  };
+  return { minimum, full, shiftMinimums };
+}
+
+// Normalizes (and backfills defaults for) whatever is currently stored,
+// so a never-configured or partially-configured row always yields a
+// complete, well-formed StrengthConfigShape. Unlike the reference this was
+// ported from, there's no "derive shiftMinimums from the roster cycle
+// pattern" auto-sync here — that needed a deeper port (walking this repo's
+// own Postgres cycle-duties table to recompute worst-case per-shift counts)
+// for a nice-to-have default-seeding behavior that StrengthTab.tsx's manual
+// editor already covers; deliberately simplified to a static fallback
+// instead. .scratch/replit-resync-2026-09-21/issues/30.
+function normalizeStrengthConfig(value: unknown): StrengthConfigShape {
+  const candidate = value as Partial<StrengthConfigShape> | null;
+  const seenSpecialDates = new Set<string>();
+  const normalizeSpecial = (rows: unknown, fallback: StrengthBand): StrengthSpecialRule[] => {
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((raw, index) => {
+      const row = raw as Partial<StrengthSpecialRule>;
+      const dates = Array.isArray(row.dates)
+        ? row.dates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
+        : [];
+      const uniqueDates = dates.filter((date) => {
+        if (seenSpecialDates.has(date)) return false;
+        seenSpecialDates.add(date);
+        return true;
+      });
+      if (uniqueDates.length === 0) return [];
+      return [{
+        id: typeof row.id === "string" && row.id.trim() ? row.id.trim() : `strength-${index + 1}`,
+        name: typeof row.name === "string" && row.name.trim() ? row.name.trim() : `Exception ${index + 1}`,
+        dates: uniqueDates,
+        ...normalizeStrengthBand(row, fallback),
+      }];
+    });
+  };
+  const validColor = (color: unknown, fallback: string) =>
+    typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+  return {
+    weekday: {
+      default: normalizeStrengthBand(candidate?.weekday?.default, DEFAULT_STRENGTH_WEEKDAY),
+      special: normalizeSpecial(candidate?.weekday?.special, DEFAULT_STRENGTH_WEEKDAY),
+    },
+    weekend: {
+      default: normalizeStrengthBand(candidate?.weekend?.default, DEFAULT_STRENGTH_WEEKEND),
+      special: normalizeSpecial(candidate?.weekend?.special, DEFAULT_STRENGTH_WEEKEND),
+    },
+    colors: {
+      below: validColor(candidate?.colors?.below, "#fecaca"),
+      minimum: validColor(candidate?.colors?.minimum, "#fef08a"),
+      full: validColor(candidate?.colors?.full, "#bbf7d0"),
+    },
+  };
+}
+
+// The overall weekday/weekend minimum+full pair is intentionally pinned —
+// StrengthTab.tsx only ever lets an admin edit the PD/DAY/ND shiftMinimums
+// breakdown and named-exception dates, never these two headline numbers, so
+// a request that tries to change them is rejected rather than silently
+// accepted and ignored by the UI.
+function validateStrengthConfig(value: unknown): string | null {
+  if (!value || typeof value !== "object") return "strength must be an object";
+  const strength = value as Partial<StrengthConfigShape>;
+  const seenIds = new Set<string>();
+  const seenDates = new Set<string>();
+  if (strength.weekday?.default?.minimum !== 24 || strength.weekday.default.full !== 27) {
+    return "Weekday default must remain red below 24, yellow from 24 to 26, and green from 27";
+  }
+  if (strength.weekend?.default?.minimum !== 12 || strength.weekend.default.full !== 12) {
+    return "Weekend/PH default must remain red below 12 and green from 12";
+  }
+  for (const type of ["weekday", "weekend"] as const) {
+    const group = strength[type];
+    if (!group || !group.default || !Array.isArray(group.special)) return `${type} strength settings are incomplete`;
+    for (const [label, band] of [["default", group.default], ...group.special.map((row, index) => [`special row ${index + 1}`, row] as const)] as const) {
+      if (!Number.isInteger(band.minimum) || band.minimum < 0) return `${type} ${label} minimum must be a whole number`;
+      if (!Number.isInteger(band.full) || band.full < band.minimum) return `${type} ${label} full strength must be at least its minimum`;
+      for (const duty of ["PD", "DAY", "ND"] as const) {
+        if (!Number.isInteger(band.shiftMinimums?.[duty]) || band.shiftMinimums[duty] < 0) {
+          return `${type} ${label} ${duty} minimum must be a non-negative whole number`;
+        }
+      }
+    }
+    for (const row of group.special) {
+      if (!row.id?.trim() || seenIds.has(row.id)) return "Each special-date row must have a unique ID";
+      seenIds.add(row.id);
+      if (!row.name?.trim()) return `${type} special rows require a name`;
+      if (!Array.isArray(row.dates) || row.dates.length === 0) return `${type} special rows require at least one date`;
+      for (const date of row.dates) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || seenDates.has(date)) return "Special dates must be valid and unique across weekday and weekend rules";
+        seenDates.add(date);
+      }
+    }
+  }
+  for (const key of ["below", "minimum", "full"] as const) {
+    if (!/^#[0-9a-f]{6}$/i.test(strength.colors?.[key] ?? "")) return `${key} strength colour must be a six-digit hex colour`;
+  }
+  return null;
+}
+
 export interface RosterConfigShape {
   teamCount: 20 | 24 | 28;
   cycleStartDate: string;
@@ -225,6 +368,7 @@ export interface RosterConfigShape {
   weekendPD?: number;
   weekendDAY?: number;
   weekdayMinStrength?: number;
+  strength: StrengthConfigShape;
 }
 
 export async function loadConfig(): Promise<RosterConfigShape> {
@@ -237,6 +381,7 @@ export async function loadConfig(): Promise<RosterConfigShape> {
     weekendPD: row?.weekendPD ?? undefined,
     weekendDAY: row?.weekendDay ?? undefined,
     weekdayMinStrength: row?.weekdayMinStrength ?? undefined,
+    strength: normalizeStrengthConfig(row?.strength),
   };
 }
 
@@ -251,6 +396,7 @@ async function saveConfig(config: RosterConfigShape): Promise<void> {
         weekendPD: config.weekendPD ?? null,
         weekendDay: config.weekendDAY ?? null,
         weekdayMinStrength: config.weekdayMinStrength ?? null,
+        strength: config.strength,
       })
       .onConflictDoUpdate({
         target: rosterConfigTable.id,
@@ -260,6 +406,7 @@ async function saveConfig(config: RosterConfigShape): Promise<void> {
           weekendPD: config.weekendPD ?? null,
           weekendDay: config.weekendDAY ?? null,
           weekdayMinStrength: config.weekdayMinStrength ?? null,
+          strength: config.strength,
         },
       });
     await tx.delete(rosterMaintenanceVehiclesTable);
@@ -628,13 +775,14 @@ rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
 
 // PUT /api/roster-plan/config
 rosterPlanRouter.put("/roster-plan/config", requireRosterEditor, async (req, res) => {
-  const { teamCount, cycleStartDate, maintenanceVehicles, weekendPD, weekendDAY, weekdayMinStrength } = req.body as {
+  const { teamCount, cycleStartDate, maintenanceVehicles, weekendPD, weekendDAY, weekdayMinStrength, strength } = req.body as {
     teamCount: number;
     cycleStartDate: string;
     maintenanceVehicles?: string[];
     weekendPD?: number;
     weekendDAY?: number;
     weekdayMinStrength?: number;
+    strength?: unknown;
   };
   if (![20, 24, 28].includes(teamCount)) {
     return res.status(400).json({ error: "invalid teamCount" });
@@ -644,6 +792,17 @@ rosterPlanRouter.put("/roster-plan/config", requireRosterEditor, async (req, res
   // defaults buildSummary() uses) rather than being reset, so a caller that
   // only wants to change teamCount doesn't accidentally blank these out.
   const existing = await loadConfig();
+  // strength (the StrengthConfigShape object), by contrast, is validated
+  // when present rather than silently normalized — a caller that sends a
+  // malformed or out-of-bounds strength config gets a 400 with the specific
+  // reason, instead of having it silently coerced to something else.
+  let nextStrength = existing.strength;
+  if (strength !== undefined) {
+    const normalized = normalizeStrengthConfig(strength);
+    const validationError = validateStrengthConfig(normalized);
+    if (validationError) return res.status(400).json({ error: validationError });
+    nextStrength = normalized;
+  }
   const config: RosterConfigShape = {
     teamCount: teamCount as 20 | 24 | 28,
     cycleStartDate,
@@ -651,6 +810,7 @@ rosterPlanRouter.put("/roster-plan/config", requireRosterEditor, async (req, res
     weekendPD: weekendPD ?? existing.weekendPD ?? 3,
     weekendDAY: weekendDAY ?? existing.weekendDAY ?? 3,
     weekdayMinStrength: weekdayMinStrength ?? existing.weekdayMinStrength ?? 40,
+    strength: nextStrength,
   };
   await saveConfig(config);
   const targetMonday = getMondayOf(new Date());

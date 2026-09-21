@@ -1,4 +1,4 @@
-import { pgTable, text, integer, smallint, date, check } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, smallint, date, jsonb, check } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
@@ -18,6 +18,11 @@ export const rosterConfigTable = pgTable(
     weekendPD: smallint("weekend_pd"),
     weekendDay: smallint("weekend_day"),
     weekdayMinStrength: smallint("weekday_min_strength"),
+    // Per-shift weekday/weekend(+PH) minimum-manning bands (3-tier
+    // below/minimum/full coloring) + named date exceptions, edited via
+    // StrengthTab.tsx. Nullable — application code normalizes to static
+    // defaults when unset. .scratch/replit-resync-2026-09-21/issues/30.
+    strength: jsonb("strength"),
   },
   (table) => [
     check("roster_config_singleton_check", sql`${table.id} = 1`),

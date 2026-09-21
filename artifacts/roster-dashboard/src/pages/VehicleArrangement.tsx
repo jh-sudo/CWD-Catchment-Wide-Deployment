@@ -3,9 +3,16 @@ import { format, addDays, parseISO, startOfMonth, endOfMonth, eachDayOfInterval,
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Truck, RotateCcw, GripVertical, Plus, MapPin, Zap } from "lucide-react";
-import { useGetRosterOfficers } from "@workspace/api-client-react";
+import { useGetRosterOfficers, useGetRosterConfig } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
-import { SG_PH_SET } from "@/lib/usePHActuals";
+import { SG_PH_SET, SG_PH_META_MAP, usePHActuals } from "@/lib/usePHActuals";
+import { getPHStrength } from "@/lib/phStrength";
+import {
+  defaultStrengthConfig,
+  computeRosterStrength,
+  getStrengthRule,
+  type StrengthConfig,
+} from "@/lib/strength";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 // Kept in sync with vehicleArrangement.ts's HARDCODED_VEHICLE_DEFAULTS — used
@@ -286,6 +293,7 @@ function DropZone({
 
 export default function VehicleArrangement() {
   const { data: officers } = useGetRosterOfficers();
+  const { data: rosterConfig } = useGetRosterConfig();
   const { version, bumpVersion } = useRosterVersion();
 
   const catchmentGroups = useMemo(() => {
@@ -409,22 +417,27 @@ export default function VehicleArrangement() {
   const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
   const isPH = SG_PH_SET.has(selectedDate);
 
+  const { isPH: hasPHRoster, rows: phRows } = usePHActuals(selectedDate);
+
   const { ndCount, dayCount, pdCount } = useMemo(() => {
-    let nd = 0, day = 0, pd = 0;
-    const subcatchSet = new Set(allSubcatchments);
-    const subcatchIds = new Set((officers ?? []).filter((o: any) => subcatchSet.has(o.unitCode)).map((o: any) => o.id));
-    const dutyById: Record<string, string> = {};
-    for (const d of scheduleData) {
-      if (d.date?.startsWith(selectedDate) && subcatchIds.has(d.officerId)) dutyById[d.officerId] = d.duty;
+    if (hasPHRoster && phRows.length > 0) {
+      return getPHStrength(phRows);
     }
-    for (const [id, duty] of Object.entries(dutyById)) {
-      if (leaveMap[id]) continue;
-      if (duty === "ND") nd++;
-      else if (duty === "DAY") day++;
-      else if (duty === "PD") pd++;
+    const dutyMap: Record<string, string> = {};
+    const targetDutyMap: Record<string, string> = {};
+    for (const duty of scheduleData) {
+      if (!duty.date?.startsWith(selectedDate)) continue;
+      dutyMap[duty.officerId] = duty.duty;
+      if (duty.targetDuty) targetDutyMap[duty.officerId] = duty.targetDuty;
     }
-    return { ndCount: nd, dayCount: day, pdCount: pd };
-  }, [officers, scheduleData, leaveMap, selectedDate, allSubcatchments]);
+    const originalDate = SG_PH_META_MAP[selectedDate]?.originalDate;
+    const isOIL = !!originalDate && new Date(originalDate + "T12:00:00Z").getUTCDay() === 0;
+    return computeRosterStrength(officers ?? [], dutyMap, targetDutyMap, leaveMap, isOIL);
+  }, [hasPHRoster, phRows, officers, scheduleData, leaveMap, selectedDate]);
+
+  const fallbackStrength = defaultStrengthConfig();
+  const strengthConfig = (rosterConfig?.strength ?? fallbackStrength) as StrengthConfig;
+  const strengthRule = getStrengthRule(selectedDate, isWeekend || isPH, strengthConfig, fallbackStrength);
 
   const officersByUnit = useMemo(() => {
     const map: Record<string, { name: string; duty: string; isCovering: boolean; isAbsent?: boolean }[]> = {};
@@ -798,7 +811,7 @@ export default function VehicleArrangement() {
 
           {(["ND", "DAY", "PD"] as const).map((d) => {
             const count = d === "ND" ? ndCount : d === "DAY" ? dayCount : pdCount;
-            const totalWorking = ndCount + dayCount + pdCount;
+            const target = strengthRule.shiftMinimums[d];
             const isActive = dutyFilter.has(d);
             const isFiltering = dutyFilter.size > 0;
             const baseCls = d === "ND" ? "bg-[#FDFCCC] text-yellow-900 border-yellow-200"
@@ -810,7 +823,7 @@ export default function VehicleArrangement() {
                 title={isActive ? `Remove ${d} filter` : `Show only ${d}`}
                 className={cn("text-[11px] px-1.5 py-0.5 rounded border transition-all cursor-pointer", baseCls,
                   isFiltering && !isActive && "opacity-30", isActive && "ring-2 ring-offset-1 ring-gray-500 font-bold")}>
-                {d} {count}/{totalWorking}
+                {d} {count}/{target}
               </button>
             );
           })}
