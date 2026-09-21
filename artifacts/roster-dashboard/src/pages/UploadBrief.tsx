@@ -71,7 +71,10 @@ const LEAVE_CODE_SET = new Set([
   "PPTW","SL","SLWOMC","SPL","TO","UL","VL",
 ]);
 
-const UNIT_CODE_RE = /^[A-Z]{2}\d{1,2}$/;
+// Was \d{1,2} (max 2 digits) — a 3-digit unit code was misclassified as an
+// officer name instead of a cross-post unit in the OT/CVG column.
+// .scratch/replit-resync-2026-09-21/issues/20.
+const UNIT_CODE_RE = /^[A-Z]{2}\d{1,3}$/;
 
 
 const OV_ACTUAL_COLORS: Record<string, string> = {
@@ -112,6 +115,9 @@ function parseExcelBrief(file: File): Promise<ParsedBrief> {
         const EXCEL_LEAVE = new Set([
           "VL","SL","MC","CCL","FCL","PL","SPL","UL","ML","BL","C","CSL",
           "SLWOMC","AMC","AMMA","AMTO","PMTO","C/PMTO","NS","PPTW","TO","OVL","HL",
+          // Previously missing — silently dropped instead of recorded as
+          // leave on import. .scratch/replit-resync-2026-09-21/issues/20.
+          "MA","OIL","PCL","PMC","PMMA","PMOVL",
         ]);
         const SHIFT_DUTIES = new Set(["ND","DAY","PD","OFF","REST"]);
 
@@ -495,14 +501,23 @@ function OverrideEditor() {
 
   const [scheduleByDate, setScheduleByDate] = useState<Record<string, Record<string, CellData>>>({});
 
-  // Daily strength counts (based on scheduled/target duty)
+  const officerById = useMemo(() => new Map(officers.map((o: any) => [o.id, o])), [officers]);
+
+  // Daily strength counts — actual/override duty (falling back to
+  // scheduled/target when no override exists), excluding TBC placeholder
+  // units, matching the convention already established in the backend
+  // (rosterPlan.ts, phRoster.ts). Previously counted scheduled duty only and
+  // included TBC units, inflating the displayed strength.
+  // .scratch/replit-resync-2026-09-21/issues/20.
   const strengthByDate = useMemo(() => {
     const result: Record<string, { day: number; pd: number; nd: number }> = {};
     for (const ds of dateStrs) {
-      const cells = Object.values(scheduleByDate[ds] ?? {});
+      const entries = Object.entries(scheduleByDate[ds] ?? {});
       let day = 0, pd = 0, nd = 0;
-      for (const cell of cells) {
-        const d = cell.scheduledDuty;
+      for (const [officerId, cell] of entries) {
+        const unitCode = officerById.get(officerId)?.unitCode;
+        if (!unitCode || unitCode.toUpperCase() === "TBC") continue;
+        const d = cell.duty || cell.scheduledDuty;
         if (d === "DAY") day++;
         else if (d === "PD") pd++;
         else if (d === "ND") nd++;
@@ -510,7 +525,7 @@ function OverrideEditor() {
       result[ds] = { day, pd, nd };
     }
     return result;
-  }, [scheduleByDate, dateStrs]);
+  }, [scheduleByDate, dateStrs, officerById]);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -654,30 +669,32 @@ function OverrideEditor() {
     if (!allDates.length) return;
     setSaving(true); setMsg(null);
     try {
-      let totalSaved = 0;
-      for (const d of allDates) {
-        const dirtyForDate = pendingRef.current[d];
-        const res = await fetch("/api/roster-plan/overrides/bulk", {
-          method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-          body: JSON.stringify({
-            date: d,
-            overrides: dirtyForDate.map(r => ({
-              officerId: r.id, duty: r.duty,
-              coveredByOfficerName: (r.cover && !UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
-              crossPostedToUnit:    (r.cover &&  UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
-              vehicle: r.vehicle || undefined,
-              overtimeHours: r.ot || undefined,
-              targetDuty: r.scheduledDuty || undefined,
-              comment: r.comment || undefined,
-            })),
-          }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          if (res.status === 401) { window.location.href = "/login"; return; }
-          throw new Error((body as any).error || "Save failed");
-        }
-        totalSaved += dirtyForDate.length;
+      // One atomic batch request across every pending date, not a per-date
+      // loop — previously a failure partway through the loop left earlier
+      // dates already committed server-side with pendingRef never cleared,
+      // showing them as still-unsaved even though they'd gone through.
+      // .scratch/replit-resync-2026-09-21/issues/20.
+      const dates = allDates.map((d) => ({
+        date: d,
+        overrides: pendingRef.current[d].map(r => ({
+          officerId: r.id, duty: r.duty,
+          coveredByOfficerName: (r.cover && !UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
+          crossPostedToUnit:    (r.cover &&  UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
+          vehicle: r.vehicle || undefined,
+          overtimeHours: r.ot || undefined,
+          targetDuty: r.scheduledDuty || undefined,
+          comment: r.comment || undefined,
+        })),
+      }));
+      const totalSaved = dates.reduce((n, d) => n + d.overrides.length, 0);
+      const res = await fetch("/api/roster-plan/overrides/bulk", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ dates }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { window.location.href = "/login"; return; }
+        throw new Error((body as any).error || "Save failed — no changes were saved.");
       }
       pendingRef.current = {};
       setPendingDates([]);
@@ -690,6 +707,8 @@ function OverrideEditor() {
       });
       await loadWeek(dateStrs, officers);
     } catch (e: any) {
+      // Batched as one request, so a failure here means nothing was saved —
+      // pendingRef is deliberately left untouched, matching reality.
       setMsg({ ok: false, text: e.message });
     } finally { setSaving(false); }
   };
@@ -739,7 +758,9 @@ function OverrideEditor() {
 
   const monthLabel = format(monthStart, "MMMM yyyy");
   const UNIT_W   = 40;
-  const NAME_W   = 90;
+  // Was 90, showing only the first name — ambiguous when two officers share
+  // one. Widened to fit the full name. .scratch/replit-resync-2026-09-21/issues/20.
+  const NAME_W   = 140;
   const FROZEN_W = UNIT_W + NAME_W;
   const TGT_W    = 64;
   const ACT_W    = 64;
@@ -945,9 +966,9 @@ function OverrideEditor() {
                           openNamePicker({ officerId: o.id, currentName: o.name, top: rect.bottom + 4, left: rect.left });
                           setQuickPick(null);
                         } : undefined}
-                        title={!isReadOnly ? "Tap to rename officer" : undefined}
+                        title={!isReadOnly ? `${o.name} — tap to rename` : o.name}
                       >
-                        {o.name.split(/\s+/)[0]}
+                        {o.name}
                       </div>
                       {/* Date groups */}
                       {dateStrs.map(ds => {
