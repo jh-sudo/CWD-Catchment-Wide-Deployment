@@ -74,9 +74,9 @@ silent drop-in"), roughly in the order I'd guess they matter:
    endpoint every 10s; ours only refreshes on window focus. Needs a Postgres-appropriate
    revision signal (Replit's mtime/size-hash trick won't translate) — small and self-contained
    (`RosterVersionContext.tsx`, 49 lines) if picked up.
-8. **`requireRosterEditor` role** — a new auth role distinct from manager/admin, used to gate
-   leave edits and config changes on Replit's side. Needs a decision on who counts as one and
-   how it's granted.
+8. ~~**`requireRosterEditor` role**~~ — **Done, see [26](issues/26-require-roster-editor-role.md).**
+   Turned out much smaller than originally scoped — not a new role at all, just a new
+   admin/manager/ic-but-not-crew middleware.
 9. **Bulk multi-date Excel import** (`UploadBrief.tsx`) — horizontal and vertical multi-date
    parsers, revert-import button, per-cell comments, full-year export. Current ticket
    [20](issues/20-uploadbrief-grid-bugs.md) only covers bug fixes to the existing single-date

@@ -21,7 +21,7 @@ import {
   type RosterLeave,
   type RosterSwap,
 } from "@workspace/db";
-import { getManager, requireManager } from "./auth.js";
+import { getManager, requireManager, requireRosterEditor } from "./auth.js";
 import { appendActivityLog, getActivityLog } from "../lib/activityLog.js";
 // vehicleArrangement.ts already imports several functions from this file;
 // this is the reverse edge of that same (safe) cycle — see
@@ -592,7 +592,7 @@ rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
 });
 
 // PUT /api/roster-plan/config
-rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => {
+rosterPlanRouter.put("/roster-plan/config", requireRosterEditor, async (req, res) => {
   const { teamCount, cycleStartDate, maintenanceVehicles, weekendPD, weekendDAY, weekdayMinStrength } = req.body as {
     teamCount: number;
     cycleStartDate: string;
@@ -883,7 +883,7 @@ rosterPlanRouter.get("/roster-plan/leave", requireManager, async (req, res) => {
 });
 
 // POST /api/roster-plan/leave
-rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => {
+rosterPlanRouter.post("/roster-plan/leave", requireRosterEditor, async (req, res) => {
   const { officerId, date, leaveType, coveringOfficerId } = req.body as {
     officerId: string; date: string; leaveType: string; coveringOfficerId?: string;
   };
@@ -1038,7 +1038,7 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
 });
 
 // DELETE /api/roster-plan/leave/:id
-rosterPlanRouter.delete("/roster-plan/leave/:id", requireManager, async (req, res) => {
+rosterPlanRouter.delete("/roster-plan/leave/:id", requireRosterEditor, async (req, res) => {
   const { id } = req.params as { id: string };
   const deleted = await db
     .delete(rosterLeavesTable)
