@@ -1538,11 +1538,17 @@ rosterPlanRouter.delete("/roster-plan/overrides/:officerId/:date", requireManage
   res.json({ success: true });
 });
 
-// DELETE /api/roster-plan/history/clear
-// mode=log  → clear only the application log (leave-requests).
-// mode=all  → clear leave-requests + leaves + overrides + swaps.
-// Postgres writes are already durable, so unlike the old JSON-file version
-// there's no separate "force-sync to cloud" step before clearing.
+// DELETE /api/roster-plan/history/clear — clears the application log
+// (leave-requests) only.
+//
+// Used to also support mode=all, which additionally wiped leaves + overrides
+// + swaps system-wide — i.e. the actual committed roster data, for every
+// officer and every date, with no backup and no confirmation beyond a
+// client-side typed string. Removed entirely (not just tightened) per
+// .scratch/replit-resync-2026-09-21/issues/19 — Replit's own team reached the
+// same conclusion and removed the equivalent feature on their side. If a
+// bulk-undo capability is ever needed again, it should be a real
+// backup-before-delete flow, not an unconditional system-wide truncate.
 rosterPlanRouter.delete("/roster-plan/history/clear", requireManager, async (req, res) => {
   const mid = req.session?.managerId;
   const caller = mid ? getManager(mid) : null;
@@ -1551,18 +1557,8 @@ rosterPlanRouter.delete("/roster-plan/history/clear", requireManager, async (req
     return;
   }
 
-  const mode = (req.query.mode as string) ?? "log";
-
-  await db.transaction(async (tx) => {
-    await tx.delete(leaveRequestsTable);
-    if (mode === "all") {
-      await tx.delete(rosterLeavesTable);
-      await tx.delete(rosterSwapsTable);
-      await tx.delete(rosterOverridesTable);
-    }
-  });
-
-  res.json({ success: true, mode });
+  await db.delete(leaveRequestsTable);
+  res.json({ success: true });
 });
 
 rosterPlanRouter.get("/roster-plan/day-overrides", requireManager, async (_req, res) => {
