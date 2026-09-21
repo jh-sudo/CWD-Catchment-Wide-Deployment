@@ -81,11 +81,8 @@ silent drop-in"), roughly in the order I'd guess they matter:
    parsers, revert-import button, per-cell comments, full-year export. Current ticket
    [20](issues/20-uploadbrief-grid-bugs.md) only covers bug fixes to the existing single-date
    importer, not this larger feature.
-10. **Leave "chain of cover" auto-reassignment** (`leaveRequests.ts`) — when an officer who is
-    themselves covering someone else applies for leave, automatically requires/wires in a
-    replacement rather than leaving the original post uncovered again. Ticket
-    [03](issues/03-leave-cover-validation-gaps.md) covers the validation-only piece; this
-    automation is a step further.
+10. ~~**Leave "chain of cover" auto-reassignment**~~ — **Done, see
+    [25](issues/25-leave-chain-of-cover.md).**
 11. ~~**Per-sector CAT1 lightning subscription + map/UX changes**~~ — **Mostly done, see
     [24](issues/24-lightning-per-sector-subscription.md).** Per-sector subscription and
     auto-enabled lightning shipped; the CARTO→OSM tile swap deliberately held back — real

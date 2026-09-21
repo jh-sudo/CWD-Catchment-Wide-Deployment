@@ -166,6 +166,10 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
     "push_subscriptions.lightning_sectors",
     `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS lightning_sectors text[]`,
   );
+  await run(
+    "leave_requests.replacement_for_officer_id",
+    `ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS replacement_for_officer_id text REFERENCES officers(id)`,
+  );
 
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to
