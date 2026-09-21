@@ -12,6 +12,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useGetRosterOfficers } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
 import { clearPHCache } from "@/lib/usePHActuals";
+import { phUnitSortKey } from "@/lib/phUnitOrder";
 
 // ── Singapore Public Holiday data ─────────────────────────────────────────────
 interface PHEntry {
@@ -116,18 +117,10 @@ const UNIT_COLORS: Record<string, string> = {
   KG1: "#CAEDFB", KG2: "#CAEDFB", KG3: "#CAEDFB", KG4: "#CAEDFB",
 };
 
-// Canonical unit order — interleaved by number across catchments
-const UNIT_ORDER = [
-  "CP1","KG1","BU1","PJ1","WK1",
-  "CP2","KG2","BU2","PJ2","WK2",
-  "CP3","KG3","BU3","PJ3","WK3",
-  "CP4","KG4","BU4","PJ4",
-  "BU5",
-];
-const unitSortKey = (code: string) => {
-  const idx = UNIT_ORDER.indexOf(code);
-  return idx === -1 ? 999 : idx;
-};
+// Ordering now comes from the shared @/lib/phUnitOrder module (this was the
+// canonical copy other files should have used — see PHActualPanel.tsx's
+// comment). .scratch/replit-resync-2026-09-21/issues/08.
+const unitSortKey = phUnitSortKey;
 
 // ── Tab 1: List of PH ─────────────────────────────────────────────────────────
 function PHList({ onSelectDate }: { onSelectDate: (date: string) => void }) {
