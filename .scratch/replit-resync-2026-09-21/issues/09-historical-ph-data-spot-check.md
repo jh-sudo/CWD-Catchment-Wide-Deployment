@@ -15,3 +15,10 @@ Replit hardcodes `REQUIRED_HISTORICAL_PH_ROWS` (specific named officers for 2025
 Manually check this repo's Postgres `ph_roster_ref` table (or equivalent) has complete, correct
 data for these same six dates. This repo's data may already be fine (different snapshot origin),
 in which case no action needed — but worth a direct check rather than assuming.
+
+## Comments
+
+- 2026-09-21: Not verified this session — no docker-compose/local-DB setup found to query
+  read-only, and production DB credentials live only in the GOV PaaS console per
+  `.scratch/govpaas-migration/HANDOVER.md` §8 (this session doesn't have them, and didn't try to
+  get them). Left open for whoever has DB access.
