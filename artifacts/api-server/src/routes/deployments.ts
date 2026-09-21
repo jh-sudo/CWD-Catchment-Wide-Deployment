@@ -19,6 +19,7 @@ import { sendToManagers, broadcastToCrew, sendToCrewVehicle } from "./push";
 import { getRadarStatus } from "../radar-monitor.js";
 import { logger } from "../lib/logger";
 import { requireCrew, requireManager, requireAdminOrManager } from "./auth";
+import { getRosterSummary } from "./rosterPlan.js";
 
 const router = Router();
 
@@ -265,6 +266,27 @@ router.get("/search/sg", async (req, res) => {
     res.json({ results });
   } catch {
     res.json({ results: [] });
+  }
+});
+
+// Reverse geocode a point to a human-readable address — used by any
+// map-pin-drop flow that needs an address auto-filled from coordinates.
+// .scratch/replit-resync-2026-09-21/issues/27.
+router.get("/search/sg/reverse", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 1.1 || lat > 1.6 || lng < 103.5 || lng > 104.2) {
+    res.status(400).json({ error: "Valid Singapore coordinates are required" });
+    return;
+  }
+  try {
+    const url = `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lng}&zoom=18`;
+    const response = await fetch(url, { headers: { "User-Agent": "CWDFloodOps/1.0 (flood-ops-sg)" } });
+    if (!response.ok) throw new Error("Reverse geocode failed");
+    const data = await response.json() as { display_name?: string };
+    res.json({ address: data.display_name?.trim() || `${lat.toFixed(6)}, ${lng.toFixed(6)}` });
+  } catch {
+    res.json({ address: `${lat.toFixed(6)}, ${lng.toFixed(6)}` });
   }
 });
 
@@ -708,7 +730,8 @@ function weatherEmoji(weather: string | null): string {
   return "";
 }
 
-router.get("/deployments/state", requireManager, (req, res) => {
+router.get("/deployments/state", requireManager, async (req, res) => {
+  await syncDeploymentRosterFromCentralSource();
   const etag = `"v${stateVersion}-${processEpoch}"`;
   if (req.headers["if-none-match"] === etag) {
     res.status(304).end();
@@ -786,6 +809,48 @@ function reconcileDeploymentStateWithRoster(previous: RosterTeam[], next: Roster
   }
 }
 
+function singaporeDateISO(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+// Auto-pulls today's roster from rosterPlan's own FIRB summary into the live
+// deployment roster, instead of requiring a manual paste-import every day.
+// Only touches state when the central roster actually differs from what's
+// currently loaded here (normalized comparison), so this is safe to call on
+// every read without generating unnecessary Postgres writes.
+// .scratch/replit-resync-2026-09-21/issues/27.
+async function syncDeploymentRosterFromCentralSource(): Promise<void> {
+  const date = singaporeDateISO();
+  const summaryText = await getRosterSummary(date);
+  const { teams } = parseRoster(summaryText);
+  if (teams.length === 0) return;
+
+  const normalized = (list: RosterTeam[]) =>
+    [...list]
+      .sort((a, b) => a.unitCode.localeCompare(b.unitCode))
+      .map(({ unitCode, vehicleNumber, partner, shift }) => ({ unitCode, vehicleNumber, partner, shift }));
+
+  if (JSON.stringify(normalized(currentRoster)) === JSON.stringify(normalized(teams))) return;
+
+  const previousRoster = currentRoster;
+  currentRoster = teams;
+  deploymentDate = new Date(`${date}T00:00:00+08:00`).toLocaleDateString("en-SG", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Singapore",
+  });
+  reconcileDeploymentStateWithRoster(previousRoster, currentRoster);
+  bumpState();
+  persistRoster();
+  persistSettings();
+}
+
 // ── Roster endpoints ──────────────────────────────────────────────────────────
 router.post("/roster/import", requireManager, (req, res) => {
   const { text, merge } = req.body as { text: string; merge?: boolean };
@@ -813,7 +878,8 @@ router.post("/roster/import", requireManager, (req, res) => {
   res.json({ success: true, count: teams.length, teams: currentRoster, deploymentDate, duplicateUnits });
 });
 
-router.get("/roster", (req, res) => {
+router.get("/roster", async (req, res) => {
+  await syncDeploymentRosterFromCentralSource();
   res.json({ teams: currentRoster });
 });
 

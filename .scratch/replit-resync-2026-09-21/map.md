@@ -87,9 +87,8 @@ silent drop-in"), roughly in the order I'd guess they matter:
     [24](issues/24-lightning-per-sector-subscription.md).** Per-sector subscription and
     auto-enabled lightning shipped; the CARTO→OSM tile swap deliberately held back — real
     dark-mode-tile-loss and OSM-hotlinking-policy tradeoffs, needs its own decision.
-12. **Deployments auto-sync + reverse geocoding** — `syncDeploymentRosterFromCentralSource()`
-    (auto-pull today's roster into live deployments instead of manual paste-import) and a
-    `/search/sg/reverse` endpoint.
+12. ~~**Deployments auto-sync + reverse geocoding**~~ — **Done, see
+    [27](issues/27-deployments-auto-sync-and-reverse-geocode.md).**
 13. ~~**`optimize-assign` reassignment enhancement**~~ — **Done, see
     [22](issues/22-optimize-assign-reassignment.md).** User approved porting the rest of the list
     2026-09-21.
