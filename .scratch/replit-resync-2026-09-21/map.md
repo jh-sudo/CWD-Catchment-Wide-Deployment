@@ -77,10 +77,12 @@ silent drop-in"), roughly in the order I'd guess they matter:
 8. ~~**`requireRosterEditor` role**~~ — **Done, see [26](issues/26-require-roster-editor-role.md).**
    Turned out much smaller than originally scoped — not a new role at all, just a new
    admin/manager/ic-but-not-crew middleware.
-9. **Bulk multi-date Excel import** (`UploadBrief.tsx`) — horizontal and vertical multi-date
-   parsers, revert-import button, per-cell comments, full-year export. Current ticket
-   [20](issues/20-uploadbrief-grid-bugs.md) only covers bug fixes to the existing single-date
-   importer, not this larger feature.
+9. ~~**Bulk multi-date Excel import**~~ — **Done, see
+   [29](issues/29-bulk-multidate-excel-import.md).** Horizontal + vertical multi-date parsers,
+   bulk apply/revert, parse-debug panel, full-year export — all frontend-only, the backend already
+   supported multi-date revert and per-date import. Per-cell comments were already fully built in
+   this repo (not new). Found and fixed a real bug in passing: the OT/CVG column's cross-post
+   unit code was only ever recorded for leave rows, never shift-duty rows, on import.
 10. ~~**Leave "chain of cover" auto-reassignment**~~ — **Done, see
     [25](issues/25-leave-chain-of-cover.md).**
 11. ~~**Per-sector CAT1 lightning subscription + map/UX changes**~~ — **Mostly done, see
