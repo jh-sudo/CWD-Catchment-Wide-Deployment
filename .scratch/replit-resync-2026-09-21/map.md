@@ -81,35 +81,38 @@ silent drop-in"), roughly in the order I'd guess they matter:
     Master/Excel grid editor. Low priority; worth checking if crew currently has *any* read
     access to that grid, but not a high-value item on its own.
 
-## Confirmed bug/fix tickets (ready to implement, no scope decision needed)
+## Bug/fix tickets — all 21 done
 
-See `issues/` — 21 tickets, numbered roughly by severity/theme:
+See `issues/` for full detail on each. Status noted where a ticket's outcome diverged from its
+original triage (several original findings didn't hold up on inspection — this repo's actual
+architecture in a few areas is already ahead of what the triage assumed from Replit's side; see
+each ticket's own Comments section):
 
-| # | Ticket | Severity |
-|---|---|---|
-| 01 | [Roster-plan leave endpoint has no auth guard](issues/01-security-roster-leave-endpoint-missing-auth.md) | High (security) |
-| 02 | [2027 Hari Raya dates wrong](issues/02-ph-2027-dates-wrong.md) | High |
-| 03 | [Leave/cover validation gaps](issues/03-leave-cover-validation-gaps.md) | High |
-| 04 | [Leave `appliedBy`/`appliedAt` never persisted](issues/04-leave-applied-by-fields-not-persisted.md) | Low |
-| 05 | [Vehicle plate not wired to Vehicle Arrangement](issues/05-vehicle-plate-not-wired-to-arrangement.md) | Medium-high |
-| 06 | [PH-day not authoritative outside PHHoliday.tsx](issues/06-ph-day-authority-gaps.md) | High |
-| 07 | [PH roster generation missing fairness guardrails](issues/07-ph-roster-generation-guardrails.md) | Medium |
-| 08 | [PH Actual Panel unit order wrong (WK4 missing)](issues/08-ph-actual-panel-unit-order-wrong.md) | Medium |
-| 09 | [Historical PH data spot-check](issues/09-historical-ph-data-spot-check.md) | Low (verification) |
-| 10 | [FIRB summary double-lists officer / no REST-vs-OFF split](issues/10-firb-summary-double-listing-and-off-rest.md) | Medium |
-| 11 | [RosterListView covering/cross-post bugs](issues/11-rosterlistview-covering-crosspost-bugs.md) | Medium-high |
-| 12 | [Roster views: stale-response race condition](issues/12-roster-views-stale-response-race.md) | Medium |
-| 13 | [Clipboard copy fails silently](issues/13-clipboard-copy-silent-failure.md) | Low |
-| 14 | [CrewSchedule/MySchedule duty display + partner bugs](issues/14-crew-schedule-duty-display-and-partner-bugs.md) | Medium-high |
-| 15 | [Deployments: roster-import and state-integrity bugs](issues/15-deployments-roster-import-and-state-bugs.md) | Medium-high |
-| 16 | [Manager rain-assign not gated on movement noise](issues/16-manager-rain-assign-noise-gate.md) | Medium |
-| 17 | [Lightning CAT1 alert raw timestamp / first-sector-only](issues/17-lightning-cat1-alert-timestamp-and-sectors.md) | Low-medium |
-| 18 | [Push notifications: manager role never subscribed](issues/18-push-notifications-manager-role-not-subscribed.md) | Medium |
-| 19 | [ApplicationsManage: unsafe self-service wipe-all button](issues/19-applications-manage-unsafe-wipe-button.md) | High |
-| 20 | [UploadBrief grid bugs](issues/20-uploadbrief-grid-bugs.md) | Medium |
-| 21 | [Register page should use officer-names endpoint](issues/21-register-page-officer-names-endpoint.md) | Low |
+| # | Ticket | Severity | Outcome |
+|---|---|---|---|
+| 01 | [Roster-plan leave endpoint has no auth guard](issues/01-security-roster-leave-endpoint-missing-auth.md) | High (security) | Fixed |
+| 02 | [2027 Hari Raya dates wrong](issues/02-ph-2027-dates-wrong.md) | High | Fixed (verified vs MOM gazette); DB migration check still open, needs prod access |
+| 03 | [Leave/cover validation gaps](issues/03-leave-cover-validation-gaps.md) | High | Fixed |
+| 04 | [Leave `appliedBy`/`appliedAt` never persisted](issues/04-leave-applied-by-fields-not-persisted.md) | Low | Fixed |
+| 05 | [Vehicle plate not wired to Vehicle Arrangement](issues/05-vehicle-plate-not-wired-to-arrangement.md) | Medium-high | Fixed |
+| 06 | [PH-day not authoritative outside PHHoliday.tsx](issues/06-ph-day-authority-gaps.md) | High | 3 of 4 sub-items were already handled by this repo's architecture; the 1 real gap fixed |
+| 07 | [PH roster generation missing fairness guardrails](issues/07-ph-roster-generation-guardrails.md) | Medium | Fixed |
+| 08 | [PH Actual Panel unit order wrong (WK4 missing)](issues/08-ph-actual-panel-unit-order-wrong.md) | Medium | "WK4" claim didn't hold up (not a real unit here); the real ordering-inconsistency bug fixed |
+| 09 | [Historical PH data spot-check](issues/09-historical-ph-data-spot-check.md) | Low (verification) | Left open — needs DB access this session didn't have |
+| 10 | [FIRB summary double-lists officer / no REST-vs-OFF split](issues/10-firb-summary-double-listing-and-off-rest.md) | Medium | Fixed |
+| 11 | [RosterListView covering/cross-post bugs](issues/11-rosterlistview-covering-crosspost-bugs.md) | Medium-high | Items 1-2 fixed; item 3 (new display states) left for a future pass, not concrete enough to implement safely |
+| 12 | [Roster views: stale-response race condition](issues/12-roster-views-stale-response-race.md) | Medium | Already fixed on this side — original triage was wrong |
+| 13 | [Clipboard copy fails silently](issues/13-clipboard-copy-silent-failure.md) | Low | Fixed |
+| 14 | [CrewSchedule/MySchedule duty display + partner bugs](issues/14-crew-schedule-duty-display-and-partner-bugs.md) | Medium-high | Fixed; Layout.tsx "Crew Today" widget claim didn't hold up (no such widget exists) |
+| 15 | [Deployments: roster-import and state-integrity bugs](issues/15-deployments-roster-import-and-state-bugs.md) | Medium-high | Fixed all 4 |
+| 16 | [Manager rain-assign not gated on movement noise](issues/16-manager-rain-assign-noise-gate.md) | Medium | Fixed — found an existing, already-correct endpoint (`optimize-assign`) the frontend just wasn't calling, so switched to it instead of rewriting from scratch |
+| 17 | [Lightning CAT1 alert raw timestamp / first-sector-only](issues/17-lightning-cat1-alert-timestamp-and-sectors.md) | Low-medium | Fixed |
+| 18 | [Push notifications: manager role never subscribed](issues/18-push-notifications-manager-role-not-subscribed.md) | Medium | Fixed |
+| 19 | [ApplicationsManage: unsafe self-service wipe-all button](issues/19-applications-manage-unsafe-wipe-button.md) | High | Removed entirely, per user decision |
+| 20 | [UploadBrief grid bugs](issues/20-uploadbrief-grid-bugs.md) | Medium | Fixed all 5 |
+| 21 | [Register page should use officer-names endpoint](issues/21-register-page-officer-names-endpoint.md) | Low | Fixed, with an `activeOnly` param added to avoid a filtering regression |
 
-All 21 are behavior differences confirmed still present in this repo's current code (not
-already fixed by an earlier QA pass) — findings that duplicate already-known/already-fixed
-issues (e.g. the PHHoliday.tsx date-filter bug, the mass-deactivate bug) are noted as
-informational only and don't get their own ticket here.
+Every fix passed `pnpm typecheck` (`api-server` + `roster-dashboard`) before being committed —
+21 commits total on `github-init`, one per ticket (ticket 03+04 shared a commit, same insert
+statement). The pre-existing, unrelated `scripts` package typecheck failures were present before
+this work started and were left alone (out of scope).

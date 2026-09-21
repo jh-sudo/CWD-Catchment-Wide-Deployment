@@ -1247,22 +1247,35 @@ const OVERRIDE_LEAVE_SET = new Set([
 ]);
 
 // POST /api/roster-plan/overrides/bulk — visual editor bulk-save
+interface OverrideBulkEntry {
+  officerId: string;
+  duty: string;
+  coveredByOfficerName?: string;
+  crossPostedToUnit?: string;
+  targetDuty?: string;
+  vehicle?: string;
+  overtimeHours?: string;
+  comment?: string;
+}
+
+// Accepts either the original single-date shape ({date, overrides}) or a
+// multi-date batch ({dates: [{date, overrides}, ...]}), saved atomically in
+// one transaction across every date — previously UploadBrief.tsx's save()
+// posted one request per date in a loop, so a failure partway through left
+// earlier dates already committed server-side with no way for the UI to
+// tell which had and hadn't succeeded. .scratch/replit-resync-2026-09-21/issues/20.
 rosterPlanRouter.post("/roster-plan/overrides/bulk", requireManager, async (req, res) => {
-  const { date, overrides: entries } = req.body as {
-    date: string;
-    overrides: Array<{
-      officerId: string;
-      duty: string;
-      coveredByOfficerName?: string;
-      crossPostedToUnit?: string;
-      targetDuty?: string;
-      vehicle?: string;
-      overtimeHours?: string;
-      comment?: string;
-    }>;
+  const body = req.body as {
+    date?: string;
+    overrides?: OverrideBulkEntry[];
+    dates?: Array<{ date: string; overrides: OverrideBulkEntry[] }>;
   };
-  if (!date || !Array.isArray(entries) || entries.length === 0) {
-    res.status(400).json({ error: "date and overrides[] required" });
+  const groups = Array.isArray(body.dates)
+    ? body.dates
+    : (body.date && Array.isArray(body.overrides) ? [{ date: body.date, overrides: body.overrides }] : []);
+
+  if (groups.length === 0 || groups.some((g) => !g.date || !Array.isArray(g.overrides) || g.overrides.length === 0)) {
+    res.status(400).json({ error: "date and overrides[] (or dates[] of the same shape) required" });
     return;
   }
 
@@ -1273,63 +1286,67 @@ rosterPlanRouter.post("/roster-plan/overrides/bulk", requireManager, async (req,
   const madeByName = caller?.officerName ?? caller?.username;
   const madeAt     = new Date();
 
-  const officerIds = [...new Set(entries.map((e) => e.officerId))];
   const allOfficers = await loadOfficers();
   const officerMap = new Map(allOfficers.map((o) => [o.id, o]));
 
   await db.transaction(async (tx) => {
-    // Save duty overrides
-    await tx
-      .delete(rosterOverridesTable)
-      .where(and(inArray(rosterOverridesTable.officerId, officerIds), eq(rosterOverridesTable.date, date)));
-    await tx.insert(rosterOverridesTable).values(
-      entries.map((e) => ({
-        officerId: e.officerId,
-        date,
-        duty: e.duty,
-        coveredByOfficerName: e.coveredByOfficerName ?? null,
-        crossPostedToUnit: e.crossPostedToUnit ?? null,
-        targetDuty: e.targetDuty ?? null,
-        vehicle: e.vehicle ?? null,
-        overtimeHours: e.overtimeHours ?? null,
-        comment: e.comment ?? null,
-        madeBy: madeBy ?? null,
-        madeByName: madeByName ?? null,
-        madeAt,
-      })),
-    );
+    for (const { date, overrides: entries } of groups) {
+      const officerIds = [...new Set(entries.map((e) => e.officerId))];
 
-    // Sync leave entries: leave code → upsert; non-leave → remove override-sourced entry
-    for (const e of entries) {
-      if (OVERRIDE_LEAVE_SET.has(e.duty)) {
-        const officerName = officerMap.get(e.officerId)?.name ?? e.officerId;
-        await tx
-          .insert(rosterLeavesTable)
-          .values({
-            id: randomUUID(),
-            officerId: e.officerId,
-            officerName,
-            date,
-            leaveType: e.duty,
-            coveringOfficerName: e.coveredByOfficerName ?? null,
-            coveringOfficerId: null,
-            source: "override",
-          })
-          .onConflictDoUpdate({
-            target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
-            set: { leaveType: e.duty, coveringOfficerName: e.coveredByOfficerName ?? null, coveringOfficerId: null, source: "override" },
-          });
-      } else {
-        // Excel > Master is the authoritative record — clear ALL leaves for this officer
-        // on this date (regardless of source) when a non-leave duty is explicitly set.
-        await tx
-          .delete(rosterLeavesTable)
-          .where(and(eq(rosterLeavesTable.officerId, e.officerId), eq(rosterLeavesTable.date, date)));
+      // Save duty overrides
+      await tx
+        .delete(rosterOverridesTable)
+        .where(and(inArray(rosterOverridesTable.officerId, officerIds), eq(rosterOverridesTable.date, date)));
+      await tx.insert(rosterOverridesTable).values(
+        entries.map((e) => ({
+          officerId: e.officerId,
+          date,
+          duty: e.duty,
+          coveredByOfficerName: e.coveredByOfficerName ?? null,
+          crossPostedToUnit: e.crossPostedToUnit ?? null,
+          targetDuty: e.targetDuty ?? null,
+          vehicle: e.vehicle ?? null,
+          overtimeHours: e.overtimeHours ?? null,
+          comment: e.comment ?? null,
+          madeBy: madeBy ?? null,
+          madeByName: madeByName ?? null,
+          madeAt,
+        })),
+      );
+
+      // Sync leave entries: leave code → upsert; non-leave → remove override-sourced entry
+      for (const e of entries) {
+        if (OVERRIDE_LEAVE_SET.has(e.duty)) {
+          const officerName = officerMap.get(e.officerId)?.name ?? e.officerId;
+          await tx
+            .insert(rosterLeavesTable)
+            .values({
+              id: randomUUID(),
+              officerId: e.officerId,
+              officerName,
+              date,
+              leaveType: e.duty,
+              coveringOfficerName: e.coveredByOfficerName ?? null,
+              coveringOfficerId: null,
+              source: "override",
+            })
+            .onConflictDoUpdate({
+              target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
+              set: { leaveType: e.duty, coveringOfficerName: e.coveredByOfficerName ?? null, coveringOfficerId: null, source: "override" },
+            });
+        } else {
+          // Excel > Master is the authoritative record — clear ALL leaves for this officer
+          // on this date (regardless of source) when a non-leave duty is explicitly set.
+          await tx
+            .delete(rosterLeavesTable)
+            .where(and(eq(rosterLeavesTable.officerId, e.officerId), eq(rosterLeavesTable.date, date)));
+        }
       }
     }
   });
 
-  res.json({ applied: entries.length });
+  const totalApplied = groups.reduce((n, g) => n + g.overrides.length, 0);
+  res.json({ applied: totalApplied, dates: groups.map((g) => g.date) });
 });
 
 // POST /api/roster-plan/ph-extract-sunday/:date — OIL Monday: extract preceding Sunday's
