@@ -348,6 +348,34 @@ export function requireAdminOrManager(req: Request, res: Response, next: NextFun
   next();
 }
 
+// Allow any roster-editing role (admin, manager, or IC) but never crew —
+// tighter than requireManager, which (per its own name being a slight
+// misnomer here) allows any approved role including crew. Same
+// X-Manager-Pin bypass as requireManager, since the shared PIN is itself a
+// manager-tier credential, not crew's. .scratch/replit-resync-2026-09-21/issues/26.
+export function requireRosterEditor(req: Request, res: Response, next: NextFunction) {
+  const pinHeader = req.headers["x-manager-pin"] as string | undefined;
+  if (pinHeader) {
+    managerPinBypassRateLimit(req, res, () => {
+      if (pinHeader === appConfig.managerPin) { next(); return; }
+      requireRosterEditorSession(req, res, next);
+    });
+    return;
+  }
+  requireRosterEditorSession(req, res, next);
+}
+
+function requireRosterEditorSession(req: Request, res: Response, next: NextFunction) {
+  const mid = req.session?.managerId;
+  if (!mid) { res.status(401).json({ error: "Authentication required" }); return; }
+  const m = managers.find(a => a.id === mid);
+  if (!m || !m.approved) { res.status(403).json({ error: "Account pending approval" }); return; }
+  if (m.role === "crew") {
+    res.status(403).json({ error: "Roster editor access required" }); return;
+  }
+  next();
+}
+
 // SSP as-15 — cross this many consecutive failed attempts on one account
 // (any source IP) and the *next successful* login is forced to set a new
 // password, on the theory that a run of failures immediately preceding a
