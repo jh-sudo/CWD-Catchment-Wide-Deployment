@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, ne, inArray, desc, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, or, ne, inArray, desc, isNull, isNotNull } from "drizzle-orm";
 import {
   db,
   officersTable,
@@ -1469,10 +1469,23 @@ export async function applyPHRoster(
     await tx.delete(rosterOverridesTable).where(eq(rosterOverridesTable.date, date));
     if (newOverrides.length > 0) await tx.insert(rosterOverridesTable).values(newOverrides);
 
-    // Sync leave records — clear override-sourced leaves for this date, then add OIL entries
+    // Sync leave records — clear leaves for this date that would otherwise mask
+    // the PH roster's own view of who's on leave/OIL: override-sourced leaves
+    // (as before), any leftover OIL leave from a previous apply, and any
+    // pre-existing leave (of any source, e.g. ordinary VL/SL applied via
+    // POST /roster-plan/leave before this date became a PH/OIL day) for an
+    // officer this PH roster covers — without this, that officer could show
+    // up in both the PH-duty section and the LEAVE section of the FIRB
+    // summary/grid. .scratch/replit-resync-2026-09-21/issues/06.
+    const phParticipantIds = newOverrides.map((o) => o.officerId);
+    const leaveClearConditions = [
+      eq(rosterLeavesTable.source, "override"),
+      eq(rosterLeavesTable.leaveType, "OIL"),
+    ];
+    if (phParticipantIds.length > 0) leaveClearConditions.push(inArray(rosterLeavesTable.officerId, phParticipantIds));
     await tx
       .delete(rosterLeavesTable)
-      .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.source, "override")));
+      .where(and(eq(rosterLeavesTable.date, date), or(...leaveClearConditions)));
     const oilLeaves = newOverrides
       .filter((o) => o.duty === "OIL")
       .map((o) => ({
