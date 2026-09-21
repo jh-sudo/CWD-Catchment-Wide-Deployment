@@ -3758,17 +3758,29 @@ async function runRainAnalysis() {
   // Centroid per frame
   var centroids = pixData.map(radarCentroid);
 
-  // Movement vector: average(centroid[i] - centroid[i+1]) newest→older direction
-  var tdx = 0, tdy = 0, mvCnt = 0;
+  // Movement vector: average(centroid[i] - centroid[i+1]) newest→older direction.
+  // Individual per-step vectors are kept (not just the running sum) so
+  // motionReliable below can check they broadly agree with each other,
+  // rather than trusting an average that could be a coincidental
+  // cancellation of wildly inconsistent frame-to-frame radar noise.
+  // .scratch/replit-resync-2026-09-21/issues/16.
+  var vectors = [];
   for (var ci = 0; ci < centroids.length - 1; ci++) {
     if (centroids[ci] && centroids[ci + 1]) {
-      tdx += centroids[ci].x - centroids[ci + 1].x;
-      tdy += centroids[ci].y - centroids[ci + 1].y;
-      mvCnt++;
+      vectors.push({ dx: centroids[ci].x - centroids[ci + 1].x, dy: centroids[ci].y - centroids[ci + 1].y });
     }
   }
+  var tdx = 0, tdy = 0;
+  for (var vi = 0; vi < vectors.length; vi++) { tdx += vectors[vi].dx; tdy += vectors[vi].dy; }
+  var mvCnt = vectors.length;
   var mvx = mvCnt > 0 ? tdx / mvCnt : 0; // px/5-min, positive = east
   var mvy = mvCnt > 0 ? tdy / mvCnt : 0; // px/5-min, positive = south
+  // At least 2 vectors, a non-negligible average magnitude, and every
+  // individual vector pointing broadly the same way as the average
+  // (positive dot product) — one wildly-off frame pair is enough to mark
+  // the direction untrustworthy.
+  var motionReliable = mvCnt >= 2 && Math.sqrt(mvx * mvx + mvy * mvy) > 0.5
+    && vectors.every(function(v) { return (v.dx * mvx + v.dy * mvy) > 0; });
 
   // Score each location
   var locScores = locations.map(function(loc) {
@@ -3796,11 +3808,19 @@ async function runRainAnalysis() {
   var dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
   var dir = dirs[Math.round(((bearing % 360) + 360) % 360 / 45) % 8];
   var speedKmh = Math.round(Math.sqrt(mvx * mvx + mvy * mvy) * degPerPxLng * 111 * 60 / 5);
-  var hasRain = locScores.some(function(ls) { return ls.score > 0.02; });
+  // hasRain: is there an actual radar blob right now (conflating this with
+  // "will it hit a scored location" was the bug — a location's blended score
+  // already includes trend/incoming projection, so "some location scores
+  // high" doesn't mean rain is actually present on radar this instant).
+  // hasProjectedHits: will it hit a scored location in the near term —
+  // what the rain-path assignment actually targets.
+  // .scratch/replit-resync-2026-09-21/issues/16.
+  var hasRain = !!centroids[0];
+  var hasProjectedHits = locScores.some(function(ls) { return ls.score > 0.02; });
 
   return {
     frames: frames, locScores: locScores, dir: dir, speedKmh: speedKmh,
-    hasRain: hasRain,
+    hasRain: hasRain, hasProjectedHits: hasProjectedHits, motionReliable: motionReliable,
     latestLabel: frames[0] ? frames[0].label : '',
     oldestLabel: frames[frames.length - 1] ? frames[frames.length - 1].label : '',
   };
@@ -3832,18 +3852,26 @@ function renderRainModal(data) {
 
   var mvEl = document.getElementById('rain-movement');
   var btn = document.getElementById('rain-confirm-btn');
-  if (data.speedKmh > 3 && data.hasRain) {
+  // Movement direction/speed drives which button copy shows, but a caller
+  // must never act on a direction reading the radar noise can't support \u2014
+  // disable the button entirely rather than let a manager assign against an
+  // untrustworthy movement estimate. .scratch/replit-resync-2026-09-21/issues/16.
+  if (data.hasRain && !data.motionReliable) {
+    mvEl.innerHTML = '&#9888; Heavy rain detected, but <strong>movement uncertain</strong> \u2014 recent radar frames disagree on direction.';
+    mvEl.style.background = '#3b2f0f'; mvEl.style.borderColor = '#eab308'; mvEl.style.color = '#fde68a';
+    btn.textContent = 'Movement uncertain'; btn.style.background = '#6b7280'; btn.disabled = true;
+  } else if (data.speedKmh > 3 && data.hasRain) {
     mvEl.innerHTML = 'Heavy rain moving <strong>' + data.dir + '</strong> at ~<strong>' + data.speedKmh + ' km/h</strong>';
     mvEl.style.background = '#3b0f0f'; mvEl.style.borderColor = '#ef4444'; mvEl.style.color = '#fca5a5';
-    btn.textContent = '\u26C8 Rain-Path Assign'; btn.style.background = '#dc2626';
+    btn.textContent = '\u26C8 Rain-Path Assign'; btn.style.background = '#dc2626'; btn.disabled = false;
   } else if (data.hasRain) {
     mvEl.innerHTML = '&#8635; Heavy rain patch appears <strong>relatively stationary</strong>';
     mvEl.style.background = '#3b0f0f'; mvEl.style.borderColor = '#ef4444'; mvEl.style.color = '#fca5a5';
-    btn.textContent = '\u26C8 Rain-Path Assign'; btn.style.background = '#dc2626';
+    btn.textContent = '\u26C8 Rain-Path Assign'; btn.style.background = '#dc2626'; btn.disabled = false;
   } else {
     mvEl.innerHTML = '&#9728; <strong>No heavy rain (red/purple) detected.</strong> Standard auto-assign will be used instead.';
     mvEl.style.background = '#0c2d48'; mvEl.style.borderColor = '#0284c7'; mvEl.style.color = '#7dd3fc';
-    btn.textContent = '\u26A1 Standard Auto-Assign'; btn.style.background = '#0284c7';
+    btn.textContent = '\u26A1 Standard Auto-Assign'; btn.style.background = '#0284c7'; btn.disabled = false;
   }
   document.getElementById('rain-frame-info').textContent = 'Radar ' + data.oldestLabel + ' \u2192 ' + data.latestLabel;
 
@@ -3865,12 +3893,13 @@ function renderRainModal(data) {
 }
 
 async function confirmRainAssign() {
-  if (!rainAnalysis) return;
+  if (!rainAnalysis || (rainAnalysis.hasRain && !rainAnalysis.motionReliable)) return;
   var btn = document.getElementById('rain-confirm-btn');
   btn.textContent = '\u23F3 Assigning\u2026'; btn.disabled = true;
   try {
-    // No heavy rain detected — fall back to standard auto-assign
-    if (!rainAnalysis.hasRain) {
+    // No projected hits — fall back to standard auto-assign.
+    // .scratch/replit-resync-2026-09-21/issues/16.
+    if (!rainAnalysis.hasProjectedHits) {
       var res2 = await fetch(API + '/deployments/auto-assign', { method: 'POST' });
       var data2 = await res2.json();
       closeRainModal();
@@ -3889,8 +3918,12 @@ async function confirmRainAssign() {
       btn.textContent = '\u26A1 Standard Auto-Assign'; btn.disabled = false;
       return;
     }
-    // Heavy rain detected — use rain-path assignment
-    var res = await fetch(API + '/deployments/rain-auto-assign', {
+    // Projected hits — use rain-path assignment. Switched to optimize-assign
+    // (already nearest-fresh-GPS-crew matching, requireAdminOrManager) from
+    // the older rain-auto-assign (region/cluster-only, ignored GPS entirely,
+    // and never even read its own request body despite the frontend already
+    // sending locationScores). .scratch/replit-resync-2026-09-21/issues/16.
+    var res = await fetch(API + '/deployments/optimize-assign', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ locationScores: rainAnalysis.locScores.map(function(ls) { return { id: ls.id, score: ls.score }; }) }),
@@ -3907,7 +3940,7 @@ async function confirmRainAssign() {
   } catch(e) {
     alert('Auto-assign failed. Check your connection.');
   }
-  btn.textContent = rainAnalysis && rainAnalysis.hasRain ? '\u26C8 Rain-Path Assign' : '\u26A1 Standard Auto-Assign';
+  btn.textContent = rainAnalysis && rainAnalysis.hasProjectedHits ? '\u26C8 Rain-Path Assign' : '\u26A1 Standard Auto-Assign';
   btn.disabled = false;
 }
 </script>

@@ -1588,116 +1588,13 @@ router.put("/deployments/locations/:id", requireManager, (req, res) => {
   res.json({ success: true, location: updated });
 });
 
-// ── Rain-Path Auto-Assign (server fetches NEA rainfall, scores locations) ─────
-router.post("/deployments/rain-auto-assign", requireManager, async (_req, res) => {
-  const CLUSTERS: Record<string, string> = { BU: "A", PJ: "A", WK: "A", CP: "B", KG: "B" };
-  const clusterOf = (region: string) => CLUSTERS[region] ?? region;
-  const regionOf  = (unitCode: string) => unitCode.match(/^([A-Za-z]+)/)?.[1].toUpperCase() ?? "";
-
-  // ── Haversine distance (km) ──────────────────────────────────────────────
-  const haversine = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-    const R = 6371, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  };
-
-  // ── Fetch NEA real-time rainfall ─────────────────────────────────────────
-  let scoreMap = new Map<string, number>();
-  try {
-    const r = await fetch("https://api-open.data.gov.sg/v2/real-time/api/rainfall", {
-      headers: { "User-Agent": "SG-Deployment-Tracker/1.0" },
-    });
-    if (r.ok) {
-      const json = await r.json() as any;
-      // Schema: json.data.readings[0].data = [{ stationId, value }]
-      // json.data.stations = [{ id, location: { latitude, longitude } }]
-      const stations: Array<{ id: string; lat: number; lng: number }> =
-        (json?.data?.stations ?? []).map((s: any) => ({
-          id: s.id,
-          lat: s.location?.latitude ?? 0,
-          lng: s.location?.longitude ?? 0,
-        }));
-      const readingMap = new Map<string, number>();
-      for (const entry of (json?.data?.readings?.[0]?.data ?? [])) {
-        readingMap.set(entry.stationId, Number(entry.value) || 0);
-      }
-      // For each location, find the nearest station's rainfall reading
-      for (const loc of customLocations.values()) {
-        let nearest = 0, nearestDist = Infinity;
-        for (const st of stations) {
-          const d = haversine(loc.lat, loc.lng, st.lat, st.lng);
-          if (d < nearestDist) { nearestDist = d; nearest = readingMap.get(st.id) ?? 0; }
-        }
-        scoreMap.set(loc.id, nearest);
-      }
-    }
-  } catch { /* fall through — use zero scores (same as auto-assign by priority) */ }
-
-  const assignedVehicleIds  = new Set(assignments.keys());
-  const occupiedLocationIds = new Set([
-    ...Array.from(assignments.values()).map(a => a.locationId),
-    ...Array.from(deploymentEntries.values()).map(e => e.locationId),
-  ]);
-
-  const availableByRegion = new Map<string, RosterTeam[]>();
-  for (const team of currentRoster) {
-    if (!activeShifts.includes(team.shift)) continue;
-    const region = regionOf(team.unitCode);
-    if (activeTeams.length > 0 && !activeTeams.includes(region)) continue;
-    const vid = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
-    if (assignedVehicleIds.has(vid)) continue;
-    if (!availableByRegion.has(region)) availableByRegion.set(region, []);
-    availableByRegion.get(region)!.push(team);
-  }
-
-  const takeTeam = (region: string): RosterTeam | null => {
-    const exact = availableByRegion.get(region);
-    if (exact?.length) return exact.shift()!;
-    const cluster = clusterOf(region);
-    for (const [r, teams] of availableByRegion) {
-      if (clusterOf(r) === cluster && teams.length) return teams.shift()!;
-    }
-    return null;
-  };
-
-  // Sort unoccupied locations: rainfall desc, then cluster/priority as tiebreaker
-  const unassignedLocs = Array.from(customLocations.values())
-    .filter(l => !occupiedLocationIds.has(l.id))
-    .sort((a, b) => {
-      const sa = scoreMap.get(a.id) ?? 0;
-      const sb = scoreMap.get(b.id) ?? 0;
-      if (Math.abs(sa - sb) > 0.001) return sb - sa;
-      const ca = clusterOf(a.region ?? ""), cb = clusterOf(b.region ?? "");
-      if (ca !== cb) return ca.localeCompare(cb);
-      return (a.priority ?? 999) - (b.priority ?? 999);
-    });
-
-  const newAssignments: Assignment[] = [];
-  for (const loc of unassignedLocs) {
-    const team = takeTeam(loc.region ?? "");
-    if (!team) continue;
-    const vehicleId = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
-    const assignment: Assignment = {
-      vehicleId,
-      vehicleNumber: team.vehicleNumber || vehiclePositions.get(vehicleId)?.vehicleNumber || team.unitCode,
-      unitCode: team.unitCode, locationId: loc.id, locationName: loc.name,
-      lat: loc.lat, lng: loc.lng,
-      assignedAt: new Date().toISOString(), status: "pending",
-    };
-    setAssignment(assignment);
-    occupiedLocationIds.add(loc.id);
-    assignedVehicleIds.add(vehicleId);
-    newAssignments.push(assignment);
-  }
-
-  if (newAssignments.length > 0) bumpState();
-  res.json({
-    success: true,
-    count: newAssignments.length,
-    assignments: newAssignments.map(a => ({ unitCode: a.unitCode, locationName: a.locationName })),
-    rainfallScored: scoreMap.size > 0,
-  });
-});
+// The old POST /deployments/rain-auto-assign (server-fetched NEA rainfall,
+// region/cluster-only matching, ignored crew GPS entirely, and never even
+// read its own request body despite the frontend already sending
+// locationScores) has been removed — manager.ts's "Rain-Path Assign" button
+// now calls /deployments/optimize-assign instead, which already does
+// nearest-fresh-GPS-crew matching against the client-projected
+// locationScores. .scratch/replit-resync-2026-09-21/issues/16.
 
 router.post("/deployments/auto-assign", requireManager, (req, res) => {
   // Extract alphabetic prefix from unit code → region (e.g. "BU3" → "BU")
