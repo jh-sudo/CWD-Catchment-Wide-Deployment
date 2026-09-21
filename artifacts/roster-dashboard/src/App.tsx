@@ -24,6 +24,9 @@ import PHHoliday from "@/pages/PHHoliday";
 import RosterBuilder from "@/pages/RosterBuilder";
 import VehicleArrangement from "@/pages/VehicleArrangement";
 import MasterView from "@/pages/MasterView";
+import ManagerDashboard from "@/pages/ManagerDashboard";
+import ManagerCalendar from "@/pages/ManagerCalendar";
+import Meetings from "@/pages/Meetings";
 
 const queryClient = new QueryClient();
 
@@ -58,8 +61,14 @@ function AppRoutes() {
         <Route path="/login"><Redirect to="/" /></Route>
         <Route path="/register"><Redirect to="/" /></Route>
 
-        {/* Today's Roster — all roles */}
-        <Route path="/" component={TodaysRoster} />
+        {/* Today's Roster — all roles except manager, whose workspace root is
+            the meeting scheduler instead (see the Manager routes below).
+            .scratch/replit-resync-2026-09-21/issues/33. */}
+        {user.role === "manager"
+          ? <Route path="/"><Redirect to="/manager" /></Route>
+          : <Route path="/" component={TodaysRoster} />}
+        {/* Escape hatch back to the roster view for managers. */}
+        {user.role === "manager" && <Route path="/crew-roster" component={TodaysRoster} />}
 
         {/* Management routes */}
         {isManagement && <Route path="/crew-schedule" component={CrewSchedule} />}
@@ -92,6 +101,17 @@ function AppRoutes() {
 
         {/* Vehicle Arrangement — management only */}
         {isManagement && <Route path="/vehicle-arrangement" component={VehicleArrangement} />}
+
+        {/* Manager workspace — meeting scheduler + calendar, manager role
+            only (not admin, not ic — matches the meeting scheduler's own
+            backend access rules). Admin gets read/delete-only access to the
+            same Meetings page via /meetings instead.
+            .scratch/replit-resync-2026-09-21/issues/33. */}
+        {user.role === "manager" && <Route path="/manager" component={ManagerDashboard} />}
+        {user.role === "manager" && <Route path="/manager/meetings" component={Meetings} />}
+        {user.role === "manager" && <Route path="/manager/calendar" component={ManagerCalendar} />}
+        {user.role === "admin" && <Route path="/meetings" component={Meetings} />}
+        {user.role === "manager" && <Route path="/meetings"><Redirect to="/manager/meetings" /></Route>}
 
         <Route component={NotFound} />
       </Switch>

@@ -10,6 +10,12 @@ Scope: `/lightning`, `/roster` (api-server route + roster-dashboard SPA), `/crew
 only. `apa`, `inspector`, `deployment-tracker`, `mockup-sandbox`, `wls-android-forwarder` stay
 excluded per the original migration decision.
 
+**Status: complete.** All 21 bug-fix tickets and all 14 new-capability scope items below are
+resolved — either ported (11 items, tickets 22-33), deliberately deferred (Partner Reports, not
+internet-facing yet), or declined (AI Flood Scan). Phase 2 (static security review of the whole
+Replit codebase) ran separately — see `.scratch/replit-security-review-2026-09-21/`, not yet
+remediated as of this note.
+
 ## Decisions so far
 
 - **`managerV2.ts` ("Mission Control") — not porting this round.** User confirmed it's still
@@ -62,10 +68,19 @@ silent drop-in"), roughly in the order I'd guess they matter:
    wired into the existing `/manager` map UI on Replit's side.
 3. ~~**Auto-deployment on Heavy Rain Warning**~~ — **Done, see
    [32](issues/32-auto-deployment-heavy-rain-warning.md).**
-4. **Meetings scheduler** — propose/vote on meeting slots, calendar, reminders, push. Lives
-   inside the roster-dashboard SPA at client routes `/manager` + `/manager/calendar` (5
-   interdependent files: `meetings.ts`, `useMeetings.ts`, `Meetings.tsx`, `ManagerDashboard.tsx`,
-   `ManagerCalendar.tsx`).
+4. ~~**Meetings scheduler**~~ — **Done, see [33](issues/33-meetings-scheduler.md).** The last
+   remaining item — propose/vote on meeting slots, reusable attendee groups, personal
+   out-of-office calendars, reminders, and push, in a new `/manager` workspace separate from Crew
+   Roster. Postgres design deliberately simpler than a full normalization (one jsonb-backed
+   `meetings` table, matching this schema's established convention, not 5 child tables). New
+   `sendToAccount()` push primitive + `push_subscriptions.account_id`. New standalone reminder
+   monitor (`meeting-reminders.ts`, matching the `lightning-monitor.ts` pattern). Frontend uses
+   plain `fetch()` rather than the generated client (matches reference's own precedent + this
+   repo's existing escape hatch, sidesteps the still-broken codegen toolchain from ticket 30).
+   Ported reference's navigation restructuring as designed (manager's `/` now goes to the meeting
+   dashboard, `/crew-roster` is the escape hatch back to the roster view) — flagged as the one
+   part most likely to surprise an existing manager account, not treated as a fresh open question
+   since porting the feature "as designed" was already approved.
 5. ~~**PH Builder**~~ — **Done, see [31](issues/31-ph-builder.md).** Configurable rotation pattern
    (drag-and-drop, each active unit once), rule toggles, staff exceptions, presets, and a narrow
    "apply exceptions only" mode, alongside the existing manual PH roster editor. **User decision

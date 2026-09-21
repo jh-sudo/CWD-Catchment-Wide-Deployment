@@ -1,12 +1,12 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { Link, useLocation } from "wouter";
 import {
-  Calendar, Users, ArrowLeftRight, CalendarDays, CalendarRange,
+  Calendar, Users, ArrowLeftRight, CalendarDays, CalendarRange, Clock,
   Copy, Check, Loader2, FileText, ChevronLeft, ChevronRight,
-  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell, LayoutGrid, Truck, Eye,
+  ClipboardList, ShieldCheck, LogOut, UserCog, Menu, X, Moon, Sun, Upload, Star, Bell, LayoutGrid, Truck, Eye, CalendarClock,
 } from "lucide-react";
 import { useTheme } from "@/hooks/useTheme";
-import { format, addDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, isSameMonth, isToday, isSameDay } from "date-fns";
+import { format, parseISO, addDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, isSameMonth, isToday, isSameDay } from "date-fns";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -19,6 +19,7 @@ import { useRosterVersion } from "@/context/RosterVersionContext";
 import { usePushSubscription } from "@/hooks/usePushSubscription";
 import { getContrastColor } from "@/lib/contrast";
 import { useToast } from "@/hooks/use-toast";
+import { useMeetings, type Meeting } from "@/hooks/useMeetings";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -137,7 +138,7 @@ function MiniCalendar({ onDateSelect, selectedDate }: {
 
 // ── Layout ────────────────────────────────────────────────────────────────────
 export function Layout({ children }: LayoutProps) {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   const { user, logout } = useAuth();
   const { dark, toggleTheme } = useTheme();
   const { toast } = useToast();
@@ -145,6 +146,153 @@ export function Layout({ children }: LayoutProps) {
   // Subscribe every role to push notifications, not just crew — see
   // usePushSubscription's own comment. .scratch/replit-resync-2026-09-21/issues/18.
   usePushSubscription(user);
+
+  // ── Meeting scheduler: sidebar shortcut + in-app alert popup ─────────────
+  // Polls independently of push (the 15s useMeetings() refetch) so an
+  // invitation/reminder/progress notice still surfaces even without browser
+  // push permission. .scratch/replit-resync-2026-09-21/issues/33.
+  const { data: managerMeetings = [] } = useMeetings(user?.role === "manager");
+  const [meetingAlert, setMeetingAlert] = useState<{
+    key: string;
+    title: string;
+    body: string;
+  } | null>(null);
+
+  const meetingShortcut = useMemo(() => {
+    if (user?.role !== "manager" || !managerMeetings.length) return null;
+
+    const today = format(new Date(), "yyyy-MM-dd");
+    const meetingDate = (meeting: Meeting) => {
+      if (meeting.status === "confirmed") {
+        return meeting.proposedSlots.find((slot) => slot.id === meeting.confirmedSlotId)?.date ?? "9999-12-31";
+      }
+      return meeting.proposedSlots
+        .map((slot) => slot.date)
+        .filter((date) => date >= today)
+        .sort()[0] ?? "9999-12-31";
+    };
+    const pendingAction = managerMeetings
+      .filter((meeting: Meeting) =>
+        meeting.status !== "confirmed" &&
+        ((meeting.attendeeIds.includes(user.id) && !meeting.responses[user.id]) ||
+          (meeting.organizerId === user.id && meeting.status === "ready")),
+      )
+      .sort((a: Meeting, b: Meeting) => meetingDate(a).localeCompare(meetingDate(b)))[0];
+
+    const futureConfirmed = managerMeetings
+      .filter((m: Meeting) => m.status === "confirmed" && m.confirmedSlotId)
+      .sort((a: Meeting, b: Meeting) => {
+        const slotA = a.proposedSlots.find((s) => s.id === a.confirmedSlotId)?.date || "9999-12-31";
+        const slotB = b.proposedSlots.find((s) => s.id === b.confirmedSlotId)?.date || "9999-12-31";
+        return slotA.localeCompare(slotB);
+      })
+      .find((m: Meeting) => {
+         const slot = m.proposedSlots.find((s) => s.id === m.confirmedSlotId);
+         return slot && slot.date >= today;
+      });
+
+    const futurePending = managerMeetings
+      .filter((m: Meeting) => m.status !== "confirmed")
+      .map(m => {
+         const sortedSlots = [...m.proposedSlots].sort((a, b) => a.date.localeCompare(b.date));
+         const earliestSlot = sortedSlots.find(s => s.date >= today);
+         return { meeting: m, date: earliestSlot?.date || "9999-12-31" };
+      })
+      .filter(item => item.date !== "9999-12-31")
+      .sort((a, b) => a.date.localeCompare(b.date))[0];
+
+    if (pendingAction) {
+      return {
+        type: pendingAction.organizerId === user.id && pendingAction.status === "ready"
+          ? "confirmation"
+          : "pending",
+        title: pendingAction.title,
+        date: null,
+        label: pendingAction.organizerId === user.id && pendingAction.status === "ready"
+          ? "Ready to Confirm"
+          : "Pending Vote",
+      };
+    } else if (futureConfirmed && futurePending) {
+       const confirmedDate = futureConfirmed.proposedSlots.find((s) => s.id === futureConfirmed.confirmedSlotId)?.date || "9999-12-31";
+       if (confirmedDate <= futurePending.date) {
+          const slot = futureConfirmed.proposedSlots.find((s) => s.id === futureConfirmed.confirmedSlotId);
+          return { type: "confirmed", title: futureConfirmed.title, date: slot ? `${format(parseISO(slot.date), "d MMM yyyy")} · ${slot.period}` : null };
+       } else {
+          return { type: "pending", title: futurePending.meeting.title, date: `${format(parseISO(futurePending.date), "d MMM yyyy")} (TBC)` };
+       }
+    } else if (futureConfirmed) {
+       const slot = futureConfirmed.proposedSlots.find((s) => s.id === futureConfirmed.confirmedSlotId);
+       return { type: "confirmed", title: futureConfirmed.title, date: slot ? `${format(parseISO(slot.date), "d MMM yyyy")} · ${slot.period}` : null };
+    } else if (futurePending) {
+       return { type: "pending", title: futurePending.meeting.title, date: `${format(parseISO(futurePending.date), "d MMM yyyy")} (TBC)` };
+    }
+    return null;
+  }, [managerMeetings, user]);
+
+  useEffect(() => {
+    if (user?.role !== "manager" || meetingAlert) return;
+    const candidates = managerMeetings.flatMap((meeting: Meeting) => {
+      const isAttendee = meeting.attendeeIds.includes(user.id);
+      const hasResponded = Boolean(meeting.responses[user.id]);
+      if (isAttendee && !hasResponded && meeting.status !== "confirmed") {
+        const noticeTime = meeting.reminderState[user.id]?.lastSentAt ?? meeting.createdAt;
+        return [{
+          key: `availability:${meeting.id}:${noticeTime}`,
+          title: "Meeting availability needed",
+          body: `${meeting.organizerName} is waiting for your availability for "${meeting.title}".`,
+          time: noticeTime,
+        }];
+      }
+      if (isAttendee && meeting.lastUpdateNotice) {
+        return [{
+          key: `updated:${meeting.id}:${meeting.lastUpdateNotice.at}`,
+          title: "Meeting updated",
+          body: `"${meeting.title}": ${meeting.lastUpdateNotice.summary}.`,
+          time: meeting.lastUpdateNotice.at,
+        }];
+      }
+      if (isAttendee && meeting.status === "confirmed") {
+        const slot = meeting.proposedSlots.find((item) => item.id === meeting.confirmedSlotId);
+        const noticeTime = meeting.confirmedAt ?? meeting.updatedAt;
+        return [{
+          key: `confirmed:${meeting.id}:${noticeTime}`,
+          title: "Meeting confirmed",
+          body: slot
+            ? `"${meeting.title}" is confirmed for ${format(parseISO(slot.date), "EEE, d MMM yyyy")} ${slot.period}.`
+            : `"${meeting.title}" has been confirmed.`,
+          time: noticeTime,
+        }];
+      }
+      if (meeting.organizerId === user.id && meeting.status === "ready") {
+        const noticeTime = meeting.readyNotifiedAt ?? meeting.updatedAt;
+        return [{
+          key: `ready:${meeting.id}:${noticeTime}`,
+          title: "Meeting ready to confirm",
+          body: `All required managers have responded to "${meeting.title}".`,
+          time: noticeTime,
+        }];
+      }
+      if (meeting.organizerId === user.id && meeting.lastResponseProgress) {
+        const progress = meeting.lastResponseProgress;
+        return [{
+          key: `progress:${meeting.id}:${progress.at}`,
+          title: progress.remainingCount === 0 ? "Everyone responded" : "Meeting response received",
+          body: progress.remainingCount === 0
+            ? `${progress.responderName} responded to "${meeting.title}". Everyone has now responded.`
+            : `${progress.responderName} responded to "${meeting.title}". ${progress.respondedCount} responded, ${progress.remainingCount} left.`,
+          time: progress.at,
+        }];
+      }
+      return [];
+    }).sort((a, b) => b.time.localeCompare(a.time));
+    const next = candidates.find((candidate) => localStorage.getItem(`meeting-alert:${candidate.key}`) !== "seen");
+    if (next) setMeetingAlert(next);
+  }, [managerMeetings, meetingAlert, user]);
+
+  const closeMeetingAlert = () => {
+    if (meetingAlert) localStorage.setItem(`meeting-alert:${meetingAlert.key}`, "seen");
+    setMeetingAlert(null);
+  };
 
   // Role-based nav items
   const navItems = useMemo(() => {
@@ -164,11 +312,24 @@ export function Layout({ children }: LayoutProps) {
         { href: "/public-holiday", label: "Public Holiday",    icon: Star },
         { href: "/roster-builder", label: "Roster Builder",    icon: LayoutGrid },
         { href: "/vehicle-arrangement", label: "Vehicle Arrangement", icon: Truck },
+        // Admin gets read/delete-only access to the meeting scheduler.
+        // .scratch/replit-resync-2026-09-21/issues/33.
+        { href: "/meetings",       label: "Meetings",          icon: CalendarClock },
       ];
     }
     if (role === "manager") {
+      // A manager's workspace root is the meeting scheduler, not the
+      // roster — a separate nav set while inside /manager* routes, matching
+      // the "Manager workspace switch" toggle rendered below the role
+      // badge. .scratch/replit-resync-2026-09-21/issues/33.
+      if (location.startsWith("/manager")) {
+        return [
+          { href: "/manager/meetings", label: "Meetings",    icon: Users },
+          { href: "/manager/calendar", label: "My Calendar", icon: CalendarDays },
+        ];
+      }
       return [
-        { href: "/",               label: "Deployment Roster", icon: Calendar },
+        { href: "/crew-roster",    label: "Deployment Roster", icon: Calendar },
         { href: "/crew-schedule",  label: "Crew Schedule",     icon: CalendarDays },
         { href: "/roster-cycle",   label: "Roster Cycle",      icon: CalendarRange },
         { href: "/upload-brief",   label: "Excel", icon: Upload },
@@ -204,7 +365,7 @@ export function Layout({ children }: LayoutProps) {
       ];
     }
     return [];
-  }, [user]);
+  }, [user, location]);
 
   // Show summary calendar only for admin/manager/ic
   const showSummary = user?.role === "admin" || user?.role === "manager" || user?.role === "ic";
@@ -399,6 +560,36 @@ export function Layout({ children }: LayoutProps) {
         </div>
       )}
 
+      {/* Manager workspace switch — the meeting scheduler ("Manager") vs.
+          the roster views ("Crew Roster"), manager role only.
+          .scratch/replit-resync-2026-09-21/issues/33. */}
+      {user?.role === "manager" && (
+        <div className="grid grid-cols-2 gap-2 p-3 border-b shrink-0">
+          <Link href="/manager">
+            <div className={cn(
+              "flex flex-col items-center justify-center gap-1 rounded-lg border px-2 py-2.5 text-xs font-bold cursor-pointer transition-colors",
+              location.startsWith("/manager")
+                ? "bg-primary text-primary-foreground border-primary"
+                : "hover:bg-muted text-muted-foreground",
+            )}>
+              <Users className="h-4 w-4" />
+              Manager
+            </div>
+          </Link>
+          <Link href="/crew-roster">
+            <div className={cn(
+              "flex flex-col items-center justify-center gap-1 rounded-lg border px-2 py-2.5 text-xs font-bold cursor-pointer transition-colors",
+              !location.startsWith("/manager")
+                ? "bg-primary text-primary-foreground border-primary"
+                : "hover:bg-muted text-muted-foreground",
+            )}>
+              <CalendarDays className="h-4 w-4" />
+              Crew Roster
+            </div>
+          </Link>
+        </div>
+      )}
+
       {/* Nav */}
       <nav className="px-3 pt-4 pb-2 space-y-0.5 shrink-0">
         {navItems.map((item) => {
@@ -418,6 +609,22 @@ export function Layout({ children }: LayoutProps) {
           );
         })}
       </nav>
+
+      {/* Meeting shortcut for managers while working in Crew Roster —
+          deep-links back into whichever meeting most needs their attention.
+          .scratch/replit-resync-2026-09-21/issues/33. */}
+      {user?.role === "manager" && !location.startsWith("/manager") && meetingShortcut && (
+        <Link href={meetingShortcut.type === "pending" ? "/manager/meetings?tab=pending-mine" : "/manager/meetings?tab=confirmed"}>
+          <div className="mx-3 mt-3 mb-1 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 cursor-pointer hover:bg-primary/10 transition-colors">
+            <div className="flex items-center gap-1.5 mb-1 text-[10px] font-bold text-primary uppercase tracking-widest">
+               {meetingShortcut.type === "pending" ? <Clock className="h-3 w-3" /> : <Calendar className="h-3 w-3" />}
+               {meetingShortcut.label ?? (meetingShortcut.type === "pending" ? "Pending Vote" : "Upcoming Meeting")}
+            </div>
+            <p className="text-xs font-semibold truncate text-foreground">{meetingShortcut.title}</p>
+            {meetingShortcut.date && <p className="text-[10px] text-muted-foreground mt-0.5">{meetingShortcut.date}</p>}
+          </div>
+        </Link>
+      )}
 
       {/* Teams cycle length — admin/manager only */}
       {canManageTeams && (
@@ -581,6 +788,26 @@ export function Layout({ children }: LayoutProps) {
               {copied
                 ? <><Check className="h-4 w-4 mr-2" />Copied</>
                 : <><Copy className="h-4 w-4 mr-2" />Copy</>}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* In-app meeting notification — independent of browser push
+          permission. .scratch/replit-resync-2026-09-21/issues/33. */}
+      <Dialog open={Boolean(meetingAlert)} onOpenChange={(open) => { if (!open) closeMeetingAlert(); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{meetingAlert?.title}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">{meetingAlert?.body}</p>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeMeetingAlert}>Later</Button>
+            <Button onClick={() => {
+              closeMeetingAlert();
+               setLocation(user?.role === "manager" ? "/manager" : "/meetings");
+            }}>
+              Open Meetings
             </Button>
           </DialogFooter>
         </DialogContent>

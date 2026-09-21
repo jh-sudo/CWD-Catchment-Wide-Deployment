@@ -153,6 +153,10 @@ export interface ManagerAccount {
   officerName?: string;
   // ic: which catchments they can approve for
   catchments?: string[];
+  // manager: self-tagged org groups from the meeting scheduler's fixed
+  // MANAGER_GROUPS enum (meetings.ts) — filters the attendee picker.
+  // .scratch/replit-resync-2026-09-21/issues/33.
+  meetingGroups?: string[];
   pendingReset?: { passwordHash: string; requestedAt: string };
   // MFA — see .scratch/flood-commander-web/issues/09-manager-mfa-totp.md.
   // Originally admin/manager/ic only (crew's PIN flow was deliberately kept
@@ -191,6 +195,7 @@ function toManagerAccount(row: Manager): ManagerAccount {
     officerId: row.officerId ?? undefined,
     officerName: row.officerName ?? undefined,
     catchments: row.catchments ?? undefined,
+    meetingGroups: row.meetingGroups ?? undefined,
     pendingReset: row.pendingResetPasswordHash
       ? {
           passwordHash: row.pendingResetPasswordHash,
@@ -232,6 +237,35 @@ async function refreshAppConfigCache(): Promise<void> {
 
 export function getManager(id: string): ManagerAccount | undefined {
   return managers.find(m => m.id === id);
+}
+
+export interface ApprovedAccountSummary {
+  id: string;
+  displayName: string;
+  username: string;
+  role: AccountRole;
+  meetingGroups: string[];
+}
+
+/** Account details safe to expose when selecting meeting attendees.
+ *  .scratch/replit-resync-2026-09-21/issues/33. */
+export function getApprovedAccountSummaries(): ApprovedAccountSummary[] {
+  return managers
+    .filter((account) => account.approved)
+    .map((account) => ({
+      id: account.id,
+      displayName: account.officerName ?? account.username,
+      username: account.username,
+      role: account.role,
+      meetingGroups: account.meetingGroups ?? [],
+    }));
+}
+
+export async function setManagerMeetingGroups(id: string, meetingGroups: string[]): Promise<boolean> {
+  const account = managers.find((m) => m.id === id);
+  if (!account || account.role !== "manager") return false;
+  await updateManager(id, { meetingGroups });
+  return true;
 }
 
 async function updateManager(id: string, patch: Partial<typeof managersTable.$inferInsert>) {
