@@ -841,7 +841,7 @@ rosterPlanRouter.get("/roster-plan/schedule", async (req, res) => {
 // ── Leave endpoints ───────────────────────────────────────────────────────────
 
 // GET /api/roster-plan/leave?date=YYYY-MM-DD
-rosterPlanRouter.get("/roster-plan/leave", async (req, res) => {
+rosterPlanRouter.get("/roster-plan/leave", requireManager, async (req, res) => {
   const date = req.query.date as string | undefined;
   const leaves = date
     ? await db.select().from(rosterLeavesTable).where(eq(rosterLeavesTable.date, date))
