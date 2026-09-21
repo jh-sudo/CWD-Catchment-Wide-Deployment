@@ -27,6 +27,11 @@ const router = Router();
 // isn't persisted (resets to 0 on restart, same as before).
 let stateVersion = 0;
 function bumpState() { stateVersion++; }
+// Included in the ETag alongside stateVersion so a client's cached ETag from
+// before a restart/redeploy can never coincidentally match the new
+// process's counter (which also restarts at 0) and produce a false 304 with
+// stale deployment state. .scratch/replit-resync-2026-09-21/issues/15.
+const processEpoch = Date.now();
 // Per-vehicle position rate-limit: reject updates faster than 5s from same vehicle
 const lastPositionTime = new Map<string, number>();
 
@@ -634,8 +639,14 @@ function parseDateFromRoster(text: string): string | null {
   return d.toLocaleDateString("en-SG", { day: "2-digit", month: "long", year: "numeric", timeZone: "Asia/Singapore" });
 }
 
-function parseRoster(text: string): RosterTeam[] {
-  const teams: RosterTeam[] = [];
+function parseRoster(text: string): { teams: RosterTeam[]; duplicateUnits: string[] } {
+  // Keyed by unitCode (not the composed id, which also embeds the vehicle
+  // number) so a corrected line pasted after an original for the SAME unit —
+  // even with a different or corrected vehicle number — replaces it instead
+  // of producing two team entries for one unit. Last line for a given unit
+  // wins. .scratch/replit-resync-2026-09-21/issues/15.
+  const byUnit = new Map<string, RosterTeam>();
+  const duplicateUnits = new Set<string>();
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     // Must start with a unit code: BU1, PJ3, WK1, CP2, KG1, etc.
@@ -657,7 +668,8 @@ function parseRoster(text: string): RosterTeam[] {
     const vehicleMatch = line.match(/^[A-Z]{1,4}\d+\s+([A-Z0-9]{4,})\s*:/i);
     const vehicleNumber = vehicleMatch ? vehicleMatch[1].toUpperCase() : "";
 
-    teams.push({
+    if (byUnit.has(unitCode)) duplicateUnits.add(unitCode);
+    byUnit.set(unitCode, {
       id: `${unitCode}-${vehicleNumber || "NA"}`,
       vehicleId: `${unitCode}-${vehicleNumber || "NA"}`,
       unitCode,
@@ -666,7 +678,7 @@ function parseRoster(text: string): RosterTeam[] {
       shift,
     });
   }
-  return teams;
+  return { teams: Array.from(byUnit.values()), duplicateUnits: Array.from(duplicateUnits) };
 }
 
 function extractAlertText(raw: string): string {
@@ -697,7 +709,7 @@ function weatherEmoji(weather: string | null): string {
 }
 
 router.get("/deployments/state", requireManager, (req, res) => {
-  const etag = `"v${stateVersion}"`;
+  const etag = `"v${stateVersion}-${processEpoch}"`;
   if (req.headers["if-none-match"] === etag) {
     res.status(304).end();
     return;
@@ -719,15 +731,71 @@ router.get("/deployments/state", requireManager, (req, res) => {
   });
 });
 
+// When a roster reimport changes a unit's vehicle (vehicleId embeds the
+// vehicle number: `${unitCode}-${vehicleNumber}`), migrate that unit's live
+// deployment state to the new identity instead of leaving it orphaned under
+// the old vehicleId — a "ghost" entry/assignment/position that never shows
+// up again — and instead of letting a crew device that pings its position
+// under the old id recreate a stale vehicle entry after the reimport. Only
+// handles units whose vehicle identity actually changed; a unit removed
+// from the roster entirely is out of scope here.
+// .scratch/replit-resync-2026-09-21/issues/15.
+function reconcileDeploymentStateWithRoster(previous: RosterTeam[], next: RosterTeam[]): void {
+  const nextByUnit = new Map(next.map((t) => [t.unitCode, t]));
+  for (const prevTeam of previous) {
+    const nextTeam = nextByUnit.get(prevTeam.unitCode);
+    if (!nextTeam || nextTeam.vehicleId === prevTeam.vehicleId) continue;
+    const oldId = prevTeam.vehicleId;
+    const newId = nextTeam.vehicleId;
+
+    const oldAssignment = assignments.get(oldId);
+    if (oldAssignment) {
+      deleteAssignment(oldId);
+      setAssignment({ ...oldAssignment, vehicleId: newId, vehicleNumber: nextTeam.vehicleNumber, unitCode: nextTeam.unitCode });
+    }
+
+    const oldPos = vehiclePositions.get(oldId);
+    if (oldPos) {
+      vehiclePositions.delete(oldId);
+      const migratedPos: VehiclePosition = { ...oldPos, vehicleId: newId, vehicleNumber: nextTeam.vehicleNumber, unitCode: nextTeam.unitCode };
+      vehiclePositions.set(newId, migratedPos);
+      persist(
+        () => db.insert(deploymentVehiclePositionsTable)
+          .values({ ...migratedPos, updatedAt: new Date(migratedPos.updatedAt) })
+          .onConflictDoUpdate({ target: deploymentVehiclePositionsTable.vehicleId, set: { ...migratedPos, updatedAt: new Date(migratedPos.updatedAt) } }),
+        `migrate position ${oldId} -> ${newId}`,
+      );
+      persist(
+        () => db.delete(deploymentVehiclePositionsTable).where(eq(deploymentVehiclePositionsTable.vehicleId, oldId)),
+        `delete stale position ${oldId}`,
+      );
+    }
+
+    for (const [key, entry] of Array.from(deploymentEntries.entries())) {
+      if (entry.vehicleId !== oldId) continue;
+      deploymentEntries.delete(key);
+      const migrated: DeploymentEntry = { ...entry, vehicleId: newId, vehicleNumber: nextTeam.vehicleNumber, unitCode: nextTeam.unitCode };
+      setEntry(migrated);
+      persist(
+        () => db.delete(deploymentEntriesTable).where(
+          and(eq(deploymentEntriesTable.locationId, entry.locationId), eq(deploymentEntriesTable.vehicleId, oldId)),
+        ),
+        `delete stale entry ${entry.locationId}:${oldId}`,
+      );
+    }
+  }
+}
+
 // ── Roster endpoints ──────────────────────────────────────────────────────────
 router.post("/roster/import", requireManager, (req, res) => {
   const { text, merge } = req.body as { text: string; merge?: boolean };
   if (!text) { res.status(400).json({ error: "text required" }); return; }
-  const teams = parseRoster(text);
+  const { teams, duplicateUnits } = parseRoster(text);
   if (!teams.length) {
     res.status(400).json({ error: "no_teams", message: "No valid team lines found. Format: BU1 TST0004A: Name & Name (DAY)" });
     return;
   }
+  const previousRoster = currentRoster;
   if (merge && currentRoster.length > 0) {
     // Merge: update existing entries by id, append new ones — never wipes existing teams
     const existingMap = new Map(currentRoster.map(t => [t.id, t]));
@@ -736,12 +804,13 @@ router.post("/roster/import", requireManager, (req, res) => {
   } else {
     currentRoster = teams;
   }
+  reconcileDeploymentStateWithRoster(previousRoster, currentRoster);
   const rosterDate = parseDateFromRoster(text);
   if (rosterDate) deploymentDate = rosterDate;
   bumpState();
   persistRoster();
   persistSettings();
-  res.json({ success: true, count: teams.length, teams: currentRoster, deploymentDate });
+  res.json({ success: true, count: teams.length, teams: currentRoster, deploymentDate, duplicateUnits });
 });
 
 router.get("/roster", (req, res) => {
@@ -896,7 +965,7 @@ interface AcceptLocationRequest {
 }
 
 router.post("/deployments/position", requireCrew, (req, res) => {
-  const { vehicleId, vehicleNumber, unitCode, partner, shift, lat, lng, acceptedLocationId, eta, etaMinutes } = req.body as {
+  const { vehicleId: clientVehicleId, vehicleNumber: clientVehicleNumber, unitCode, partner, shift, lat, lng, acceptedLocationId, eta, etaMinutes } = req.body as {
     vehicleId: string;
     vehicleNumber: string;
     unitCode: string;
@@ -909,10 +978,20 @@ router.post("/deployments/position", requireCrew, (req, res) => {
     etaMinutes?: number;
   };
 
-  if (!vehicleId || !vehicleNumber || !unitCode) {
+  if (!clientVehicleId || !clientVehicleNumber || !unitCode) {
     res.status(400).json({ error: "bad_request", message: "Missing required fields" });
     return;
   }
+
+  // Re-resolve the roster-authoritative vehicleId/vehicleNumber for this unit
+  // before saving — a crew device can still be caching the vehicleId from
+  // before a roster reimport changed this unit's vehicle, which would
+  // otherwise recreate a stale vehicle position/entry under the old
+  // identity. unitCode is the stable identity here, not vehicleId.
+  // .scratch/replit-resync-2026-09-21/issues/15.
+  const currentTeam = currentRoster.find((t) => t.unitCode === unitCode);
+  const vehicleId = currentTeam?.vehicleId ?? clientVehicleId;
+  const vehicleNumber = currentTeam?.vehicleNumber ?? clientVehicleNumber;
 
   // Rate-limit: ignore duplicate position pings from same vehicle within 5s
   const now = Date.now();
@@ -1013,10 +1092,17 @@ router.get("/deployments/report", (req, res) => {
   const date = deploymentDate;
   const entries = Array.from(deploymentEntries.values());
   const deployedVehicleIds = new Set(entries.map(e => e.vehicleId));
+  // Also exclude by unitCode, not just vehicleId — a unit's entry and its
+  // pending assignment can end up keyed by different vehicleId strings after
+  // a roster reimport changes that unit's vehicle (see the stale-identity
+  // issue below), which would otherwise let both produce a report line for
+  // the same unit. The materialised entry is roster-authoritative; prefer it.
+  // .scratch/replit-resync-2026-09-21/issues/15.
+  const deployedUnitCodes = new Set(entries.map(e => e.unitCode));
 
   // Include pending assignments that haven't been accepted yet
   const pendingAssignments = Array.from(assignments.values()).filter(
-    a => a.status === "pending" && !deployedVehicleIds.has(a.vehicleId)
+    a => a.status === "pending" && !deployedVehicleIds.has(a.vehicleId) && !deployedUnitCodes.has(a.unitCode)
   );
 
   // Build combined line list, sort all by unitCode
