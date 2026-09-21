@@ -3,6 +3,7 @@ import { eq, and, lt } from "drizzle-orm";
 import { db, wlsReadingsTable } from "@workspace/db";
 import { sendToManagers } from "./push";
 import { requireManager } from "./auth";
+import { isHeavyRainWarning, handleHeavyRainWarning } from "./autoDeployment.js";
 
 const router = Router();
 
@@ -330,6 +331,16 @@ router.post("/wls/ingest", requireManager, async (req, res) => {
 
   if (!smsText || typeof smsText !== "string") {
     res.status(400).json({ error: "smsText (or text) is required" });
+    return;
+  }
+
+  // Heavy Rain Warning text isn't a WLS reading — hand it to the
+  // auto-deployment pipeline (a no-op unless a manager/admin has enabled it)
+  // instead of falling through to the WLS parser.
+  // .scratch/replit-resync-2026-09-21/issues/32.
+  if (isHeavyRainWarning(smsText)) {
+    const automation = await handleHeavyRainWarning(smsText);
+    res.json({ ok: true, messageType: "HEAVY_RAIN_WARNING", automation });
     return;
   }
 

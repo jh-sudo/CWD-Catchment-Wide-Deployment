@@ -47,6 +47,7 @@ export * from "./deploymentReassignmentHistory";
 export * from "./deploymentVehiclePositions";
 export * from "./deploymentSwapRequests";
 export * from "./deploymentAlerts";
+export * from "./autoDeploymentSettings";
 
 // ── PH roster domain ─────────────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/04-schema-ph-roster.md
