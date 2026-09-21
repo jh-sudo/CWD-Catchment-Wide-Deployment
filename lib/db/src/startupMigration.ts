@@ -170,6 +170,10 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
     "leave_requests.replacement_for_officer_id",
     `ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS replacement_for_officer_id text REFERENCES officers(id)`,
   );
+  await run(
+    "roster_config.strength",
+    `ALTER TABLE roster_config ADD COLUMN IF NOT EXISTS strength jsonb`,
+  );
 
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to

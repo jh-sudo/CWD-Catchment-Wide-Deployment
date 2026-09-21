@@ -36,6 +36,7 @@
     "framer-motion": "catalog:",
     "lucide-react": "catalog:",
     "react": "catalog:",
+    "react-day-picker": "^9.11.1",
     "react-dom": "catalog:",
     "tailwind-merge": "catalog:",
     "tailwindcss": "catalog:",

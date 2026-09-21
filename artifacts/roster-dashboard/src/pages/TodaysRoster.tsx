@@ -7,17 +7,28 @@ import { useRosterVersion } from "@/context/RosterVersionContext";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCcw, ChevronLeft, ChevronRight, Copy, Check, Loader2 } from "lucide-react";
-import { useGetRosterOfficers } from "@workspace/api-client-react";
+import { useGetRosterOfficers, useGetRosterConfig } from "@workspace/api-client-react";
 import { RosterListView, ABSENT_DUTIES } from "@/components/RosterListView";
 import { usePHActuals, SG_PH_META_MAP } from "@/lib/usePHActuals";
 import { PHActualPanel } from "@/components/PHActualPanel";
+import { getPHStrength } from "@/lib/phStrength";
 import { useToast } from "@/hooks/use-toast";
+import {
+  defaultStrengthConfig,
+  computeRosterStrength,
+  getContrastText,
+  getStrengthColor,
+  getStrengthRule,
+  getStrengthTier,
+  type StrengthConfig,
+} from "@/lib/strength";
 
 export default function TodaysRoster() {
   const { toast } = useToast();
   const todayStr = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const { data: officers, isLoading: officersLoading } = useGetRosterOfficers();
+  const { data: rosterConfig } = useGetRosterConfig();
   const { isPH, phName: phDayName, rows: phRows, loading: phLoading } = usePHActuals(selectedDate);
   const showPHPanel = isPH;
   const [dutyMap, setDutyMap] = useState<Record<string, string>>({});
@@ -199,24 +210,26 @@ export default function TodaysRoster() {
     return phDayName ? `${base} (${phDayName})` : base;
   }, [selectedDate, phDayName]);
 
-  const { ndCount, dayCount, pdCount, minimum, minLabel } = useMemo(() => {
-    let nd = 0, day = 0, pd = 0;
-    for (const o of officers ?? []) {
-      if (leaveMap[o.id]) continue;
-      const duty = dutyMap[o.id] ?? "";
-      if (ABSENT_DUTIES.has(duty)) continue;
-      if (duty === "ND") nd++;
-      if (duty === "DAY") day++;
-      if (duty === "PD") pd++;
+  const { ndCount, dayCount, pdCount, totalStrength } = useMemo(() => {
+    // Both PH and OIL dates use their saved Actual roster, not a
+    // reconstructed daily or Sunday schedule.
+    if (isPH && phRows.length > 0) {
+      return getPHStrength(phRows);
     }
-    const utcDay = new Date(selectedDate + "T00:00:00Z").getUTCDay();
-    const weekend = utcDay === 0 || utcDay === 6;
-    const min = isPH ? 12 : (weekend ? 12 : 24);
-    const label = isPH ? "PH" : (weekend ? "Weekend" : "Weekday");
-    return { ndCount: nd, dayCount: day, pdCount: pd, minimum: min, minLabel: label };
-  }, [officers, dutyMap, leaveMap, selectedDate, isPH]);
-  const totalStrength = ndCount + dayCount + pdCount;
-  const strengthOk    = totalStrength >= minimum;
+    return computeRosterStrength(officers ?? [], dutyMap, targetDutyMap, leaveMap, isOIL);
+  }, [officers, dutyMap, targetDutyMap, leaveMap, isOIL, selectedDate, isPH, phRows]);
+
+  // Weekends, PH, and OIL days use total-strength vs target; weekdays use ND count.
+  const isWeekendOrSpecial = isPH || isOIL || (() => {
+    const d = new Date(selectedDate + "T12:00:00Z").getUTCDay();
+    return d === 0 || d === 6;
+  })();
+  const fallbackStrength = defaultStrengthConfig();
+  const strengthConfig = (rosterConfig?.strength ?? fallbackStrength) as StrengthConfig;
+  const strengthRule = getStrengthRule(selectedDate, isWeekendOrSpecial, strengthConfig, fallbackStrength);
+  const stickyTier = getStrengthTier(totalStrength, strengthRule);
+  const stickyColor = getStrengthColor(stickyTier, strengthConfig);
+  const stickyTextColor = getContrastText(stickyColor);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -275,19 +288,25 @@ export default function TodaysRoster() {
 
       {/* ── Frozen strength strip ── */}
       {!isLoading && (officers?.length ?? 0) > 0 && (
-        <div className={cn(
-          "shrink-0 border-b px-4 py-1.5 flex items-center gap-2 text-[11px]",
-          strengthOk
-            ? "bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800"
-            : "bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800"
-        )}>
-          <span className={cn("font-bold", strengthOk ? "text-green-700 dark:text-green-400" : "text-red-700 dark:text-red-400")}>
-            Strength: {totalStrength} / {minimum}
+        <div
+          className="shrink-0 border-b px-4 py-1.5 flex items-center gap-2 text-[11px]"
+          style={{ backgroundColor: stickyColor, borderColor: stickyColor, color: stickyTextColor }}
+        >
+          <span className="font-bold" style={{ color: stickyTextColor }}>
+            Strength: {totalStrength} / {strengthRule.full}
           </span>
-          <span className="text-muted-foreground text-[10px]">({minLabel} min)</span>
+          <span className="text-[10px]" style={{ color: stickyTextColor, opacity: 0.78 }}>
+            minimum {strengthRule.minimum}
+          </span>
+          {strengthRule.name && (
+            <span className="rounded border border-current/20 px-1.5 py-0.5 font-semibold" style={{ color: stickyTextColor }}>
+              {strengthRule.name}
+            </span>
+          )}
           <div className="flex items-center gap-1 ml-auto font-medium">
             {(["ND", "DAY", "PD"] as const).map(d => {
-              const count = d === "ND" ? ndCount : d === "DAY" ? dayCount : pdCount;
+              const count  = d === "ND" ? ndCount : d === "DAY" ? dayCount : pdCount;
+              const target = strengthRule.shiftMinimums[d];
               const baseCls = d === "ND"
                 ? "bg-[#FDFCCC] text-yellow-900 border-yellow-200"
                 : d === "DAY"
@@ -306,7 +325,7 @@ export default function TodaysRoster() {
                   )}
                   title={isActive ? `Remove ${d} filter` : `Show only ${d}`}
                 >
-                  {d} {count}
+                  {d} {count}/{target}
                 </button>
               );
             })}

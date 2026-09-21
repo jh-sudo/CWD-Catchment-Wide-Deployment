@@ -730,6 +730,82 @@ components:
       required: [locations]
 
     # ── Roster Plan schemas ───────────────────────────────────────────────────
+    StrengthBand:
+      type: object
+      properties:
+        minimum:
+          type: integer
+          description: Total headcount below which the day is under-strength
+        full:
+          type: integer
+          description: Total headcount at/above which the day is at full strength
+        shiftMinimums:
+          type: object
+          properties:
+            PD:
+              type: integer
+            DAY:
+              type: integer
+            ND:
+              type: integer
+          required: [PD, DAY, ND]
+      required: [minimum, full, shiftMinimums]
+
+    StrengthSpecialRule:
+      allOf:
+        - $ref: "#/components/schemas/StrengthBand"
+        - type: object
+          properties:
+            id:
+              type: string
+            name:
+              type: string
+            dates:
+              type: array
+              items:
+                type: string
+              description: ISO dates (YYYY-MM-DD) this named exception applies to
+          required: [id, name, dates]
+
+    StrengthConfig:
+      type: object
+      description: >-
+        Per-shift minimum-manning bands used for the 3-tier (below/minimum/full)
+        strength coloring shown across the roster, vehicle, and deployment views.
+      properties:
+        weekday:
+          type: object
+          properties:
+            default:
+              $ref: "#/components/schemas/StrengthBand"
+            special:
+              type: array
+              items:
+                $ref: "#/components/schemas/StrengthSpecialRule"
+          required: [default, special]
+        weekend:
+          type: object
+          description: Also applies to public holidays.
+          properties:
+            default:
+              $ref: "#/components/schemas/StrengthBand"
+            special:
+              type: array
+              items:
+                $ref: "#/components/schemas/StrengthSpecialRule"
+          required: [default, special]
+        colors:
+          type: object
+          properties:
+            below:
+              type: string
+            minimum:
+              type: string
+            full:
+              type: string
+          required: [below, minimum, full]
+      required: [weekday, weekend, colors]
+
     RosterConfig:
       type: object
       properties:
@@ -742,6 +818,8 @@ components:
         currentWeek:
           type: integer
           description: Current week number within the cycle (1-based)
+        strength:
+          $ref: "#/components/schemas/StrengthConfig"
       required: [teamCount, cycleStartDate, currentWeek]
 
     RosterConfigInput:
@@ -752,6 +830,8 @@ components:
           enum: [20, 24, 28]
         cycleStartDate:
           type: string
+        strength:
+          $ref: "#/components/schemas/StrengthConfig"
       required: [teamCount, cycleStartDate]
 
     RosterOfficer:

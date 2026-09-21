@@ -65,11 +65,15 @@ silent drop-in"), roughly in the order I'd guess they matter:
 5. **PH Builder** — a configurable/preset-driven auto-generation layer for the PH roster
    (`PHBuilder.tsx` + `phRoster.ts`'s `builder-config`/`builder-presets`/`builder-run`),
    alongside the existing manual PH roster editor.
-6. **Strength/minimum-manning overhaul** — per-shift weekday/weekend/PH minimum bands, 3-tier
-   (not 2-tier) coloring, named date exceptions, config-driven instead of hardcoded. Current
-   in-scope tickets below only fix the *display wiring*, not this underlying model gap — see
-   [08](issues/08-ph-actual-panel-unit-order-wrong.md) note and ticket
-   [11](issues/11-rosterlistview-covering-crosspost-bugs.md)'s cross-reference.
+6. ~~**Strength/minimum-manning overhaul**~~ — **Done, see
+   [30](issues/30-strength-minimum-manning-overhaul.md).** Per-shift weekday/weekend-or-PH minimum
+   bands, 3-tier coloring, named date exceptions, all config-driven via a new Strength tab —
+   applied to `TodaysRoster.tsx`/`RosterCycle.tsx`/`VehicleArrangement.tsx`. New
+   `react-day-picker` dependency for the exception date-picker. Deliberately skipped porting the
+   "auto-derive shiftMinimums from the cycle pattern" sync (narrow payoff, real complexity —
+   StrengthTab.tsx's manual editor already covers it). Also surfaced two pre-existing,
+   unrelated environment issues (stale node_modules vs. declared package versions; a broken
+   `pnpm run codegen` toolchain) — both documented in the ticket, neither blocking.
 7. ~~**Real-time cross-client staleness fix**~~ — **Done, see
    [28](issues/28-realtime-roster-staleness.md).** Replaced Replit's file-mtime-hash signal with a
    `pg_stat_user_tables` write-counter revision string (Postgres-native, zero write-path changes)
