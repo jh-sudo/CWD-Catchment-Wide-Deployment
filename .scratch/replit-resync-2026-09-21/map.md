@@ -70,10 +70,10 @@ silent drop-in"), roughly in the order I'd guess they matter:
    in-scope tickets below only fix the *display wiring*, not this underlying model gap — see
    [08](issues/08-ph-actual-panel-unit-order-wrong.md) note and ticket
    [11](issues/11-rosterlistview-covering-crosspost-bugs.md)'s cross-reference.
-7. **Real-time cross-client staleness fix** — Replit polls a cheap "has anything changed"
-   endpoint every 10s; ours only refreshes on window focus. Needs a Postgres-appropriate
-   revision signal (Replit's mtime/size-hash trick won't translate) — small and self-contained
-   (`RosterVersionContext.tsx`, 49 lines) if picked up.
+7. ~~**Real-time cross-client staleness fix**~~ — **Done, see
+   [28](issues/28-realtime-roster-staleness.md).** Replaced Replit's file-mtime-hash signal with a
+   `pg_stat_user_tables` write-counter revision string (Postgres-native, zero write-path changes)
+   plus a process-start epoch to guard against Postgres-restart counter resets.
 8. ~~**`requireRosterEditor` role**~~ — **Done, see [26](issues/26-require-roster-editor-role.md).**
    Turned out much smaller than originally scoped — not a new role at all, just a new
    admin/manager/ic-but-not-crew middleware.
