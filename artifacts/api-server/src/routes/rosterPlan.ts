@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, inArray, desc, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, ne, inArray, desc, isNull, isNotNull } from "drizzle-orm";
 import {
   db,
   officersTable,
@@ -858,8 +858,64 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
   const officer = officers.find((o) => o.id === officerId);
   if (!officer) return res.status(404).json({ error: "Officer not found" });
 
+  if (coveringOfficerId && coveringOfficerId === officerId) {
+    return res.status(400).json({ error: "An officer cannot cover their own leave" });
+  }
+
   const coverOfficer = coveringOfficerId ? officers.find((o) => o.id === coveringOfficerId) : undefined;
+  if (coveringOfficerId && !coverOfficer) return res.status(404).json({ error: "Cover officer not found" });
   const coveringOfficerName = coverOfficer?.name;
+
+  // Cover-officer validation — without this, a manager could apply DAY/PD
+  // leave with no cover at all (a silently unfilled shift), or assign a
+  // cover officer who is themselves working, already on leave, or already
+  // covering someone else that date. Found via a Replit-resync diff triage
+  // (.scratch/replit-resync-2026-09-21/issues/03).
+  {
+    const config = await loadConfig();
+    const [overrideRows, leaveRows] = await Promise.all([loadOverridesForDates([date]), loadLeavesForDates([date])]);
+    const overridesForDate = new Map(overrideRows.map((o) => [o.officerId, o]));
+    const leavesForDate = new Map(leaveRows.map((l) => [l.officerId, l]));
+    const utcDay = new Date(date + "T00:00:00Z").getUTCDay();
+    const isWeekend = utcDay === 0 || utcDay === 6;
+    const absentDuty = getOfficerEffectiveDutyForDate(officer, date, overridesForDate, leavesForDate, config).duty;
+
+    if (!coverOfficer && (absentDuty === "DAY" || absentDuty === "PD")) {
+      return res.status(400).json({ error: "A cover officer is required for DAY/PD duty" });
+    }
+
+    if (coverOfficer) {
+      const coverDuty = getOfficerEffectiveDutyForDate(coverOfficer, date, overridesForDate, leavesForDate, config).duty;
+      const eligible = isWeekend
+        ? coverDuty === "OFF" || coverDuty === "REST"
+        : coverDuty === "ND" || coverDuty === "OFF";
+      if (!eligible) {
+        return res.status(400).json({
+          error: `${coverOfficer.name} is not available to cover on ${date} (scheduled ${coverDuty})`,
+        });
+      }
+      const [selfOnLeave] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.officerId, coverOfficer.id)));
+      if (selfOnLeave) {
+        return res.status(409).json({ error: `${coverOfficer.name} is already on leave on ${date}` });
+      }
+      const [alreadyCovering] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(
+          and(
+            eq(rosterLeavesTable.date, date),
+            eq(rosterLeavesTable.coveringOfficerId, coverOfficer.id),
+            ne(rosterLeavesTable.officerId, officerId),
+          ),
+        );
+      if (alreadyCovering) {
+        return res.status(409).json({ error: `${coverOfficer.name} is already covering another officer on ${date}` });
+      }
+    }
+  }
 
   // Resolve who is applying — used for the activity-log entry below.
   const applierMid    = req.session?.managerId;
@@ -898,6 +954,13 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
       leaveType,
       coveringOfficerId: coveringOfficerId ?? null,
       coveringOfficerName: coveringOfficerName ?? null,
+      // Set on first write only — deliberately absent from onConflictDoUpdate's
+      // `set` below so a later edit/re-import never overwrites who originally
+      // applied the leave (see the schema's own comment on this column). Was
+      // missing entirely before this fix, despite the schema already
+      // supporting it — .scratch/replit-resync-2026-09-21/issues/04.
+      appliedBy: appliedByName ?? null,
+      appliedAt: new Date(),
     })
     .onConflictDoUpdate({
       target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
