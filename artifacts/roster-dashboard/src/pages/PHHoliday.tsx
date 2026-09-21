@@ -13,6 +13,7 @@ import { useGetRosterOfficers } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
 import { clearPHCache } from "@/lib/usePHActuals";
 import { phUnitSortKey } from "@/lib/phUnitOrder";
+import { PHBuilder } from "@/components/PHBuilder";
 
 // ── Singapore Public Holiday data ─────────────────────────────────────────────
 interface PHEntry {
@@ -1476,6 +1477,8 @@ function PHCounter() {
 export default function PHHoliday() {
   const [tab, setTab] = useState("list");
   const [jumpDate, setJumpDate] = useState<string | undefined>(undefined);
+  const { user } = useAuth();
+  const canSeeBuilder = user?.role === "admin" || user?.role === "manager" || user?.role === "ic";
 
   const handleSelectFromList = (date: string) => {
     setJumpDate(date);
@@ -1499,6 +1502,7 @@ export default function PHHoliday() {
               <TabsTrigger value="roster">PH Roster</TabsTrigger>
               <TabsTrigger value="counter">PH Counter</TabsTrigger>
               <TabsTrigger value="faq">FAQ</TabsTrigger>
+              {canSeeBuilder && <TabsTrigger value="builder">PH Builder</TabsTrigger>}
             </TabsList>
 
             <TabsContent value="list" className="mt-0">
@@ -1513,6 +1517,11 @@ export default function PHHoliday() {
             <TabsContent value="faq" className="mt-0">
               <PHFaq />
             </TabsContent>
+            {canSeeBuilder && (
+              <TabsContent value="builder" className="mt-0">
+                <PHBuilder />
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </div>
