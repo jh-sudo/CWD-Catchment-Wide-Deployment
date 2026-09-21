@@ -52,3 +52,17 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+
+# Internal-only docs — governance material and migration handover notes
+# not meant to leave this machine (see HANDOVER.md's own header note)
+/context/
+/.scratch/govpaas-migration/HANDOVER.md
+/.scratch/govpaas-migration/recommendation-memo.md
+
+# Key/credential material, in case any ever lands in the working tree
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
