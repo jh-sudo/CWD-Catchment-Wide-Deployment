@@ -442,7 +442,15 @@ function buildSummary(
   const block1Lines: string[] = [];
   const block2Lines: string[] = [];
   const offNames: string[] = [];
+  const restNames: string[] = [];
   const leaveLines: string[] = [];
+  // An officer named as an explicit cover for one absent slot must not also
+  // be named as the cover for a *different* absent slot elsewhere — without
+  // this guard the same person's name could be pushed into two different
+  // units' lines (e.g. one unit's coveredByOfficerName and another's
+  // swappedWithOfficerName both pointing at them).
+  // .scratch/replit-resync-2026-09-21/issues/10.
+  const alreadyPlacedCoverNames = new Set<string>();
 
   for (const unitCode of sortedUnits) {
     const crew = unitMap.get(unitCode)!;
@@ -486,10 +494,11 @@ function buildSummary(
         && (info.targetDuty === "OFF" || info.targetDuty === "REST");
 
       if (isOff) {
-        offNames.push(info.officer.name);
+        if (info.actualDuty === "REST") restNames.push(info.officer.name);
+        else offNames.push(info.officer.name);
       } else if (!absent) {
         effectiveCrew.push(info.officer.name);
-      } else if (info.swappedWithOfficerName) {
+      } else if (info.swappedWithOfficerName && !alreadyPlacedCoverNames.has(info.swappedWithOfficerName)) {
         // Swapped: the absent officer's home slot is filled by their swap partner.
         // Show ONLY the replacement — the absent officer's name must not appear here
         // (they are already shown at their partner's unit via the partner's crew entry).
@@ -498,11 +507,13 @@ function buildSummary(
         const coverUnit = coverInfo?.officer.unitCode ?? "";
         const label = unitDuty === "ND" ? "swp" : coverUnit;
         effectiveCrew.push(`${info.swappedWithOfficerName} [${label}]`);
-      } else if (info.coveredByOfficerName) {
+        alreadyPlacedCoverNames.add(info.swappedWithOfficerName);
+      } else if (info.coveredByOfficerName && !alreadyPlacedCoverNames.has(info.coveredByOfficerName)) {
         // Absent with named cover — use covering officer
         effectiveCrew.push(info.coveredByOfficerName);
+        alreadyPlacedCoverNames.add(info.coveredByOfficerName);
       }
-      // Absent without cover → empty slot
+      // Absent without cover, or cover already placed elsewhere → empty slot
     }
 
     if (effectiveCrew.length > 0 && SHIFTS.has(unitDuty)) {
@@ -554,6 +565,9 @@ function buildSummary(
     SEP,
     "OFF",
     ...offNames,
+    SEP,
+    "REST",
+    ...restNames,
     SEP,
     "LEAVE",
     ...leaveLines,
