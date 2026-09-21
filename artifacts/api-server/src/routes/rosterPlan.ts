@@ -628,20 +628,26 @@ rosterPlanRouter.get("/roster-plan/officers", async (_req, res) => {
   res.json(await loadOfficers());
 });
 
-// GET /api/roster-plan/officer-names
+// GET /api/roster-plan/officer-names?activeOnly=1
 // Deduplicated, sorted {id, name, unitCode?, catchment?} list — a lighter
 // picker source than the full officers list for UI dropdowns. Excludes
-// blank names and generic placeholders ("Crew 1", "Crew 2", …).
+// blank names and generic placeholders ("Crew 1", "Crew 2", …). Defaults to
+// every officer (including inactive) to preserve RosterBuilder.tsx's
+// existing behavior, which deliberately wants historical/inactive names too
+// — pass activeOnly=1 for a consumer (e.g. Register.tsx) that must not list
+// deactivated officers. .scratch/replit-resync-2026-09-21/issues/21.
 // NOTE: the Replit original also merged in every officer name ever saved in
 // a roster-pattern (a second source, for names that only exist in a
 // historical pattern, not the live officers table) — that source doesn't
 // exist here yet since roster-patterns hasn't been ported (see the
 // capability-parity plan's Phase C). Add it back here once it lands.
-rosterPlanRouter.get("/roster-plan/officer-names", async (_req, res) => {
+rosterPlanRouter.get("/roster-plan/officer-names", async (req, res) => {
+  const activeOnly = req.query.activeOnly === "1" || req.query.activeOnly === "true";
   const seen = new Set<string>();
   const result: { id: string; name: string; unitCode?: string; catchment?: string }[] = [];
 
   for (const o of await loadOfficers()) {
+    if (activeOnly && !o.active) continue;
     const trimmed = o.name.trim();
     if (!trimmed) continue;
     if (/^crew\s*\d+$/i.test(trimmed)) continue;
