@@ -163,6 +163,17 @@ export function RosterListView({
     return m;
   }, [officers, coveringMap]);
 
+  // Every officer name referenced as *someone's* cover (coveringMap folds in
+  // both leave-based and schedule-override-based covering — see
+  // TodaysRoster.tsx/RosterCycle.tsx's `cm` map). Used alongside
+  // coverForMap (leave-based only) so an officer covering another unit via a
+  // plain schedule override isn't miscounted as idle/available at their own
+  // unit. .scratch/replit-resync-2026-09-21/issues/11.
+  const coveringOfficerNameSet = useMemo<Set<string>>(
+    () => new Set(Object.values(coveringMap).map(n => n.trim().toLowerCase())),
+    [coveringMap],
+  );
+
   // ── Cross-post incoming map ────────────────────────────────────────────────────
   // Officers cross-posted away appear as [cvg] at home; build a per-unit list of
   // { name, crewPos, fromUnit } so we can render each covering officer BESIDE the
@@ -196,7 +207,8 @@ export function RosterListView({
       const onLeave = !!leaveMap[o.id];
       const duty    = dutyMap[o.id] ?? "";
       const alreadyAbsent = onLeave || ABSENT_DUTIES.has(duty)
-        || !!crossPostMap[o.id] || !!coverForMap[o.id] || !!swapMap[o.id];
+        || !!crossPostMap[o.id] || !!coverForMap[o.id] || !!swapMap[o.id]
+        || coveringOfficerNameSet.has(o.name.trim().toLowerCase());
       if (alreadyAbsent) continue;                          // normal absence, not surplus
       const destUnit = nameToUnit[coveringName.trim().toLowerCase()];
       if (!destUnit || destUnit === o.unitCode) continue;   // same unit or unknown
@@ -205,7 +217,7 @@ export function RosterListView({
       inMap[destUnit].push(o.name);
     }
     return { autoRedirectOutMap: outMap, autoRedirectInMap: inMap };
-  }, [officers, coveringMap, leaveMap, dutyMap, crossPostMap, coverForMap, swapMap]);
+  }, [officers, coveringMap, leaveMap, dutyMap, crossPostMap, coverForMap, swapMap, coveringOfficerNameSet]);
 
   // ── Strength bar ─────────────────────────────────────────────────────────────
   const { ndCount, dayCount, pdCount, minimum, isWeekend } = useMemo(() => {
@@ -341,17 +353,36 @@ export function RosterListView({
                 // ── Sequential cross-post-in matching ─────────────────────────────
                 // n-th absent home officer gets the n-th incoming cross-poster
                 // (cross-posters sorted by their home crewPosition for stability).
+                //
+                // Resolve officers with an explicit named cover (coveringMap) against
+                // the queue BY NAME first, removing matches from the pool, before
+                // falling back to positional assignment for the truly-unnamed
+                // remainder — an officer with an explicit cover must not also
+                // consume a queue slot meant for a different vacancy (previously
+                // could leave a genuine vacancy unfilled, e.g. "Syafeeq CP3 → CP2").
+                // .scratch/replit-resync-2026-09-21/issues/11.
                 const _crossPosters = (crossPostInMap[unitCode] ?? [])
                   .slice().sort((a, b) => a.crewPos - b.crewPos);
                 const _cpForId: Record<string, { name: string; fromUnit: string; duty: string }> = {};
                 {
+                  const _remaining = _crossPosters.slice();
+                  for (const o of list) {
+                    const coverName = coveringMap[o.id];
+                    if (!coverName) continue;
+                    const idx = _remaining.findIndex(
+                      cp => cp.name.trim().toLowerCase() === coverName.trim().toLowerCase(),
+                    );
+                    if (idx !== -1) _remaining.splice(idx, 1);
+                  }
                   let ai = 0;
                   for (const o of list) {
+                    if (coveringMap[o.id]) continue; // already has an explicit named cover
                     const _abs = !!autoRedirectOutMap[o.id] || !!leaveMap[o.id]
                       || ABSENT_DUTIES.has(dutyMap[o.id] ?? "") || !!crossPostMap[o.id]
-                      || !!coverForMap[o.id] || !!swapMap[o.id];
-                    if (_abs && _crossPosters[ai]) {
-                      _cpForId[o.id] = { name: _crossPosters[ai].name, fromUnit: _crossPosters[ai].fromUnit, duty: _crossPosters[ai].duty };
+                      || !!coverForMap[o.id] || !!swapMap[o.id]
+                      || coveringOfficerNameSet.has(o.name.trim().toLowerCase());
+                    if (_abs && _remaining[ai]) {
+                      _cpForId[o.id] = { name: _remaining[ai].name, fromUnit: _remaining[ai].fromUnit, duty: _remaining[ai].duty };
                       ai++;
                     }
                   }
@@ -383,7 +414,8 @@ export function RosterListView({
                     const oLeave     = !!leaveMap[o.id];
                     const oDuty      = dutyMap[o.id] ?? "";
                     const oAutoRedir = !!autoRedirectOutMap[o.id];
-                    const oAbsent    = oAutoRedir || oLeave || ABSENT_DUTIES.has(oDuty) || !!crossPostMap[o.id] || !!coverForMap[o.id] || !!swapMap[o.id];
+                    const oAbsent    = oAutoRedir || oLeave || ABSENT_DUTIES.has(oDuty) || !!crossPostMap[o.id] || !!coverForMap[o.id] || !!swapMap[o.id]
+                      || coveringOfficerNameSet.has(o.name.trim().toLowerCase());
                     const oCovered   = !!coveringMap[o.id] || !!swapMap[o.id] || !!_cpForId[o.id];
                     if (!oAbsent || oCovered) filled++;
                   }
