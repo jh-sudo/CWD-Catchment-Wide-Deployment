@@ -1,6 +1,7 @@
 import { logger } from "./lib/logger";
 import { startRadarMonitor } from "./radar-monitor.js";
 import { startLightningMonitor } from "./lightning-monitor.js";
+import { startMeetingReminderMonitor } from "./meeting-reminders.js";
 
 const rawPort = process.env["PORT"];
 
@@ -37,6 +38,7 @@ async function main() {
     logger.info({ port }, "Server listening");
     startRadarMonitor();
     startLightningMonitor();
+    startMeetingReminderMonitor();
   });
 }
 

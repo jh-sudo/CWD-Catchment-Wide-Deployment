@@ -203,6 +203,61 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
        last_run jsonb
      )`,
   );
+  await run(
+    "managers.meeting_groups",
+    `ALTER TABLE managers ADD COLUMN IF NOT EXISTS meeting_groups text[]`,
+  );
+  await run(
+    "push_subscriptions.account_id",
+    `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS account_id text REFERENCES managers(id)`,
+  );
+  await run(
+    "meetings table",
+    `CREATE TABLE IF NOT EXISTS meetings (
+       id text PRIMARY KEY,
+       title text NOT NULL,
+       location text NOT NULL,
+       organizer_id text NOT NULL REFERENCES managers(id),
+       organizer_name text NOT NULL,
+       required_attendee_ids text[] NOT NULL,
+       optional_attendee_ids text[] NOT NULL,
+       proposed_slots jsonb NOT NULL,
+       responses jsonb NOT NULL,
+       status text NOT NULL,
+       confirmed_slot_id text,
+       confirmed_at text,
+       ready_notified_at text,
+       created_at text NOT NULL,
+       updated_at text NOT NULL,
+       reminder_state jsonb NOT NULL,
+       last_response_progress jsonb,
+       last_update_notice jsonb
+     )`,
+  );
+  await run(
+    "meeting_groups table",
+    `CREATE TABLE IF NOT EXISTS meeting_groups (
+       id text PRIMARY KEY,
+       name text NOT NULL,
+       owner_id text NOT NULL REFERENCES managers(id),
+       member_ids text[] NOT NULL,
+       created_at text NOT NULL,
+       updated_at text NOT NULL
+     )`,
+  );
+  await run(
+    "manager_calendar_events table",
+    `CREATE TABLE IF NOT EXISTS manager_calendar_events (
+       id text PRIMARY KEY,
+       owner_id text NOT NULL REFERENCES managers(id),
+       type text NOT NULL,
+       start_date text NOT NULL,
+       end_date text NOT NULL,
+       note text,
+       created_at text NOT NULL,
+       updated_at text NOT NULL
+     )`,
+  );
 
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to

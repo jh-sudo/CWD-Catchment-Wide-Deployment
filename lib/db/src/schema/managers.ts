@@ -19,6 +19,11 @@ export const managersTable = pgTable(
     officerName: text("officer_name"),
     // ic: which catchments they can approve for.
     catchments: text("catchments").array(),
+    // manager: which of the fixed MANAGER_GROUPS enum (meetings.ts) this
+    // account belongs to — self-tagged, used to filter the meeting-scheduler
+    // attendee picker. Unrelated to meeting_groups (an organizer's own
+    // reusable named attendee lists). .scratch/replit-resync-2026-09-21/issues/33.
+    meetingGroups: text("meeting_groups").array(),
     pendingResetPasswordHash: text("pending_reset_password_hash"),
     pendingResetRequestedAt: timestamp("pending_reset_requested_at", { withTimezone: true }),
     // TOTP-based MFA (admin/manager/ic only — see

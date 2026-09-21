@@ -14,6 +14,7 @@ import { leaveRequestRouter } from "./leaveRequests";
 import { phRosterRouter } from "./phRoster";
 import { lightningRouter, lightningPublicRouter } from "./lightning";
 import { autoDeploymentRouter } from "./autoDeployment";
+import { meetingsRouter } from "./meetings";
 import { getSingaporeTide } from "../tide";
 
 const router: IRouter = Router();
@@ -30,6 +31,7 @@ router.use(leaveRequestRouter);
 router.use(phRosterRouter);
 router.use(lightningRouter);
 router.use(autoDeploymentRouter);
+router.use(meetingsRouter);
 
 router.get("/tide", async (_req, res) => {
   try {

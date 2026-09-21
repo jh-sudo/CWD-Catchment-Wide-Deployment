@@ -61,6 +61,11 @@ interface PushSub {
    *  means all sectors (backward compatible with subscriptions saved before
    *  this existed). .scratch/replit-resync-2026-09-21/issues/24. */
   lightningSectors?: string[];
+  /** Set from the caller's own session at subscribe-time for manager-type
+   *  subscriptions — lets sendToAccount() target one specific manager (the
+   *  meeting scheduler's invitations/reminders/progress notifications).
+   *  .scratch/replit-resync-2026-09-21/issues/33. */
+  accountId?: string;
   savedAt: string;
 }
 
@@ -79,6 +84,7 @@ function toPushSub(row: typeof pushSubscriptionsTable.$inferSelect): PushSub {
     vehicleId: row.vehicleId ?? undefined,
     officerId: row.officerId ?? undefined,
     lightningSectors: row.lightningSectors?.length ? row.lightningSectors : undefined,
+    accountId: row.accountId ?? undefined,
     savedAt: (row.savedAt ?? new Date()).toISOString(),
   };
 }
@@ -138,6 +144,16 @@ export async function sendToCrewVehicle(vehicleId: string, payload: PushPayload)
 export async function sendToCrewOfficer(officerId: string, payload: PushPayload) {
   await subsReady;
   await sendTo(subs.filter(s => s.type === "crew" && s.officerId === officerId), payload);
+}
+
+/** Send to one specific manager account, across every device they've
+ *  subscribed on. Used by the meeting scheduler (invitations, reminders,
+ *  organizer progress/ready notices) — every notification there targets one
+ *  named recipient, never a role-wide broadcast.
+ *  .scratch/replit-resync-2026-09-21/issues/33. */
+export async function sendToAccount(accountId: string, payload: PushPayload) {
+  await subsReady;
+  await sendTo(subs.filter(s => s.type === "manager" && s.accountId === accountId), payload);
 }
 
 /**
@@ -205,6 +221,12 @@ router.post("/push/subscribe", async (req, res) => {
     if (normalized.length) normalizedLightningSectors = normalized;
   }
 
+  // Never trusts a client-supplied account id — a manager subscription is
+  // always tagged with whoever the session actually says is logged in, so
+  // one account can never subscribe on another's behalf.
+  // .scratch/replit-resync-2026-09-21/issues/33.
+  const accountId = type === "manager" ? (req.session!.managerId ?? null) : null;
+
   const savedAt = new Date();
   await db
     .insert(pushSubscriptionsTable)
@@ -216,6 +238,7 @@ router.post("/push/subscribe", async (req, res) => {
       vehicleId: vehicleId ?? null,
       officerId: officerId ?? null,
       lightningSectors: normalizedLightningSectors,
+      accountId,
       savedAt,
     })
     .onConflictDoUpdate({
@@ -227,6 +250,7 @@ router.post("/push/subscribe", async (req, res) => {
         vehicleId: vehicleId ?? null,
         officerId: officerId ?? null,
         lightningSectors: normalizedLightningSectors,
+        accountId,
         savedAt,
       },
     });
