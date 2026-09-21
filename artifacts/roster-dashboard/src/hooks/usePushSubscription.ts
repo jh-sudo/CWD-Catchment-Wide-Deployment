@@ -1,15 +1,28 @@
 import { useEffect, useRef } from "react";
 
+interface PushSubscriptionUser {
+  role: string;
+  officerId?: string;
+}
+
 /**
- * Registers the roster service worker and subscribes the current crew member
- * to web push notifications. Safe to call on every render — only runs once
- * per browser session (deduped by SW registration state).
+ * Registers the roster service worker and subscribes the current account to
+ * web push notifications. Safe to call on every render — only runs once per
+ * browser session (deduped by SW registration state).
+ *
+ * Takes the full user (not just a crew officerId) so every role gets
+ * subscribed, not just crew — the backend's push type is "crew" (tagged with
+ * officerId, for per-officer sends) vs "manager" (a catch-all for
+ * admin/manager/ic, used for broadcast-to-managers sends).
+ * .scratch/replit-resync-2026-09-21/issues/18.
  */
-export function usePushSubscription(officerId: string | undefined) {
+export function usePushSubscription(user: PushSubscriptionUser | undefined | null) {
   const subscribedRef = useRef(false);
 
   useEffect(() => {
-    if (!officerId) return;
+    if (!user) return;
+    const type = user.role === "crew" ? "crew" : "manager";
+    if (type === "crew" && !user.officerId) return;
     if (subscribedRef.current) return;
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
 
@@ -37,18 +50,18 @@ export function usePushSubscription(officerId: string | undefined) {
           applicationServerKey: urlBase64ToUint8Array(publicKey),
         });
 
-        // 5. Register with server, tagging with officerId
+        // 5. Register with server, tagging with type + officerId (crew only)
         await fetch("/api/push/subscribe", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({ subscription, type: "crew", officerId }),
+          body: JSON.stringify({ subscription, type, officerId: type === "crew" ? user.officerId : undefined }),
         });
       } catch {
         // Non-fatal — push is best-effort
       }
     })();
-  }, [officerId]);
+  }, [user?.role, user?.officerId]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function urlBase64ToUint8Array(base64String: string): Uint8Array<ArrayBuffer> {

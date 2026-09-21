@@ -67,16 +67,16 @@ export default function RosterCycle() {
     const ds = format(date, "yyyy-MM-dd");
     activeLoadDateRef.current = ds;
     try {
-      const [schedRes, leaveRes] = await Promise.all([
+      const [schedRes, leaveRes, vehicleRes] = await Promise.all([
         fetch(`/api/roster-plan/schedule?date=${ds}`),
         fetch(`/api/roster-plan/leave?date=${ds}`),
+        fetch(`/api/vehicle-arrangement/officer-map?date=${ds}`),
       ]);
       const sched = schedRes.ok ? await schedRes.json() : { duties: [] };
       const dm: Record<string, string> = {};
       const tdm: Record<string, string> = {};
       const cpm: Record<string, string> = {};
       const cm: Record<string, string> = {};
-      const vm: Record<string, string> = {};
       const sm: Record<string, string> = {};
       const comm: Record<string, string> = {};
       for (const d of sched.duties ?? []) {
@@ -85,11 +85,16 @@ export default function RosterCycle() {
           if (d.targetDuty)               tdm[d.officerId] = d.targetDuty;
           if (d.crossPostedToUnit)        cpm[d.officerId] = d.crossPostedToUnit;
           if (d.coveredByOfficerName)     cm[d.officerId] = d.coveredByOfficerName;
-          if (d.vehicle)                  vm[d.officerId] = d.vehicle;
           if (d.swappedWithOfficerName)   sm[d.officerId] = d.swappedWithOfficerName;
           if (d.comment)                  comm[d.officerId] = d.comment;
         }
       }
+      // Server-resolved daily plate (one per effective unit, cascade-aware) —
+      // not the per-officer override's bare `vehicle` field, which is usually
+      // blank and never reflects a reassignment.
+      // .scratch/replit-resync-2026-09-21/issues/05.
+      const vehicleData = vehicleRes.ok ? await vehicleRes.json() : { officerMap: {} };
+      const vm: Record<string, string> = vehicleData.officerMap ?? {};
       // Stale guard: if the user has navigated to a different date since this
       // fetch started, drop the response instead of overwriting fresher state.
       if (activeLoadDateRef.current !== ds) return;

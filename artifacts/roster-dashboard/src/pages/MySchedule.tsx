@@ -50,6 +50,8 @@ export default function MySchedule() {
   const [dutyMap, setDutyMap] = useState<Record<string, string>>({});
   const [targetDutyMap, setTargetDutyMap] = useState<Record<string, string>>({});
   const [partnerDutyMap, setPartnerDutyMap] = useState<Record<string, string>>({});
+  const [actualPartnerMap, setActualPartnerMap] = useState<Record<string, string>>({});
+  const [selectedDayVehicle, setSelectedDayVehicle] = useState<string | null>(null);
   const [leaveSet, setLeaveSet] = useState<Record<string, string>>({});
   const [crossPostDaySet, setCrossPostDaySet] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -91,6 +93,7 @@ export default function MySchedule() {
       const pdm: Record<string, string> = {};
       const lm: Record<string, string> = {};
       const cpds = new Set<string>();
+      const dutiesByDate: Record<string, any[]> = {};
       for (const s of schedParts) {
         for (const d of s.duties ?? []) {
           const date = d.date?.slice(0, 10);
@@ -102,8 +105,48 @@ export default function MySchedule() {
             if (d.crossPostedToUnit) cpds.add(date);
           }
           if (partner?.id && d.officerId === partner.id) pdm[date] = d.duty;
+          if (!dutiesByDate[date]) dutiesByDate[date] = [];
+          dutiesByDate[date].push(d);
         }
       }
+      // Determine actual partner per day — handles the user being cross-posted
+      // elsewhere (look at the destination unit instead of home), and a
+      // covering officer standing in for an on-leave partner. Previously
+      // always showed the static home-unit partner regardless of the day.
+      // .scratch/replit-resync-2026-09-21/issues/14.
+      const homeUnitCode = myOfficer?.unitCode ?? "";
+      const officerById = new Map((officers ?? []).map((o: any) => [o.id, o]));
+      const WORKING = new Set(["ND", "DAY", "PD"]);
+      const apm: Record<string, string> = {};
+      for (const [date, dayDuties] of Object.entries(dutiesByDate)) {
+        const selfRow = dayDuties.find((d: any) => d.officerId === user.officerId);
+        const effectiveUnitCode = selfRow?.crossPostedToUnit || homeUnitCode;
+        const sameUnitIds = new Set(
+          (officers ?? [])
+            .filter((o: any) => o.unitCode === effectiveUnitCode && o.id !== user.officerId)
+            .map((o: any) => o.id)
+        );
+        let pname = "";
+        for (const d of dayDuties) {
+          if (!sameUnitIds.has(d.officerId) || d.crossPostedToUnit) continue;
+          if (WORKING.has(d.duty)) { pname = (officerById.get(d.officerId) as any)?.name ?? ""; break; }
+        }
+        if (!pname) {
+          for (const d of dayDuties) {
+            if (d.crossPostedToUnit !== effectiveUnitCode || d.officerId === user.officerId) continue;
+            pname = (officerById.get(d.officerId) as any)?.name ?? "";
+            if (pname) break;
+          }
+        }
+        if (!pname) {
+          for (const d of dayDuties) {
+            if (!sameUnitIds.has(d.officerId)) continue;
+            if (d.coveredByOfficerName) { pname = d.coveredByOfficerName; break; }
+          }
+        }
+        if (pname) apm[date] = pname;
+      }
+      setActualPartnerMap(apm);
       // Augment with formal leave requests (AL, MC, etc.) — no month restriction
       for (const l of leaves) {
         const d = l.date?.slice(0, 10);
@@ -120,6 +163,19 @@ export default function MySchedule() {
   }, [user?.officerId, viewMonth, partner?.id, version]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const days = useMemo(() => calendarDays(viewMonth), [viewMonth]);
+
+  // Server-resolved daily plate for the selected day — not the officer's
+  // static home-vehicle field, which never reflects a reassignment.
+  // .scratch/replit-resync-2026-09-21/issues/05.
+  useEffect(() => {
+    if (!selectedDay || !user?.officerId) { setSelectedDayVehicle(null); return; }
+    let cancelled = false;
+    fetch(`/api/vehicle-arrangement/officer-map?date=${selectedDay}`)
+      .then(r => r.ok ? r.json() : { officerMap: {} })
+      .then(data => { if (!cancelled) setSelectedDayVehicle(data.officerMap?.[user.officerId!] ?? null); })
+      .catch(() => { if (!cancelled) setSelectedDayVehicle(null); });
+    return () => { cancelled = true; };
+  }, [selectedDay, user?.officerId, version]);
 
   const navigateDay = (direction: 1 | -1) => {
     const base = selectedDay ? parseISO(selectedDay) : new Date();
@@ -303,19 +359,24 @@ export default function MySchedule() {
                     const showBoth = selTarget && selDuty && selDuty !== selTarget;
                     const actualIsLeave = !!selLeave || (selDuty ? LEAVE_DUTIES.has(selDuty) : false);
                     if (!selTarget && !selDuty) return <span className="text-xs text-muted-foreground italic">No data</span>;
+                    // Primary badge = actual duty (falling back to scheduled) so an
+                    // officer on approved leave sees that prominently instead of
+                    // their original working shift.
+                    // .scratch/replit-resync-2026-09-21/issues/14.
+                    const primaryDuty = selDuty ?? selTarget;
                     return (
                       <div className="space-y-1">
                         <div className="flex flex-col gap-0.5">
-                          <span className="text-[9px] text-muted-foreground font-medium">Scheduled</span>
-                          <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded border inline-block", DUTY_COLORS[selTarget ?? selDuty ?? ""] ?? "bg-muted text-foreground border-border")}>
-                            {selTarget ?? selDuty}
+                          <span className="text-[9px] text-muted-foreground font-medium">{showBoth ? "Actual" : "Scheduled"}</span>
+                          <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded border inline-block", actualIsLeave ? LEAVE_COLOR : (DUTY_COLORS[primaryDuty ?? ""] ?? "bg-muted text-foreground border-border"))}>
+                            {primaryDuty}
                           </span>
                         </div>
                         {showBoth && (
                           <div className="flex flex-col gap-0.5">
-                            <span className="text-[9px] text-muted-foreground font-medium">Actual</span>
-                            <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded border inline-block", actualIsLeave ? LEAVE_COLOR : (DUTY_COLORS[selDuty!] ?? "bg-muted text-foreground border-border"))}>
-                              {selDuty}
+                            <span className="text-[9px] text-muted-foreground font-medium">Scheduled</span>
+                            <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded border inline-block", DUTY_COLORS[selTarget!] ?? "bg-muted text-foreground border-border")}>
+                              {selTarget}
                             </span>
                           </div>
                         )}
@@ -327,25 +388,32 @@ export default function MySchedule() {
                 {/* Partner */}
                 <div className="px-4 py-3 space-y-1.5">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Partner</p>
-                  {partner ? (
-                    <div className="space-y-0.5">
-                      <p className="text-xs font-semibold leading-tight">{partner.name}</p>
-                      {partDuty && (
-                        <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded border inline-block", DUTY_COLORS[partDuty] ?? "bg-muted text-foreground border-border")}>
-                          {partDuty}
-                        </span>
-                      )}
-                    </div>
-                  ) : (
-                    <span className="text-xs text-muted-foreground italic">—</span>
-                  )}
+                  {(() => {
+                    // Resolved per-day partner — see the apm computation above for why
+                    // this can differ from the static home-unit partner.
+                    // .scratch/replit-resync-2026-09-21/issues/14.
+                    const resolvedName = selectedDay ? actualPartnerMap[selectedDay] : undefined;
+                    const displayName = resolvedName ?? partner?.name;
+                    const showStaticDuty = !!displayName && displayName === partner?.name;
+                    if (!displayName) return <span className="text-xs text-muted-foreground italic">—</span>;
+                    return (
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-semibold leading-tight">{displayName}</p>
+                        {showStaticDuty && partDuty && (
+                          <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded border inline-block", DUTY_COLORS[partDuty] ?? "bg-muted text-foreground border-border")}>
+                            {partDuty}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Vehicle */}
                 <div className="px-4 py-3 space-y-1.5">
                   <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Vehicle</p>
-                  {myOfficer?.vehicle ? (
-                    <p className="text-xs font-semibold">{myOfficer.vehicle}</p>
+                  {selectedDayVehicle ? (
+                    <p className="text-xs font-semibold">{selectedDayVehicle}</p>
                   ) : (
                     <span className="text-xs text-muted-foreground italic">—</span>
                   )}

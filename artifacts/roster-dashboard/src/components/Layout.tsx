@@ -18,6 +18,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useRosterVersion } from "@/context/RosterVersionContext";
 import { usePushSubscription } from "@/hooks/usePushSubscription";
 import { getContrastColor } from "@/lib/contrast";
+import { useToast } from "@/hooks/use-toast";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -139,9 +140,11 @@ export function Layout({ children }: LayoutProps) {
   const [location] = useLocation();
   const { user, logout } = useAuth();
   const { dark, toggleTheme } = useTheme();
+  const { toast } = useToast();
 
-  // Subscribe crew accounts to push notifications so they receive leave/swap updates
-  usePushSubscription(user?.role === "crew" ? user.officerId : undefined);
+  // Subscribe every role to push notifications, not just crew — see
+  // usePushSubscription's own comment. .scratch/replit-resync-2026-09-21/issues/18.
+  usePushSubscription(user);
 
   // Role-based nav items
   const navItems = useMemo(() => {
@@ -251,9 +254,16 @@ export function Layout({ children }: LayoutProps) {
   };
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(summaryText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(summaryText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can throw without a user gesture, on non-HTTPS, or
+      // in embedded/older mobile browsers — surface it instead of failing
+      // silently. .scratch/replit-resync-2026-09-21/issues/13.
+      toast({ title: "Copy failed", description: "Could not copy the summary to the clipboard.", variant: "destructive" });
+    }
   };
 
   const queryClient = useQueryClient();
