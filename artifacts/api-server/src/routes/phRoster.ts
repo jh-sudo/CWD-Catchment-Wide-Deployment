@@ -1164,6 +1164,61 @@ function autoAllocate(
   return { result, hrBallot, rotIdx, targetYear };
 }
 
+// Generation-time safety nets, run after autoAllocate() returns and before
+// persisting — throw rather than silently persist a roster that violates
+// either invariant. Ported from Replit's assertNoHRCrossHolidayDoubleDuty /
+// assertBalancedPHCounts. .scratch/replit-resync-2026-09-21/issues/07.
+function assertNoHRCrossHolidayDoubleDuty(generated: PHRosterRef, slots: PHSlot[]): void {
+  const puasaDate = slots.find((s) => !s.isOilCopy && s.phName === "Hari Raya Puasa")?.date;
+  const hajiDate = slots.find((s) => !s.isOilCopy && s.phName === "Hari Raya Haji")?.date;
+  if (!puasaDate || !hajiDate) return;
+  const namesOn = (date: string) =>
+    new Set(
+      (generated[date] ?? [])
+        .map((r) => (r.actualName || r.scheduledName || "").trim())
+        .filter(Boolean),
+    );
+  const both = [...namesOn(puasaDate)].filter((n) => namesOn(hajiDate).has(n));
+  if (both.length > 0) {
+    throw new Error(
+      `Generated roster assigns ${both.join(", ")} to both Hari Raya Puasa and Hari Raya Haji in the same year — refusing to save.`,
+    );
+  }
+}
+
+function assertBalancedPHCounts(generated: PHRosterRef, slots: PHSlot[], eligibleNames: string[]): void {
+  const eligible = new Set(eligibleNames);
+  const counts = new Map<string, number>(eligibleNames.map((n) => [n, 0]));
+  const ineligibleAssigned = new Set<string>();
+  for (const slot of slots) {
+    if (slot.isOilCopy) continue; // in-lieu rows duplicate the original PH's names — would double-count
+    for (const row of generated[slot.date] ?? []) {
+      const name = (row.actualName || row.scheduledName || "").trim();
+      if (!name) continue;
+      if (!eligible.has(name)) { ineligibleAssigned.add(name); continue; }
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
+  if (ineligibleAssigned.size > 0) {
+    throw new Error(
+      `Generated roster assigns PH duty to ineligible officer(s): ${[...ineligibleAssigned].join(", ")} — refusing to save.`,
+    );
+  }
+  const values = [...counts.values()];
+  if (values.length === 0) return;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  // autoAllocate's own swap loop already tries to reach exactly this state
+  // (balanced within 1) and only gives up when it truly can't improve
+  // further — a violation here indicates a genuine generation bug, not a
+  // normal edge case.
+  if (max - min > 1) {
+    throw new Error(
+      `Generated roster's PH-duty counts are unbalanced (min ${min}, max ${max}) — refusing to save.`,
+    );
+  }
+}
+
 // POST /api/ph-roster-ref/auto-allocate — generate PH roster for a year (manager+)
 phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, res) => {
   const { targetYear = 2027, dryRun = false } = req.body as {
@@ -1202,6 +1257,17 @@ phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, 
   // possibly-stale saved pool. The persisted ph_hr_ballot_state row below is
   // written for GET /ph-roster-ref/hr-ballot-pool to read without re-deriving.
   const { result: generated, hrBallot, rotIdx, targetYear: yr } = autoAllocate(officers, slots, savedRef, rotState);
+
+  try {
+    const eligibleNames = officers
+      .filter((o) => o.unitCode && o.unitCode.toUpperCase() !== "TBC")
+      .map((o) => o.name);
+    assertNoHRCrossHolidayDoubleDuty(generated, slots);
+    assertBalancedPHCounts(generated, slots, eligibleNames);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+    return;
+  }
 
   if (!dryRun) {
     await db.transaction(async (tx) => {
