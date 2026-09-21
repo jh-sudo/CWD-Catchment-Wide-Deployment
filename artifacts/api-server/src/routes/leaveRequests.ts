@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { eq, and, ne, isNotNull } from "drizzle-orm";
 import { requireManager } from "./auth.js";
 import type { ManagerAccount } from "./auth.js";
 import { getManager } from "./auth.js";
@@ -233,9 +233,61 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
   let coverOfficer: Officer | undefined;
   let coverOfficerName: string | undefined;
   if (coverOfficerId) {
+    if (coverOfficerId === officerId) {
+      res.status(400).json({ error: "An officer cannot cover their own leave" }); return;
+    }
     coverOfficer = officers.find(o => o.id === coverOfficerId);
     if (!coverOfficer) { res.status(404).json({ error: "Cover officer not found" }); return; }
     coverOfficerName = coverOfficer.name;
+  }
+
+  // Cover-officer validation — without this, any approved account could
+  // apply DAY/PD leave with no cover at all (a silently unfilled shift), or
+  // assign a cover officer who is themselves working, already on leave, or
+  // already covering someone else that date. Found via a Replit-resync diff
+  // triage (.scratch/replit-resync-2026-09-21/issues/03).
+  {
+    const utcDay = new Date(date + "T00:00:00Z").getUTCDay();
+    const isWeekend = utcDay === 0 || utcDay === 6;
+    const absentDuty = await getScheduledDuty(officer.unitCode, date);
+
+    if (!coverOfficer && (absentDuty === "DAY" || absentDuty === "PD")) {
+      res.status(400).json({ error: "A cover officer is required for DAY/PD duty" }); return;
+    }
+
+    if (coverOfficer) {
+      const coverDuty = await getScheduledDuty(coverOfficer.unitCode, date);
+      const eligible = isWeekend
+        ? coverDuty === "OFF" || coverDuty === "REST"
+        : coverDuty === "ND" || coverDuty === "OFF";
+      if (!eligible) {
+        res.status(400).json({
+          error: `${coverOfficer.name} is not available to cover on ${date} (scheduled ${coverDuty})`,
+        });
+        return;
+      }
+      const [selfOnLeave] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.officerId, coverOfficer.id)));
+      if (selfOnLeave) {
+        res.status(409).json({ error: `${coverOfficer.name} is already on leave on ${date}` }); return;
+      }
+      const [alreadyCovering] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(
+          and(
+            eq(rosterLeavesTable.date, date),
+            eq(rosterLeavesTable.coveringOfficerId, coverOfficer.id),
+            ne(rosterLeavesTable.officerId, officerId),
+          ),
+        );
+      if (alreadyCovering) {
+        res.status(409).json({ error: `${coverOfficer.name} is already covering another officer on ${date}` });
+        return;
+      }
+    }
   }
 
   // Prevent duplicate for same officer + date
