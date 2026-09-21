@@ -297,13 +297,14 @@ vehicleArrangementRouter.post("/vehicle-arrangement", requireManager, async (req
 // in the vehicle. Confirmed correct as of 2026-09-08 QA
 // (.scratch/roster-qa/issues/), just orphaned — don't assume dead code, but
 // don't be surprised it has no caller either.
-vehicleArrangementRouter.get("/vehicle-arrangement/officer-map", requireManager, async (req, res) => {
-  const date = (req.query.date as string | undefined)?.slice(0, 10);
-  if (!date) {
-    res.status(400).json({ error: "date required" });
-    return;
-  }
-
+// Factored out of the route below so server-side callers (e.g. rosterPlan.ts's
+// buildSummary()) can resolve the same per-officer plate without an HTTP
+// self-call — see .scratch/replit-resync-2026-09-21/issues/05. Note this
+// creates a two-way import between this file and rosterPlan.ts (which already
+// imports several functions from here); safe because every function on both
+// sides is only ever called from inside request handlers, never at module
+// top level, so the cycle never runs during module evaluation.
+export async function resolveOfficerVehicleMap(date: string): Promise<Record<string, string>> {
   const savedRows = await db.select().from(rosterVehicleArrangementsTable).where(eq(rosterVehicleArrangementsTable.date, date));
   const { resolved } = await resolveDutiesForDate(date);
 
@@ -366,5 +367,15 @@ vehicleArrangementRouter.get("/vehicle-arrangement/officer-map", requireManager,
     );
     officerMap[list[0].officer.id] = plate;
   }
+  return officerMap;
+}
+
+vehicleArrangementRouter.get("/vehicle-arrangement/officer-map", requireManager, async (req, res) => {
+  const date = (req.query.date as string | undefined)?.slice(0, 10);
+  if (!date) {
+    res.status(400).json({ error: "date required" });
+    return;
+  }
+  const officerMap = await resolveOfficerVehicleMap(date);
   res.json({ date, officerMap });
 });

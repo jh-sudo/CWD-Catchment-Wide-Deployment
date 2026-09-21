@@ -23,6 +23,13 @@ import {
 } from "@workspace/db";
 import { getManager, requireManager } from "./auth.js";
 import { appendActivityLog, getActivityLog } from "../lib/activityLog.js";
+// vehicleArrangement.ts already imports several functions from this file;
+// this is the reverse edge of that same (safe) cycle — see
+// resolveOfficerVehicleMap's own comment for why. Used by buildSummary() so
+// the FIRB deployment text shows the day's actual vehicle arrangement
+// instead of an officer's static home-vehicle field.
+// .scratch/replit-resync-2026-09-21/issues/05.
+import { resolveOfficerVehicleMap } from "./vehicleArrangement.js";
 
 // ── Cycle patterns ─────────────────────────────────────────────────────────────
 const DAYS_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -334,6 +341,7 @@ function buildSummary(
   config: RosterConfigShape,
   overrides: RosterOverride[],
   leaves: RosterLeave[],
+  officerVehicleMap: Record<string, string>,
 ): string {
   const d = new Date(dateStr + "T00:00:00Z");
   const monday = getMondayOf(d);
@@ -441,7 +449,12 @@ function buildSummary(
     // Suppress the unit's vehicle when ALL regular crew are cross-posted elsewhere —
     // their vehicle travels with them; the covering ND officer brings no vehicle.
     const hasAnchorCrew = crew.some(c => !c.crossPostedToUnit);
-    const vehicle = hasAnchorCrew ? (crew[0].officer.vehicle || "") : "";
+    // Server-resolved daily plate (officerVehicleMap, from vehicle-arrangement's
+    // cascade), not the officer's static home-vehicle field — a reassigned
+    // plate or a unit with nobody actually working must never show the wrong
+    // (or a stale) vehicle. .scratch/replit-resync-2026-09-21/issues/05.
+    const plateHolder = crew.find(c => officerVehicleMap[c.officer.id]);
+    const vehicle = hasAnchorCrew && plateHolder ? officerVehicleMap[plateHolder.officer.id] : "";
     const isBlock1 = BLOCK1_CATCHMENTS.has(crew[0].officer.catchment);
 
     // Unit's operational duty: use actualDuty of first non-absent shift worker (reflects
@@ -1062,9 +1075,10 @@ rosterPlanRouter.get("/roster-plan/summary", async (req, res) => {
 
   const overrides = await loadOverridesForDates([dateStr]);
   const leaves = await loadLeavesForDates([dateStr]);
+  const officerVehicleMap = await resolveOfficerVehicleMap(dateStr);
 
   const officersInRotation = officers.filter((o) => o.active && o.teamSlot <= config.teamCount);
-  const text = buildSummary(dateStr, officersInRotation, config, overrides, leaves);
+  const text = buildSummary(dateStr, officersInRotation, config, overrides, leaves, officerVehicleMap);
   res.json({ date: dateStr, text });
 });
 

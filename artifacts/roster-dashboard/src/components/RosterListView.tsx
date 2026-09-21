@@ -632,13 +632,14 @@ export function RosterListView({
 
                     </div>
 
-                    {/* Vehicle plate — override vehicle takes priority over officer record */}
-                    {(vehicleMap[firstId] ?? list[0]?.vehicle) && (
-                      <span className={cn(
-                        "text-[10px] font-mono shrink-0",
-                        vehicleMap[firstId] ? "text-orange-600 font-semibold" : "text-gray-500"
-                      )}>
-                        {vehicleMap[firstId] ?? list[0]?.vehicle}
+                    {/* Vehicle plate — one eligible officer per unit receives the daily
+                        server-resolved plate (vehicleMap, from vehicle-arrangement's
+                        cascade); never fall back to an officer's static ownership
+                        record, which never reflects a reassignment and can be wrong.
+                        .scratch/replit-resync-2026-09-21/issues/05. */}
+                    {vehicleMap[firstId] && (
+                      <span className="text-[10px] font-mono shrink-0 text-orange-600 font-semibold">
+                        {vehicleMap[firstId]}
                       </span>
                     )}
 

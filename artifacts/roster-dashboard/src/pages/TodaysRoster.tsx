@@ -11,8 +11,10 @@ import { useGetRosterOfficers } from "@workspace/api-client-react";
 import { RosterListView, ABSENT_DUTIES } from "@/components/RosterListView";
 import { usePHActuals, SG_PH_META_MAP } from "@/lib/usePHActuals";
 import { PHActualPanel } from "@/components/PHActualPanel";
+import { useToast } from "@/hooks/use-toast";
 
 export default function TodaysRoster() {
+  const { toast } = useToast();
   const todayStr = useMemo(() => format(new Date(), "yyyy-MM-dd"), []);
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const { data: officers, isLoading: officersLoading } = useGetRosterOfficers();
@@ -118,26 +120,29 @@ export default function TodaysRoster() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // silent fail — clipboard unavailable or API error
+      // Clipboard access can throw without a user gesture, on non-HTTPS, or
+      // in embedded/older mobile browsers — surface it instead of failing
+      // silently. .scratch/replit-resync-2026-09-21/issues/13.
+      toast({ title: "Copy failed", description: "Could not copy the deployment summary to the clipboard.", variant: "destructive" });
     } finally {
       setCopying(false);
     }
-  }, [selectedDate]);
+  }, [selectedDate, toast]);
 
   const load = useCallback(async (dateStr: string) => {
     activeLoadDateRef.current = dateStr;
     setFetching(true);
     try {
-      const [schedRes, leaveRes] = await Promise.all([
+      const [schedRes, leaveRes, vehicleRes] = await Promise.all([
         fetch(`/api/roster-plan/schedule?date=${dateStr}`),
         fetch(`/api/roster-plan/leave?date=${dateStr}`),
+        fetch(`/api/vehicle-arrangement/officer-map?date=${dateStr}`),
       ]);
       const sched = schedRes.ok ? await schedRes.json() : { duties: [] };
       const dm: Record<string, string> = {};
       const tdm: Record<string, string> = {};
       const cpm: Record<string, string> = {};
       const cm: Record<string, string> = {};
-      const vm: Record<string, string> = {};
       const sm: Record<string, string> = {};
       const comm: Record<string, string> = {};
       for (const d of sched.duties ?? []) {
@@ -146,11 +151,16 @@ export default function TodaysRoster() {
           if (d.targetDuty)             tdm[d.officerId] = d.targetDuty;
           if (d.crossPostedToUnit)      cpm[d.officerId] = d.crossPostedToUnit;
           if (d.coveredByOfficerName)   cm[d.officerId] = d.coveredByOfficerName;
-          if (d.vehicle)                vm[d.officerId] = d.vehicle;
           if (d.swappedWithOfficerName) sm[d.officerId] = d.swappedWithOfficerName;
           if (d.comment)                comm[d.officerId] = d.comment;
         }
       }
+      // Server-resolved daily plate (one per effective unit, cascade-aware) —
+      // not the per-officer override's bare `vehicle` field, which is usually
+      // blank and never reflects a reassignment.
+      // .scratch/replit-resync-2026-09-21/issues/05.
+      const vehicleData = vehicleRes.ok ? await vehicleRes.json() : { officerMap: {} };
+      const vm: Record<string, string> = vehicleData.officerMap ?? {};
       // Stale guard: if the user has navigated to a different date since this
       // fetch started, drop the response instead of overwriting fresher state.
       if (activeLoadDateRef.current !== dateStr) return;
