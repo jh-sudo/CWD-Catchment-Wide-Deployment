@@ -852,13 +852,16 @@ async function syncDeploymentRosterFromCentralSource(): Promise<void> {
 }
 
 // ── Roster endpoints ──────────────────────────────────────────────────────────
-router.post("/roster/import", requireManager, (req, res) => {
-  const { text, merge } = req.body as { text: string; merge?: boolean };
-  if (!text) { res.status(400).json({ error: "text required" }); return; }
+// Factored out of the route handler so autoDeployment.ts can trigger the same
+// import path directly (in-process function call) rather than an internal
+// HTTP self-call requiring its own auth story.
+// .scratch/replit-resync-2026-09-21/issues/32.
+export function importRosterText(text: string, merge?: boolean): {
+  count: number; teams: RosterTeam[]; deploymentDate: string; duplicateUnits: string[];
+} | { error: string; message: string } {
   const { teams, duplicateUnits } = parseRoster(text);
   if (!teams.length) {
-    res.status(400).json({ error: "no_teams", message: "No valid team lines found. Format: BU1 TST0004A: Name & Name (DAY)" });
-    return;
+    return { error: "no_teams", message: "No valid team lines found. Format: BU1 TST0004A: Name & Name (DAY)" };
   }
   const previousRoster = currentRoster;
   if (merge && currentRoster.length > 0) {
@@ -875,7 +878,15 @@ router.post("/roster/import", requireManager, (req, res) => {
   bumpState();
   persistRoster();
   persistSettings();
-  res.json({ success: true, count: teams.length, teams: currentRoster, deploymentDate, duplicateUnits });
+  return { count: teams.length, teams: currentRoster, deploymentDate, duplicateUnits };
+}
+
+router.post("/roster/import", requireManager, (req, res) => {
+  const { text, merge } = req.body as { text: string; merge?: boolean };
+  if (!text) { res.status(400).json({ error: "text required" }); return; }
+  const result = importRosterText(text, merge);
+  if ("error" in result) { res.status(400).json(result); return; }
+  res.json({ success: true, ...result });
 });
 
 router.get("/roster", async (req, res) => {
@@ -883,12 +894,24 @@ router.get("/roster", async (req, res) => {
   res.json({ teams: currentRoster });
 });
 
-router.delete("/roster", requireManager, (req, res) => {
+export function clearRoster(): void {
   currentRoster = [];
   bumpState();
   persistRoster();
+}
+
+router.delete("/roster", requireManager, (req, res) => {
+  clearRoster();
   res.json({ success: true });
 });
+
+// .scratch/replit-resync-2026-09-21/issues/32 — factored out for autoDeployment.ts.
+export function setActiveShiftsFiltered(shifts: string[]): string[] {
+  activeShifts = shifts.filter(s => ["DAY", "PD", "ND"].includes(s));
+  if (activeShifts.length === 0) activeShifts = ["DAY", "PD", "ND"];
+  persistSettings();
+  return activeShifts;
+}
 
 router.post("/roster/active-shifts", (req, res) => {
   const { shifts } = req.body as { shifts: string[] };
@@ -896,10 +919,7 @@ router.post("/roster/active-shifts", (req, res) => {
     res.status(400).json({ error: "shifts array required (e.g. [\"DAY\",\"PD\"])" });
     return;
   }
-  activeShifts = shifts.filter(s => ["DAY", "PD", "ND"].includes(s));
-  if (activeShifts.length === 0) activeShifts = ["DAY", "PD", "ND"];
-  persistSettings();
-  res.json({ success: true, activeShifts });
+  res.json({ success: true, activeShifts: setActiveShiftsFiltered(shifts) });
 });
 
 router.post("/roster/active-teams", (req, res) => {
@@ -915,9 +935,8 @@ router.post("/roster/active-teams", (req, res) => {
 });
 
 // ── Alert endpoints ───────────────────────────────────────────────────────────
-router.post("/alert/broadcast", requireManager, (req, res) => {
-  const { text } = req.body as { text: string };
-  if (!text) { res.status(400).json({ error: "text required" }); return; }
+// .scratch/replit-resync-2026-09-21/issues/32 — factored out for autoDeployment.ts.
+export function broadcastAlertText(text: string): string {
   const extracted = extractAlertText(text);
   activeAlert = {
     id: Date.now().toString(),
@@ -934,7 +953,6 @@ router.post("/alert/broadcast", requireManager, (req, res) => {
     }),
     `alert ${activeAlert.id}`,
   );
-  res.json({ success: true, extracted });
 
   // Push to managers and all crew
   const pushPayload = {
@@ -945,6 +963,14 @@ router.post("/alert/broadcast", requireManager, (req, res) => {
   };
   sendToManagers(pushPayload).catch(() => {});
   broadcastToCrew({ ...pushPayload, url: "/" }).catch(() => {});
+  return extracted;
+}
+
+router.post("/alert/broadcast", requireManager, (req, res) => {
+  const { text } = req.body as { text: string };
+  if (!text) { res.status(400).json({ error: "text required" }); return; }
+  const extracted = broadcastAlertText(text);
+  res.json({ success: true, extracted });
 });
 
 router.get("/alert", (req, res) => {

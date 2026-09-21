@@ -22,14 +22,19 @@ excluded per the original migration decision.
 - `strength.ts` / `phStrength.ts` / `phUnitOrder.ts` / `clipboard.ts` — not a separate feature,
   just plumbing the in-scope pages below now depend on. Ported alongside those tickets rather
   than as its own decision.
-- **Auto-deployment on Heavy Rain Warning — approved, with a condition: must default OFF, admin
-  AND manager can toggle.** User's call: port it, but the enable toggle (already present in
-  Replit's own version — `/auto-deployment/status`, `/auto-deployment/enabled`, surfaced in
-  `manager.ts`'s UI) must default to disabled; admin/manager can turn it on explicitly.
-  **Verified**: Replit's own `auto-deployment.ts` already defaults `enabled: false` (line 26), so
-  no override needed there — just port as-is. **One real gap to fix while porting**: Replit gates
-  `POST /auto-deployment/enabled` with `requireAdmin` only — widen to `requireAdminOrManager` (or
-  equivalent) to match the user's explicit ask that manager can toggle it too, not just admin.
+- ~~**Auto-deployment on Heavy Rain Warning**~~ — **Done, see
+  [32](issues/32-auto-deployment-heavy-rain-warning.md).** Approved with conditions (default OFF,
+  admin+manager can toggle) — both honored. Two things surfaced mid-port and were put to the user:
+  this repo has no automated SMS relay (`wls-android-forwarder` is out of scope), so "auto" means
+  "once a manager pastes a Heavy Rain Warning into the existing WLS panel, the system handles the
+  refresh/broadcast steps automatically" rather than a fully unattended pipeline; and reference's
+  own final auto-assign step is a no-op in practice (needs rain scores only ever computed
+  client-side via canvas) — user confirmed stopping the pipeline after the alert broadcast rather
+  than porting a silent no-op or inventing a bigger server-side rain-scoring replacement.
+  Architecture also adapted: reference's internal HTTP self-calls would 401 against this repo's
+  auth-gated equivalents, so switched to direct in-process function calls (factored out of
+  `deployments.ts`'s existing route handlers), matching the precedent already set by
+  `lightning-monitor.ts`.
 - **AI Flood Scan — declined, not porting.** User's call after hearing the cost-tracking
   implication (implies a metered/paid call per scan) and the social-media-scraping ToS question —
   held back rather than approved.
@@ -55,9 +60,8 @@ silent drop-in"), roughly in the order I'd guess they matter:
 2. **AI Flood Scan** (`aiFloodScan.ts`) — scans public/social sources for flood photos, does
    image-reuse/AI-edit forensics. Outbound network calls + `sharp` image processing; already
    wired into the existing `/manager` map UI on Replit's side.
-3. **Auto-deployment on Heavy Rain Warning** (`auto-deployment.ts`) — auto-triggers a full roster
-   deployment when a Heavy Rain Warning SMS is detected. Hooks into `wls.ts`, which already
-   exists here. Has both an API side and an admin toggle in `manager.ts`'s UI.
+3. ~~**Auto-deployment on Heavy Rain Warning**~~ — **Done, see
+   [32](issues/32-auto-deployment-heavy-rain-warning.md).**
 4. **Meetings scheduler** — propose/vote on meeting slots, calendar, reminders, push. Lives
    inside the roster-dashboard SPA at client routes `/manager` + `/manager/calendar` (5
    interdependent files: `meetings.ts`, `useMeetings.ts`, `Meetings.tsx`, `ManagerDashboard.tsx`,

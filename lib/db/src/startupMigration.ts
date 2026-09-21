@@ -194,6 +194,15 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
        updated_at text NOT NULL
      )`,
   );
+  await run(
+    "auto_deployment_settings table",
+    `CREATE TABLE IF NOT EXISTS auto_deployment_settings (
+       id integer PRIMARY KEY DEFAULT 1,
+       enabled boolean NOT NULL DEFAULT false,
+       recent_event_keys jsonb NOT NULL DEFAULT '[]',
+       last_run jsonb
+     )`,
+  );
 
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to

@@ -613,6 +613,7 @@ router.get("/manager", requireManager, (req, res) => {
       <span id="header-username"></span>
     </div>
     <button id="theme-btn" class="btn btn-outline btn-sm" onclick="toggleTheme()" title="Toggle light/dark mode" style="font-size:16px;padding:5px 10px;">🌙</button>
+    ${me?.role === "admin" || me?.role === "manager" ? `<button id="auto-deploy-btn" class="btn btn-outline btn-sm" onclick="toggleAutoDeployment()" title="Auto-refresh the roster and broadcast an alert when a Heavy Rain Warning is pasted in — off by default">🌧️ Auto Deploy: …</button>` : ""}
     <button class="logout-btn" onclick="openModal('chpw-modal')" title="Change password" style="margin-right:2px;">🔑</button>
     <button id="mfa-header-btn" class="logout-btn" onclick="openMfaModal()" title="Two-factor authentication" style="margin-right:2px;">🛡️</button>
     <button class="logout-btn" onclick="logOut()">Sign out</button>
@@ -1165,6 +1166,46 @@ const ME = window.CURRENT_USER || {};
     if (deployedHeader) deployedHeader.style.display = '';
   }
 })();
+
+// ── Auto-deployment toggle (admin/manager) ──────────────────────────────────
+// .scratch/replit-resync-2026-09-21/issues/32.
+async function loadAutoDeploymentStatus() {
+  var btn = document.getElementById('auto-deploy-btn');
+  if (!btn) return;
+  try {
+    var res = await fetch(API + '/auto-deployment/status', { credentials: 'include' });
+    if (!res.ok) return;
+    var data = await res.json();
+    btn.textContent = '🌧️ Auto Deploy: ' + (data.enabled ? 'ON' : 'OFF');
+    btn.style.background = data.enabled ? 'var(--green)' : '';
+    btn.style.color = data.enabled ? '#04250f' : '';
+    btn.title = data.enabled
+      ? 'Auto-refreshes the roster and broadcasts an alert on the next Heavy Rain Warning. Click to disable.'
+      : 'Off by default. Click to enable auto-refresh + alert broadcast on the next Heavy Rain Warning.';
+  } catch (e) {}
+}
+
+async function toggleAutoDeployment() {
+  var btn = document.getElementById('auto-deploy-btn');
+  if (!btn) return;
+  var wantEnabled = btn.textContent.indexOf('OFF') !== -1;
+  var label = wantEnabled ? 'Enable' : 'Disable';
+  if (!confirm(label + ' auto-deployment? When enabled, pasting a Heavy Rain Warning into the WLS panel will automatically refresh the roster, set active shifts, and broadcast an alert.')) return;
+  btn.disabled = true;
+  try {
+    var res = await fetch(API + '/auto-deployment/enabled', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+      body: JSON.stringify({ enabled: wantEnabled }),
+    });
+    if (!res.ok) throw new Error('Failed to update auto-deployment');
+    await loadAutoDeploymentStatus();
+  } catch (e) {
+    alert('Could not update auto-deployment settings.');
+  } finally {
+    btn.disabled = false;
+  }
+}
+loadAutoDeploymentStatus();
 
 // ── Mobile view toggle ──────────────────────────────────────────────────────
 var mobViewState = 'split'; // 'split' | 'map' | 'panel'
