@@ -86,9 +86,10 @@ silent drop-in"), roughly in the order I'd guess they matter:
     replacement rather than leaving the original post uncovered again. Ticket
     [03](issues/03-leave-cover-validation-gaps.md) covers the validation-only piece; this
     automation is a step further.
-11. **Per-sector CAT1 lightning subscription + map/UX changes** — tap zones on the public
-    `/lightning` page to only be alerted for those sectors, OSM tiles instead of CARTO, lightning
-    auto-enabled instead of a manual toggle.
+11. ~~**Per-sector CAT1 lightning subscription + map/UX changes**~~ — **Mostly done, see
+    [24](issues/24-lightning-per-sector-subscription.md).** Per-sector subscription and
+    auto-enabled lightning shipped; the CARTO→OSM tile swap deliberately held back — real
+    dark-mode-tile-loss and OSM-hotlinking-policy tradeoffs, needs its own decision.
 12. **Deployments auto-sync + reverse geocoding** — `syncDeploymentRosterFromCentralSource()`
     (auto-pull today's roster into live deployments instead of manual paste-import) and a
     `/search/sg/reverse` endpoint.

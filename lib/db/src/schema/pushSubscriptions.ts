@@ -16,6 +16,10 @@ export const pushSubscriptionsTable = pgTable(
     type: text("type").notNull(),
     vehicleId: text("vehicle_id"),
     officerId: text("officer_id").references(() => officersTable.id),
+    // CAT1 sector codes selected on the public /lightning page. Null/empty
+    // means all sectors (backward compatible with subscriptions saved
+    // before this column existed). .scratch/replit-resync-2026-09-21/issues/24.
+    lightningSectors: text("lightning_sectors").array(),
     savedAt: timestamp("saved_at", { withTimezone: true }),
   },
   (table) => [

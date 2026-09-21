@@ -129,10 +129,19 @@ publicRouter.get("/lightning", (_req, res) => {
     display:none;align-items:center;gap:10px;background:var(--card);border:1px solid var(--border);
     border-radius:12px;padding:10px 16px;box-shadow:0 4px 16px var(--shadow);
     font-family:system-ui,-apple-system,sans-serif}
+  #selection-box{min-width:190px;max-width:280px}
+  #selection-title{font-size:12px;font-weight:700;color:var(--fg)}
+  #selection-summary{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.35}
+  #clear-sectors{margin-top:3px;border:0;background:none;color:#60a5fa;font-size:10px;
+    cursor:pointer;padding:0;text-decoration:underline}
   #push-btn{padding:8px 16px;border-radius:8px;border:none;font-size:13px;font-weight:700;
     cursor:pointer;background:#3b82f6;color:#fff;white-space:nowrap}
   #push-btn.on{background:var(--card);color:var(--fg);border:1px solid var(--border)}
   #push-label{font-size:11px;color:var(--muted);max-width:220px;line-height:1.4}
+  @media(max-width:700px){
+    #subscribe-bar{width:calc(100% - 24px);flex-wrap:wrap;justify-content:center}
+    #selection-box{flex:1;max-width:none;min-width:180px}
+  }
   /* ── Leaflet overrides ────────────────────────────────────── */
   .leaflet-container{background:var(--map-bg)}
   .leaflet-control-zoom{border:1px solid var(--border)!important;box-shadow:none!important}
@@ -177,8 +186,13 @@ publicRouter.get("/lightning", (_req, res) => {
 <div id="regional-lightning-status" aria-live="polite"></div>
 
 <div id="subscribe-bar">
+  <div id="selection-box">
+    <div id="selection-title">Tap zones on the map</div>
+    <div id="selection-summary">No zones selected — alerts for all sectors</div>
+    <button id="clear-sectors" type="button" onclick="clearSectorSelection()" style="display:none">Clear selection</button>
+  </div>
   <button id="push-btn" onclick="togglePush()">🔔 Subscribe to CAT 1</button>
-  <div id="push-label">Get a push alert every 5 min when CAT 1 is active.</div>
+  <div id="push-label">Select one or more zones, then subscribe.</div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -569,14 +583,25 @@ async function loadLightningSectors() {
       (feat.polygons || []).forEach(function(rings) {
         // rings[0] = outer ring, rings[1..] = holes; each ring is [[lat,lng],...]
         var latlngs = rings.map(function(ring){ return ring.map(function(p){ return [p[0], p[1]]; }); });
+        var isSelected = selectedLightningSectors.indexOf(feat.name) >= 0;
         var poly = L.polygon(latlngs, {
           fillColor: c.fill,
-          fillOpacity: c.fillOpacity,
-          color: c.stroke,
-          weight: 1.2,
+          fillOpacity: isSelected ? Math.max(c.fillOpacity, 0.52) : c.fillOpacity,
+          color: isSelected ? '#38bdf8' : c.stroke,
+          weight: isSelected ? 4 : 1.2,
           opacity: 0.85,
-          interactive: false,
+          // Tap a zone to only be alerted for that sector.
+          // .scratch/replit-resync-2026-09-21/issues/24.
+          interactive: true,
         }).addTo(map);
+        poly.bindTooltip(
+          'Sector ' + feat.name + ' — ' + (LIGHTNING_SECTOR_NAMES[feat.name] || feat.name) +
+          '<br><b>' + (isSelected ? 'Selected for alerts' : 'Tap to select') + '</b>'
+        );
+        poly.on('click', function(e) {
+          L.DomEvent.stopPropagation(e);
+          toggleSectorSelection(feat.name);
+        });
         lightningLayers.push(poly);
       });
 
@@ -639,6 +664,77 @@ function toggleLightning() {
 var VAPID_KEY = null;
 var SW_REG = null;
 var pushState = 'off';
+// Per-sector CAT1 alert selection — tap a zone on the map to only be
+// notified for that sector instead of all of them. Empty means all sectors.
+// .scratch/replit-resync-2026-09-21/issues/24.
+var selectedLightningSectors = [];
+try {
+  selectedLightningSectors = JSON.parse(localStorage.getItem('lightning-alert-sectors') || '[]');
+  if (!Array.isArray(selectedLightningSectors)) selectedLightningSectors = [];
+} catch(e) { selectedLightningSectors = []; }
+
+var LIGHTNING_SECTOR_NAMES = {
+  '1N':'Tuas / Pioneer','1S':'Tuas','L1':'Tengah Reservoir / Pasir Laba',
+  'L2':'Poyan Reservoir','L3':'Murai Reservoir','L4':'Sarimbun / Lim Chu Kang',
+  '02':'Jurong West / Tengah','3S':'Choa Chu Kang','3N':'Kranji / Lim Chu Kang',
+  '04':'Sungei Buloh / Woodlands West','05':'Bukit Panjang','06':'Mandai / Woodlands',
+  '07':'Bukit Timah / Dairy Farm','8N':'Jurong Lake / Jurong East',
+  '8S':'Jurong Island / Tuas South','09':'Southern Islands / Sentosa',
+  '10N':'Woodlands / Mandai North','10S':'Upper Seletar / Mandai',
+  '11W':'Sembawang / Woodlands East','11E':'Yishun / Sembawang',
+  '12':'Bishan / Upper Thomson','13N':'Bukit Panjang East / Zhenghua',
+  '13S':'Buona Vista / Holland','14':'Queenstown / Redhill','15':'Tampines / Bedok',
+  '16N':'Sengkang / Punggol','16S':'Serangoon / Hougang','17':'Punggol North Coast',
+  '18W':'Pasir Ris / Tampines East','18E':'Pasir Ris / Changi Village',
+  '19N':'Pulau Ubin / NE Waters','19S':'Changi / Ubin South'
+};
+
+function updateSelectionSummary() {
+  var summary = document.getElementById('selection-summary');
+  var clear = document.getElementById('clear-sectors');
+  if (!summary || !clear) return;
+  if (!selectedLightningSectors.length) {
+    summary.textContent = 'No zones selected — alerts for all sectors';
+    clear.style.display = 'none';
+  } else {
+    summary.textContent = selectedLightningSectors.map(function(code){ return 'Sector ' + code; }).join(', ');
+    clear.style.display = 'inline-block';
+  }
+}
+
+async function saveSectorPreference() {
+  localStorage.setItem('lightning-alert-sectors', JSON.stringify(selectedLightningSectors));
+  updateSelectionSummary();
+  if (!SW_REG) return;
+  var existing = await SW_REG.pushManager.getSubscription();
+  if (existing) {
+    var response = await fetch('/api/push/subscribe', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        subscription:existing,
+        type:'crew',
+        lightningSectors:selectedLightningSectors
+      })
+    });
+    if (response.ok) updatePushBtn();
+  }
+}
+
+async function toggleSectorSelection(code) {
+  var index = selectedLightningSectors.indexOf(code);
+  if (index >= 0) selectedLightningSectors.splice(index, 1);
+  else selectedLightningSectors.push(code);
+  selectedLightningSectors.sort();
+  await saveSectorPreference();
+  loadLightningSectors();
+}
+
+async function clearSectorSelection() {
+  selectedLightningSectors = [];
+  await saveSectorPreference();
+  loadLightningSectors();
+}
 
 function urlBase64ToUint8Array(b) {
   var p = b.replace(/-/g,'+').replace(/_/g,'/').padEnd(b.length+(4-b.length%4)%4,'=');
@@ -682,11 +778,15 @@ function updatePushBtn() {
   if (pushState === 'on') {
     btn.textContent = '🔕 Unsubscribe';
     btn.className = 'on';
-    lbl.textContent = 'You will be notified every 5 min while CAT 1 is active.';
+    lbl.textContent = selectedLightningSectors.length
+      ? 'Subscribed only to ' + selectedLightningSectors.map(function(code){ return 'Sector ' + code; }).join(', ') + '.'
+      : 'Subscribed to all CAT 1 sectors.';
   } else {
     btn.textContent = '🔔 Subscribe to CAT 1';
     btn.className = '';
-    lbl.textContent = 'Get a push alert every 5 min when CAT 1 is active.';
+    lbl.textContent = selectedLightningSectors.length
+      ? 'Subscribe only to ' + selectedLightningSectors.map(function(code){ return 'Sector ' + code; }).join(', ') + '.'
+      : 'Subscribe for alerts in all CAT 1 sectors.';
   }
 }
 
@@ -710,7 +810,16 @@ async function togglePush() {
       }
       if (!VAPID_KEY) VAPID_KEY = (await (await fetch('/api/push/vapid-key')).json()).publicKey;
       var sub = await SW_REG.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_KEY) });
-      await fetch('/api/push/subscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ subscription: sub, type: 'crew' }) });
+      var response = await fetch('/api/push/subscribe', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          subscription: sub,
+          type: 'crew',
+          lightningSectors: selectedLightningSectors
+        })
+      });
+      if (!response.ok) throw new Error('Unable to save CAT 1 subscription');
       pushState = 'on';
     }
     updatePushBtn();
@@ -720,6 +829,10 @@ async function togglePush() {
   btn.disabled = false;
 }
 
+// Lightning display now shown by default on page load, instead of requiring
+// a manual "Lightning" button click first. .scratch/replit-resync-2026-09-21/issues/24.
+toggleLightning();
+updateSelectionSummary();
 initPush();
 </script>
 </body>

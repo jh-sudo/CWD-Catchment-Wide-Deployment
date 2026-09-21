@@ -160,6 +160,13 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
      ALTER TABLE ph_hr_ballot_state DROP COLUMN IF EXISTS initialized;`,
   );
 
+  // --- New-capability additive schema (2026-09-21 Replit resync, approved
+  // new-capability items) ---
+  await run(
+    "push_subscriptions.lightning_sectors",
+    `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS lightning_sectors text[]`,
+  );
+
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to
   // succeed, so they don't belong in an emergency unblock-the-boot pass.
