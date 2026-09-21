@@ -57,8 +57,18 @@ interface PushSub {
   type: "manager" | "crew";
   vehicleId?: string;
   officerId?: string;
+  /** CAT1 sector codes selected on the public /lightning page. Missing/empty
+   *  means all sectors (backward compatible with subscriptions saved before
+   *  this existed). .scratch/replit-resync-2026-09-21/issues/24. */
+  lightningSectors?: string[];
   savedAt: string;
 }
+
+export const LIGHTNING_SECTOR_CODES = new Set([
+  "1N", "1S", "L1", "L2", "L3", "L4", "02", "3S", "3N", "04", "05",
+  "06", "07", "8N", "8S", "09", "10N", "10S", "11W", "11E", "12",
+  "13N", "13S", "14", "15", "16N", "16S", "17", "18W", "18E", "19N", "19S",
+]);
 
 let subs: PushSub[] = [];
 
@@ -68,6 +78,7 @@ function toPushSub(row: typeof pushSubscriptionsTable.$inferSelect): PushSub {
     type: row.type as "manager" | "crew",
     vehicleId: row.vehicleId ?? undefined,
     officerId: row.officerId ?? undefined,
+    lightningSectors: row.lightningSectors?.length ? row.lightningSectors : undefined,
     savedAt: (row.savedAt ?? new Date()).toISOString(),
   };
 }
@@ -82,15 +93,19 @@ const subsReady = refreshSubsCache();
 // ── Send helpers (exported for use in other routes) ───────────────────────────
 interface PushPayload { title: string; body: string; tag?: string; url?: string; }
 
-async function sendTo(targets: PushSub[], payload: PushPayload) {
+// payload may be a function so a caller (sendLightningToCrew) can send a
+// different, personalized payload per subscriber (or skip one entirely by
+// returning null) instead of one fixed message to everyone.
+async function sendTo(targets: PushSub[], payload: PushPayload | ((sub: PushSub) => PushPayload | null)) {
   await vapidReady;
-  const json = JSON.stringify(payload);
   const dead: string[] = [];
 
   await Promise.allSettled(
     targets.map(async (sub) => {
       try {
-        await webpush.sendNotification(sub.subscription, json);
+        const resolved = typeof payload === "function" ? payload(sub) : payload;
+        if (!resolved) return;
+        await webpush.sendNotification(sub.subscription, JSON.stringify(resolved));
       } catch (err: any) {
         if (err.statusCode === 410 || err.statusCode === 404) {
           dead.push(sub.subscription.endpoint);
@@ -125,6 +140,27 @@ export async function sendToCrewOfficer(officerId: string, payload: PushPayload)
   await sendTo(subs.filter(s => s.type === "crew" && s.officerId === officerId), payload);
 }
 
+/**
+ * Send a personalized lightning notification to matching crew subscribers
+ * only — a subscriber with no saved sector preference matches every active
+ * sector (backward compatible); one with a preference only gets notified
+ * when at least one of their selected sectors is currently active.
+ * .scratch/replit-resync-2026-09-21/issues/24.
+ */
+export async function sendLightningToCrew(
+  sectorCodes: string[],
+  createPayload: (matchingSectorCodes: string[]) => PushPayload,
+) {
+  await subsReady;
+  const activeCodes = sectorCodes.map(code => code.toUpperCase());
+  await sendTo(subs.filter(s => s.type === "crew"), sub => {
+    const matchingCodes = !sub.lightningSectors?.length
+      ? activeCodes
+      : activeCodes.filter(code => sub.lightningSectors!.includes(code));
+    return matchingCodes.length ? createPayload(matchingCodes) : null;
+  });
+}
+
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 // Public: crew + manager both need the key
@@ -136,11 +172,12 @@ router.get("/push/vapid-key", async (_req, res) => {
 
 // Save a subscription (crew: no auth needed; manager: auth required is enforced by type)
 router.post("/push/subscribe", async (req, res) => {
-  const { subscription, type, vehicleId, officerId } = req.body as {
+  const { subscription, type, vehicleId, officerId, lightningSectors } = req.body as {
     subscription: webpush.PushSubscription;
     type: "manager" | "crew";
     vehicleId?: string;
     officerId?: string;
+    lightningSectors?: unknown;
   };
 
   if (!subscription?.endpoint || !subscription.keys?.p256dh || !subscription.keys?.auth) {
@@ -150,6 +187,22 @@ router.post("/push/subscribe", async (req, res) => {
   // Enforce manager auth for manager subscriptions
   if (type === "manager" && !req.session?.managerId) {
     res.status(401).json({ error: "Auth required for manager subscriptions" }); return;
+  }
+
+  let normalizedLightningSectors: string[] | null = null;
+  if (lightningSectors !== undefined) {
+    if (!Array.isArray(lightningSectors) || !lightningSectors.every(code => typeof code === "string")) {
+      res.status(400).json({ error: "lightningSectors must be an array of sector codes" }); return;
+    }
+    const normalized = [...new Set(
+      lightningSectors.map(code => code.trim().toUpperCase()).filter(Boolean)
+    )];
+    const invalid = normalized.filter(code => !LIGHTNING_SECTOR_CODES.has(code));
+    if (invalid.length) {
+      res.status(400).json({ error: `Unknown lightning sector: ${invalid.join(", ")}` }); return;
+    }
+    // An empty selection intentionally means all sectors for backward compatibility.
+    if (normalized.length) normalizedLightningSectors = normalized;
   }
 
   const savedAt = new Date();
@@ -162,6 +215,7 @@ router.post("/push/subscribe", async (req, res) => {
       type: type ?? "crew",
       vehicleId: vehicleId ?? null,
       officerId: officerId ?? null,
+      lightningSectors: normalizedLightningSectors,
       savedAt,
     })
     .onConflictDoUpdate({
@@ -172,6 +226,7 @@ router.post("/push/subscribe", async (req, res) => {
         type: type ?? "crew",
         vehicleId: vehicleId ?? null,
         officerId: officerId ?? null,
+        lightningSectors: normalizedLightningSectors,
         savedAt,
       },
     });

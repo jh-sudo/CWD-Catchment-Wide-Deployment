@@ -1,4 +1,4 @@
-import { broadcastToCrew, sendToManagers } from "./routes/push.js";
+import { broadcastToCrew, sendLightningToCrew, sendToManagers } from "./routes/push.js";
 import { logger } from "./lib/logger.js";
 
 const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
@@ -137,13 +137,17 @@ export async function checkLightningAndNotify(): Promise<void> {
 
     // Each sector's own end time, not the first sector's reused for all —
     // .scratch/replit-resync-2026-09-21/issues/17.
-    const names = cat1Sectors.map(s => {
+    const formatSectorList = (sectors: LightningSector[]) => sectors.map(s => {
       const label = sectorDisplayName(s.name);
       const end = formatCat1End(s.catEndOn);
       return end ? `${label} (${end})` : label;
     }).join(", ");
 
-    const alert = {
+    const names = formatSectorList(cat1Sectors);
+    const activeSectorCodes = cat1Sectors.map(s => s.name.toUpperCase());
+    const cat1ByCode = new Map(cat1Sectors.map(s => [s.name.toUpperCase(), s]));
+
+    const managerAlert = {
       title: `⚡ Lightning CAT 1 Alert (${cat1AlertCount}/${MAX_CAT1_ALERTS})`,
       body: `CAT 1 active in: ${names}. Seek shelter immediately.`,
       tag: "lightning-cat1",
@@ -151,8 +155,16 @@ export async function checkLightningAndNotify(): Promise<void> {
     };
 
     await Promise.all([
-      broadcastToCrew(alert),
-      sendToManagers(alert),
+      // Crew with a saved per-sector preference only get notified — and only
+      // see — the sectors they actually selected; managers always see every
+      // active sector. .scratch/replit-resync-2026-09-21/issues/24.
+      sendLightningToCrew(activeSectorCodes, matchingCodes => ({
+        title: `⚡ Lightning CAT 1 Alert (${cat1AlertCount}/${MAX_CAT1_ALERTS})`,
+        body: `CAT 1 active in: ${formatSectorList(matchingCodes.map(code => cat1ByCode.get(code)!).filter(Boolean))}. Seek shelter immediately.`,
+        tag: "lightning-cat1",
+        url: "/lightning",
+      })),
+      sendToManagers(managerAlert),
     ]);
     logger.info({ sectors: names, isNewEvent, eventKey, alertCount: cat1AlertCount }, "Lightning monitor: CAT 1 push sent to crew + managers");
   } catch (err) {
