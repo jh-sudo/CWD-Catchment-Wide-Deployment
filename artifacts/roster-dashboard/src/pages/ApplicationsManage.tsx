@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Loader2, RefreshCcw, CheckCircle, XCircle, Search, Trash2, LayoutGrid, Shield } from "lucide-react";
+import { Loader2, RefreshCcw, CheckCircle, XCircle, Search, Trash2, LayoutGrid, Shield, Archive } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useGetRosterSwaps, useReviewRosterSwap, type RosterSwap } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
@@ -571,6 +571,71 @@ export default function ApplicationsManage() {
     }
   }, [syncAll]);
 
+  // ── Backups (Restore from Backup) ─────────────────────────────────────────
+  // .scratch/replit-resync-2026-09-21/issues/35.
+  const [backupsOpen, setBackupsOpen] = useState(false);
+  const [backups, setBackups] = useState<{ id: string; createdAt: string; createdBy: string | null; leaveCount: number; swapCount: number }[]>([]);
+  const [backupsLoading, setBackupsLoading] = useState(false);
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreSuccess, setRestoreSuccess] = useState<string | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
+
+  const fetchBackups = useCallback(async () => {
+    setBackupsLoading(true);
+    try {
+      const res = await fetch("/api/roster-plan/history/backups", { credentials: "include" });
+      if (res.ok) setBackups(await res.json());
+    } finally {
+      setBackupsLoading(false);
+    }
+  }, []);
+
+  const handleOpenBackups = useCallback(() => {
+    setBackupsOpen(true);
+    setSelectedBackup(null);
+    setRestoreSuccess(null);
+    setBackupError(null);
+    fetchBackups();
+  }, [fetchBackups]);
+
+  const handleCreateBackup = useCallback(async () => {
+    setCreatingBackup(true);
+    setBackupError(null);
+    try {
+      const res = await fetch("/api/roster-plan/history/backups", { method: "POST", credentials: "include" });
+      if (!res.ok) throw new Error("Failed to create backup");
+      await fetchBackups();
+    } catch (err: any) {
+      setBackupError(err.message || "Failed to create backup");
+    } finally {
+      setCreatingBackup(false);
+    }
+  }, [fetchBackups]);
+
+  const handleRestore = useCallback(async () => {
+    if (!selectedBackup) return;
+    setRestoring(true);
+    setBackupError(null);
+    try {
+      const res = await fetch("/api/roster-plan/history/restore", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: selectedBackup }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Restore failed");
+      setRestoreSuccess(selectedBackup);
+      syncAll();
+    } catch (err: any) {
+      setBackupError(err.message || "Restore failed");
+    } finally {
+      setRestoring(false);
+    }
+  }, [selectedBackup, syncAll]);
+
   // ── Action handlers ────────────────────────────────────────────────────────
   const handleDeleteLeave = useCallback(async () => {
     if (!deleteTarget) return;
@@ -709,6 +774,18 @@ export default function ApplicationsManage() {
             <p className="text-xs text-muted-foreground mt-0.5">All leave, swap, and override records · sorted by last edited</p>
           </div>
           <div className="flex items-center gap-2">
+            {canClearHistory && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs gap-1"
+                onClick={handleOpenBackups}
+                title="Create or restore a roster-plan backup"
+              >
+                <Archive className="h-3.5 w-3.5" />
+                Backups
+              </Button>
+            )}
             {canClearHistory && (
               <Button
                 variant="outline"
@@ -991,6 +1068,102 @@ export default function ApplicationsManage() {
           </div>
           <DialogFooter>
             <Button variant="outline" className="w-full" onClick={() => setClearConfirmOpen(false)} disabled={clearing}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Backups (create / restore) Dialog — .scratch/replit-resync-2026-09-21/issues/35 */}
+      <Dialog open={backupsOpen} onOpenChange={v => { if (!restoring && !creatingBackup) setBackupsOpen(v); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Roster-Plan Backups</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-3 text-sm">
+            <p className="text-xs text-muted-foreground">
+              A backup snapshots committed leave, overrides, and swap records so they can be
+              recovered later. Create one before making a risky bulk change, or restore an
+              earlier one if something needs to be undone.
+            </p>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full justify-start gap-2"
+              onClick={handleCreateBackup}
+              disabled={creatingBackup || restoring}
+            >
+              {creatingBackup ? <Loader2 className="h-4 w-4 animate-spin shrink-0" /> : <Archive className="h-4 w-4 shrink-0" />}
+              Create backup now
+            </Button>
+
+            {backupError && (
+              <p className="text-xs text-destructive whitespace-pre-line">{backupError}</p>
+            )}
+
+            {restoreSuccess ? (
+              <p className="text-xs text-emerald-600 font-medium">
+                ✓ Restored from {fmtEditedAt(backups.find(b => b.id === restoreSuccess)?.createdAt ?? "")}
+              </p>
+            ) : (
+              <>
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground pt-1">
+                  Available backups
+                </p>
+                {backupsLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  </div>
+                ) : backups.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic py-1">No backups yet — create one above.</p>
+                ) : (
+                  <div className="space-y-1.5 max-h-56 overflow-y-auto">
+                    {backups.map(b => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => setSelectedBackup(s => (s === b.id ? null : b.id))}
+                        className={cn(
+                          "w-full text-left rounded-md border px-3 py-2 transition-colors",
+                          selectedBackup === b.id
+                            ? "border-primary bg-primary/5"
+                            : "border-border hover:bg-muted/40"
+                        )}
+                      >
+                        <div className="text-xs font-medium">{fmtEditedAt(b.createdAt)}</div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {b.leaveCount} leave{b.leaveCount !== 1 ? "s" : ""} · {b.swapCount} swap{b.swapCount !== 1 ? "s" : ""}
+                          {b.createdBy && ` · by ${b.createdBy}`}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {selectedBackup && (
+                  <Button
+                    variant="destructive"
+                    className="w-full justify-start gap-2"
+                    onClick={handleRestore}
+                    disabled={restoring}
+                  >
+                    {restoring ? <Loader2 className="h-4 w-4 animate-spin shrink-0" /> : <Archive className="h-4 w-4 shrink-0" />}
+                    Restore this backup — replaces current leave/override/swap data
+                  </Button>
+                )}
+              </>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() => { setBackupsOpen(false); setSelectedBackup(null); setRestoreSuccess(null); }}
+              disabled={restoring || creatingBackup}
+            >
               Close
             </Button>
           </DialogFooter>

@@ -4,7 +4,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loader2, RefreshCcw } from "lucide-react";
+import { Loader2, RefreshCcw, Search } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useGetRosterSwaps } from "@workspace/api-client-react";
 
@@ -19,11 +19,16 @@ const STATUS_BADGE: Record<string, { label: string; variant: "default" | "second
   DECLINED:      { label: "Declined",        variant: "destructive" },
 };
 
+const CURRENT_YEAR = new Date().getFullYear();
+const YEAR_OPTIONS = [CURRENT_YEAR - 1, CURRENT_YEAR, CURRENT_YEAR + 1];
+
 export default function MyApplications() {
   const { user } = useAuth();
   const { data: allSwaps, isLoading: swapsLoading, refetch: refetchSwaps } = useGetRosterSwaps();
   const [leaves, setLeaves] = useState<any[]>([]);
   const [leavesLoading, setLeavesLoading] = useState(true);
+  const [selectedYear, setSelectedYear] = useState<number>(CURRENT_YEAR);
+  const [search, setSearch] = useState("");
 
   const fetchLeaves = useCallback(async () => {
     setLeavesLoading(true);
@@ -45,10 +50,25 @@ export default function MyApplications() {
   const leaveEditKey = (l: any) => l.lastEditedOn ?? l.updatedAt ?? l.createdAt ?? l.date ?? "";
   const swapEditKey  = (s: any) => { const a = s.reviewedAt ?? ""; const b = s.createdAt ?? ""; return (a > b ? a : b) || s.date || ""; };
 
+  // Filter by selected year and search query, then sort most-recently-edited first
+  const yearStr = String(selectedYear);
+  const q = search.trim().toLowerCase();
+
+  const filteredLeaves = myLeaves
+    .filter((l: any) => (l.date ?? "").startsWith(yearStr))
+    .filter((l: any) => !q || [l.leaveType, l.coverOfficerName, l.icName, l.date].some(
+      v => (v ?? "").toLowerCase().includes(q)
+    ));
+  const filteredSwaps = mySwaps
+    .filter((s: any) => (s.date ?? "").startsWith(yearStr))
+    .filter((s: any) => !q || [s.requesterName, s.targetName, s.reason, s.date].some(
+      v => (v ?? "").toLowerCase().includes(q)
+    ));
+
   // Show all items sorted by most recently edited on top
   const allItems = [
-    ...myLeaves.map((l: any) => ({ ...l, _kind: "leave" as const, _sortKey: leaveEditKey(l) })),
-    ...mySwaps.map((s: any)  => ({ ...s, _kind: "swap"  as const, _sortKey: swapEditKey(s)  })),
+    ...filteredLeaves.map((l: any) => ({ ...l, _kind: "leave" as const, _sortKey: leaveEditKey(l) })),
+    ...filteredSwaps.map((s: any)  => ({ ...s, _kind: "swap"  as const, _sortKey: swapEditKey(s)  })),
   ].sort((a, b) => b._sortKey.localeCompare(a._sortKey));
 
   const handleRefresh = () => { fetchLeaves(); refetchSwaps(); };
@@ -151,6 +171,35 @@ export default function MyApplications() {
           </Button>
         </div>
 
+        <div className="flex items-center gap-2 flex-wrap">
+          {YEAR_OPTIONS.map(yr => (
+            <button
+              key={yr}
+              type="button"
+              onClick={() => setSelectedYear(yr)}
+              className={cn(
+                "text-xs font-semibold px-3 py-1 rounded-full border transition-all select-none",
+                selectedYear === yr
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-muted text-muted-foreground border-border hover:bg-accent hover:text-accent-foreground"
+              )}
+            >
+              {yr}
+            </button>
+          ))}
+        </div>
+
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search leave type, date, cover officer…"
+            className="w-full border rounded-md pl-9 pr-3 py-2 text-sm bg-background outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
         {isLoading ? (
           <div className="flex justify-center py-16">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -158,7 +207,9 @@ export default function MyApplications() {
         ) : allItems.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
-              No leave or swap records yet.
+              {search
+                ? "No records match your search."
+                : `No leave or swap records for ${selectedYear}.`}
             </CardContent>
           </Card>
         ) : (

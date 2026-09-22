@@ -258,6 +258,20 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
        updated_at text NOT NULL
      )`,
   );
+  await run(
+    "roster_plan_backups table",
+    `CREATE TABLE IF NOT EXISTS roster_plan_backups (
+       id text PRIMARY KEY,
+       created_at text NOT NULL,
+       created_by text,
+       leave_count integer NOT NULL,
+       swap_count integer NOT NULL,
+       leaves jsonb NOT NULL,
+       overrides jsonb NOT NULL,
+       swaps jsonb NOT NULL,
+       leave_requests jsonb NOT NULL
+     )`,
+  );
 
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to

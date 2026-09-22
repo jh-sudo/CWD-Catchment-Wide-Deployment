@@ -14,6 +14,7 @@ import {
   rosterDayOverridesTable,
   rosterDayOverrideApplicationsTable,
   leaveRequestsTable,
+  rosterPlanBackupsTable,
   phRosterRefTable,
   rosterRequirementsTable,
   type Officer,
@@ -1813,6 +1814,136 @@ rosterPlanRouter.delete("/roster-plan/history/clear", requireManager, async (req
 
   await db.delete(leaveRequestsTable);
   res.json({ success: true });
+});
+
+// ── Roster-plan backups ─────────────────────────────────────────────────────
+// Reference replaced the removed full-wipe button (issues/19) with a
+// "Restore from Backup" flow instead of just deleting the capability
+// outright. That gap was never ported — see issues/35. Snapshots are
+// admin/manager-triggered on demand (there's no more automatic
+// "before a full wipe" event to hook into, since that wipe was removed
+// entirely rather than hardened).
+function reviveDate(v: unknown): Date | null {
+  return v == null ? null : new Date(v as string);
+}
+
+// POST /api/roster-plan/history/backups — snapshot the 4 committed
+// roster/leave datasets now.
+rosterPlanRouter.post("/roster-plan/history/backups", requireManager, async (req, res) => {
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  if (!caller || (caller.role !== "admin" && caller.role !== "manager")) {
+    res.status(403).json({ error: "Admin or manager access required" });
+    return;
+  }
+
+  const [leaves, overrides, swaps, leaveReqs] = await Promise.all([
+    loadAllLeaves(),
+    loadAllOverrides(),
+    loadSwaps(),
+    db.select().from(leaveRequestsTable),
+  ]);
+
+  const id = randomUUID();
+  const createdAt = new Date().toISOString();
+  const createdBy = caller.officerName ?? caller.username;
+
+  await db.insert(rosterPlanBackupsTable).values({
+    id,
+    createdAt,
+    createdBy,
+    leaveCount: leaves.length,
+    swapCount: swaps.length,
+    leaves,
+    overrides,
+    swaps,
+    leaveRequests: leaveReqs,
+  });
+
+  res.json({ id, createdAt, createdBy, leaveCount: leaves.length, swapCount: swaps.length });
+});
+
+// GET /api/roster-plan/history/backups — list available snapshots.
+rosterPlanRouter.get("/roster-plan/history/backups", requireManager, async (req, res) => {
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  if (!caller || (caller.role !== "admin" && caller.role !== "manager")) {
+    res.status(403).json({ error: "Admin or manager access required" });
+    return;
+  }
+
+  const rows = await db
+    .select({
+      id: rosterPlanBackupsTable.id,
+      createdAt: rosterPlanBackupsTable.createdAt,
+      createdBy: rosterPlanBackupsTable.createdBy,
+      leaveCount: rosterPlanBackupsTable.leaveCount,
+      swapCount: rosterPlanBackupsTable.swapCount,
+    })
+    .from(rosterPlanBackupsTable)
+    .orderBy(desc(rosterPlanBackupsTable.createdAt));
+
+  res.json(rows);
+});
+
+// POST /api/roster-plan/history/restore — restore all 4 datasets from a
+// chosen snapshot, replacing current data entirely.
+rosterPlanRouter.post("/roster-plan/history/restore", requireManager, async (req, res) => {
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  if (!caller || (caller.role !== "admin" && caller.role !== "manager")) {
+    res.status(403).json({ error: "Admin or manager access required" });
+    return;
+  }
+
+  const id = typeof (req.body as { id?: unknown })?.id === "string" ? (req.body as { id: string }).id : "";
+  if (!id) {
+    res.status(400).json({ error: "Missing backup id" });
+    return;
+  }
+
+  const [backup] = await db.select().from(rosterPlanBackupsTable).where(eq(rosterPlanBackupsTable.id, id));
+  if (!backup) {
+    res.status(404).json({ error: "Backup not found" });
+    return;
+  }
+
+  // jsonb round-trips timestamp columns as ISO strings, not Date objects —
+  // revive them before re-inserting so drizzle's timestamp mapping doesn't
+  // choke on a plain string.
+  const leaves = (backup.leaves as Record<string, unknown>[]).map((r) => ({
+    ...r, appliedAt: reviveDate(r.appliedAt),
+  }));
+  const overrides = (backup.overrides as Record<string, unknown>[]).map((r) => ({
+    ...r, madeAt: reviveDate(r.madeAt),
+  }));
+  const swaps = (backup.swaps as Record<string, unknown>[]).map((r) => ({
+    ...r, createdAt: reviveDate(r.createdAt), reviewedAt: reviveDate(r.reviewedAt),
+  }));
+  const leaveReqs = (backup.leaveRequests as Record<string, unknown>[]).map((r) => ({
+    ...r,
+    coverRespondedAt: reviveDate(r.coverRespondedAt),
+    icReviewedAt: reviveDate(r.icReviewedAt),
+    createdAt: reviveDate(r.createdAt),
+    updatedAt: reviveDate(r.updatedAt),
+    lastEditedOn: reviveDate(r.lastEditedOn),
+  }));
+
+  await db.transaction(async (tx) => {
+    // Children before parents on delete (leave_requests.committed_leave_id
+    // -> roster_leaves.id); parents before children on insert.
+    await tx.delete(leaveRequestsTable);
+    await tx.delete(rosterSwapsTable);
+    await tx.delete(rosterOverridesTable);
+    await tx.delete(rosterLeavesTable);
+
+    if (leaves.length > 0) await tx.insert(rosterLeavesTable).values(leaves as unknown as RosterLeave[]);
+    if (overrides.length > 0) await tx.insert(rosterOverridesTable).values(overrides as unknown as RosterOverride[]);
+    if (swaps.length > 0) await tx.insert(rosterSwapsTable).values(swaps as unknown as RosterSwap[]);
+    if (leaveReqs.length > 0) await tx.insert(leaveRequestsTable).values(leaveReqs as unknown as (typeof leaveRequestsTable.$inferInsert)[]);
+  });
+
+  res.json({ success: true, id, leaveCount: leaves.length, swapCount: swaps.length });
 });
 
 rosterPlanRouter.get("/roster-plan/day-overrides", requireManager, async (_req, res) => {
