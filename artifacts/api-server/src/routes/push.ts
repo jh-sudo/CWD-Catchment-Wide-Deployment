@@ -94,7 +94,14 @@ async function refreshSubsCache(): Promise<void> {
   subs = rows.map(toPushSub);
 }
 
-const subsReady = refreshSubsCache();
+// Caught here for the same reason as vapidReady above — a schema-drift or
+// transient DB error during boot must not become a process-crashing
+// unhandled rejection before any request has even arrived. `subs` stays []
+// on failure; push notifications silently no-op until the next successful
+// refresh instead of taking the whole server down.
+const subsReady = refreshSubsCache().catch((err) => {
+  logger.error({ err }, "[push] refreshSubsCache failed");
+});
 
 // ── Send helpers (exported for use in other routes) ───────────────────────────
 interface PushPayload { title: string; body: string; tag?: string; url?: string; }
