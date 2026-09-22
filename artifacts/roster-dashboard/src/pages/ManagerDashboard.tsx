@@ -4,7 +4,7 @@ import { Link } from "wouter";
 import { Calendar as CalendarIcon, Clock, CheckCircle2, ChevronRight, AlertCircle, Loader2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAuth } from "@/context/AuthContext";
-import { useMeetings, type Meeting } from "@/hooks/useMeetings";
+import { useMeetings, attendeeNeedsToRespond, organizerNeedsToConfirm, type Meeting } from "@/hooks/useMeetings";
 
 export default function ManagerDashboard() {
   const { user } = useAuth();
@@ -29,10 +29,7 @@ export default function ManagerDashboard() {
             upcoming.push(m);
           }
         }
-      } else if (
-        (m.status === "ready" && m.organizerId === user.id) ||
-        (m.status === "collecting" && m.attendeeIds.includes(user.id) && !m.responses[user.id])
-      ) {
+      } else if (organizerNeedsToConfirm(m, user.id) || attendeeNeedsToRespond(m, user.id)) {
         pending.push(m);
       }
     }

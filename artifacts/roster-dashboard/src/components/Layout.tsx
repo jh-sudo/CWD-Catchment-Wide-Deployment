@@ -19,7 +19,7 @@ import { useRosterVersion } from "@/context/RosterVersionContext";
 import { usePushSubscription } from "@/hooks/usePushSubscription";
 import { getContrastColor } from "@/lib/contrast";
 import { useToast } from "@/hooks/use-toast";
-import { useMeetings, type Meeting } from "@/hooks/useMeetings";
+import { useMeetings, attendeeNeedsToRespond, organizerNeedsToConfirm, type Meeting } from "@/hooks/useMeetings";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -172,11 +172,7 @@ export function Layout({ children }: LayoutProps) {
         .sort()[0] ?? "9999-12-31";
     };
     const pendingAction = managerMeetings
-      .filter((meeting: Meeting) =>
-        meeting.status !== "confirmed" &&
-        ((meeting.attendeeIds.includes(user.id) && !meeting.responses[user.id]) ||
-          (meeting.organizerId === user.id && meeting.status === "ready")),
-      )
+      .filter((meeting: Meeting) => attendeeNeedsToRespond(meeting, user.id) || organizerNeedsToConfirm(meeting, user.id))
       .sort((a: Meeting, b: Meeting) => meetingDate(a).localeCompare(meetingDate(b)))[0];
 
     const futureConfirmed = managerMeetings
@@ -233,8 +229,7 @@ export function Layout({ children }: LayoutProps) {
     if (user?.role !== "manager" || meetingAlert) return;
     const candidates = managerMeetings.flatMap((meeting: Meeting) => {
       const isAttendee = meeting.attendeeIds.includes(user.id);
-      const hasResponded = Boolean(meeting.responses[user.id]);
-      if (isAttendee && !hasResponded && meeting.status !== "confirmed") {
+      if (attendeeNeedsToRespond(meeting, user.id)) {
         const noticeTime = meeting.reminderState[user.id]?.lastSentAt ?? meeting.createdAt;
         return [{
           key: `availability:${meeting.id}:${noticeTime}`,
@@ -263,7 +258,7 @@ export function Layout({ children }: LayoutProps) {
           time: noticeTime,
         }];
       }
-      if (meeting.organizerId === user.id && meeting.status === "ready") {
+      if (organizerNeedsToConfirm(meeting, user.id)) {
         const noticeTime = meeting.readyNotifiedAt ?? meeting.updatedAt;
         return [{
           key: `ready:${meeting.id}:${noticeTime}`,
