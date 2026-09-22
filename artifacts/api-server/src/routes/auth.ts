@@ -286,10 +286,18 @@ async function seedAdmin() {
     // Random, not a fixed default — a hardcoded value here would be a known
     // working credential for anyone who reads the source, not just an
     // internal convenience. Printed once so whoever deploys can retrieve it.
+    // onConflictDoNothing + gating the log on `inserted` covers concurrent
+    // first-boot replicas racing this same insert — only the winner logs.
     const managerPin = generatePin(6);
     const crewPin = generatePin(4);
-    await db.insert(appConfigTable).values({ id: 1, managerPin, crewPin });
-    console.log(`[auth] Manager/crew PINs seeded — manager: ${managerPin}  crew: ${crewPin} (change these via the admin panel)`);
+    const [inserted] = await db
+      .insert(appConfigTable)
+      .values({ id: 1, managerPin, crewPin })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) {
+      console.log(`[auth] Manager/crew PINs seeded — manager: ${managerPin}  crew: ${crewPin} (change these via the admin panel)`);
+    }
   }
   await refreshAppConfigCache();
 
@@ -299,21 +307,29 @@ async function seedAdmin() {
     // anyone with repo access.
     const adminPassword = generatePassword();
     const passwordHash = await bcrypt.hash(adminPassword, 10);
-    await db.insert(managersTable).values({
-      id: "admin",
-      username: "admin",
-      passwordHash,
-      role: "admin",
-      approved: true,
-      createdAt: new Date(),
-      mustChangePassword: true,
-    });
-    await refreshManagersCache();
-    console.log(`[auth] Admin seeded — username: admin  password: ${adminPassword} (must be changed on first login)`);
+    const [inserted] = await db
+      .insert(managersTable)
+      .values({
+        id: "admin",
+        username: "admin",
+        passwordHash,
+        role: "admin",
+        approved: true,
+        createdAt: new Date(),
+        mustChangePassword: true,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) {
+      await refreshManagersCache();
+      console.log(`[auth] Admin seeded — username: admin  password: ${adminPassword} (must be changed on first login)`);
+    }
   }
 }
 
-seedAdmin();
+seedAdmin().catch((error) => {
+  console.error("[auth] seedAdmin failed:", error);
+});
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 export function requireManager(req: Request, res: Response, next: NextFunction) {
