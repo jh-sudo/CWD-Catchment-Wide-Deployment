@@ -1,7 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
   db,
-  appConfigTable,
   managersTable,
   crmsCasesTable,
   crmsCommentsTable,
@@ -129,15 +128,25 @@ export async function backfillCoreOpsState(dryRun: boolean): Promise<DomainRepor
   const tables: TableReport[] = [];
   const warnings: string[] = [];
 
-  // ── app_config ───────────────────────────────────────────────────────────
+  // ── app_config (manager/crew PINs) ──────────────────────────────────────
+  // Deliberately NOT migrated. Replit's live PINs are still the same
+  // known/documented default (123456/1234) most accounts never changed away
+  // from — see the external-API confidentiality audit,
+  // .scratch/replit-resync-2026-09-21/issues/37. Carrying that value forward
+  // would start GOV PaaS production on an already-compromised credential, so
+  // this domain leaves no app_config row behind on purpose. `seedAdmin()`
+  // (artifacts/api-server/src/routes/auth.ts) already generates a fresh
+  // random PIN pair on first boot whenever no app_config row exists — the
+  // same path a brand-new install takes — so nothing needs to be duplicated
+  // here, just skipped.
   const config = readJson<ConfigJson | null>("config.json", null);
-  if (config && !dryRun) {
-    await db
-      .insert(appConfigTable)
-      .values({ id: 1, managerPin: config.managerPin, crewPin: config.crewPin })
-      .onConflictDoUpdate({ target: appConfigTable.id, set: { managerPin: config.managerPin, crewPin: config.crewPin } });
+  tables.push({ table: "app_config", sourceCount: config ? 1 : 0, upserted: 0 });
+  if (config) {
+    warnings.push(
+      "manager/crew PINs intentionally NOT migrated from Replit's config.json (known/documented default) — " +
+      "seedAdmin() will generate a fresh random pair on this deployment's first boot; retrieve it from that boot's logs",
+    );
   }
-  tables.push({ table: "app_config", sourceCount: config ? 1 : 0, upserted: dryRun || !config ? 0 : 1 });
 
   // ── managers ─────────────────────────────────────────────────────────────
   const managers = readJson<ManagerJson[]>("managers.json", []);

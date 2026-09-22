@@ -51,6 +51,14 @@ export const leaveRequestsTable = pgTable(
 
     // Reference to committed leave entry (after approval)
     committedLeaveId: text("committed_leave_id").references(() => rosterLeavesTable.id),
+
+    // "Chain of cover" — set when this leave request was applied by an
+    // officer who was themselves currently covering someone else's leave.
+    // References the ORIGINAL absent officer being covered (not this
+    // request's own officerId) so the covering assignment can be handed off
+    // to this request's cover officer, and handed back on cancellation.
+    // .scratch/replit-resync-2026-09-21/issues/25.
+    replacementForOfficerId: text("replacement_for_officer_id").references(() => officersTable.id),
   },
   (table) => [
     check(

@@ -17,8 +17,10 @@ import {
 } from "@workspace/db";
 import { sendToManagers, broadcastToCrew, sendToCrewVehicle } from "./push";
 import { getRadarStatus } from "../radar-monitor.js";
+import { getOneMapToken } from "../lib/oneMapAuth.js";
 import { logger } from "../lib/logger";
 import { requireCrew, requireManager, requireAdminOrManager } from "./auth";
+import { getRosterSummary } from "./rosterPlan.js";
 
 const router = Router();
 
@@ -27,6 +29,11 @@ const router = Router();
 // isn't persisted (resets to 0 on restart, same as before).
 let stateVersion = 0;
 function bumpState() { stateVersion++; }
+// Included in the ETag alongside stateVersion so a client's cached ETag from
+// before a restart/redeploy can never coincidentally match the new
+// process's counter (which also restarts at 0) and produce a false 304 with
+// stale deployment state. .scratch/replit-resync-2026-09-21/issues/15.
+const processEpoch = Date.now();
 // Per-vehicle position rate-limit: reject updates faster than 5s from same vehicle
 const lastPositionTime = new Map<string, number>();
 
@@ -263,6 +270,66 @@ router.get("/search/sg", async (req, res) => {
   }
 });
 
+interface OneMapGeocodeResult {
+  BUILDINGNAME?: string;
+  BLOCK?: string;
+  ROAD?: string;
+  POSTALCODE?: string;
+}
+
+// OneMap uses the literal string "NIL" as its no-value sentinel across
+// BUILDINGNAME/BLOCK/ROAD/POSTALCODE (confirmed against a live response,
+// not assumed) — normalized away here so nothing downstream has to
+// special-case it.
+function nilToUndefined(v: string | undefined): string | undefined {
+  return v && v !== "NIL" ? v : undefined;
+}
+
+/** Reverse-geocode via OneMap Singapore (official .gov.sg source) instead
+ * of a non-government third party. Requires a bearer token — see
+ * lib/oneMapAuth.ts for the transparent 3-day-refresh handling.
+ * .scratch/replit-resync-2026-09-21 (external-API confidentiality audit,
+ * 2026-09-22). */
+async function reverseGeocodeOneMap(lat: number, lng: number): Promise<OneMapGeocodeResult | null> {
+  try {
+    const token = await getOneMapToken();
+    const url = `https://www.onemap.gov.sg/api/public/revgeocode?location=${lat},${lng}&buffer=40&addressType=All&otherFeatures=N`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, "User-Agent": "CWDFloodOps/1.0 (flood-ops-sg)" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { GeocodeInfo?: OneMapGeocodeResult[] };
+    const info = data.GeocodeInfo?.[0];
+    if (!info) return null;
+    return {
+      BUILDINGNAME: nilToUndefined(info.BUILDINGNAME),
+      BLOCK: nilToUndefined(info.BLOCK),
+      ROAD: nilToUndefined(info.ROAD),
+      POSTALCODE: nilToUndefined(info.POSTALCODE),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Reverse geocode a point to a human-readable address — used by any
+// map-pin-drop flow that needs an address auto-filled from coordinates.
+// .scratch/replit-resync-2026-09-21/issues/27.
+router.get("/search/sg/reverse", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < 1.1 || lat > 1.6 || lng < 103.5 || lng > 104.2) {
+    res.status(400).json({ error: "Valid Singapore coordinates are required" });
+    return;
+  }
+  const info = await reverseGeocodeOneMap(lat, lng);
+  const blockRoad = [info?.BLOCK, info?.ROAD].filter(Boolean).join(" ");
+  const withPostal = blockRoad && info?.POSTALCODE ? `${blockRoad}, Singapore ${info.POSTALCODE}` : blockRoad;
+  const address = info?.BUILDINGNAME || withPostal || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  res.json({ address });
+});
+
 interface PresetLocation {
   id: string;
   name: string;
@@ -408,17 +475,10 @@ function removeVehicleEntries(vehicleId: string, exceptLocationId?: string) {
   }
 }
 
-/** Server-side reverse geocode via Nominatim (no auth required). */
+/** Server-side reverse geocode via OneMap (see reverseGeocodeOneMap above). */
 async function geocodeRoadName(lat: number, lng: number): Promise<string | null> {
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`;
-    const res = await fetch(url, { headers: { "User-Agent": "CWDFloodOps/1.0 (flood-ops-sg)" } });
-    if (!res.ok) return null;
-    const json = await res.json() as { address?: { road?: string; pedestrian?: string; path?: string } };
-    return json?.address?.road ?? json?.address?.pedestrian ?? json?.address?.path ?? null;
-  } catch {
-    return null;
-  }
+  const info = await reverseGeocodeOneMap(lat, lng);
+  return info?.ROAD ?? null;
 }
 const customLocations = new Map<string, PresetLocation>(
   PRESET_LOCATIONS.map((l) => [l.id, l])
@@ -634,8 +694,14 @@ function parseDateFromRoster(text: string): string | null {
   return d.toLocaleDateString("en-SG", { day: "2-digit", month: "long", year: "numeric", timeZone: "Asia/Singapore" });
 }
 
-function parseRoster(text: string): RosterTeam[] {
-  const teams: RosterTeam[] = [];
+function parseRoster(text: string): { teams: RosterTeam[]; duplicateUnits: string[] } {
+  // Keyed by unitCode (not the composed id, which also embeds the vehicle
+  // number) so a corrected line pasted after an original for the SAME unit —
+  // even with a different or corrected vehicle number — replaces it instead
+  // of producing two team entries for one unit. Last line for a given unit
+  // wins. .scratch/replit-resync-2026-09-21/issues/15.
+  const byUnit = new Map<string, RosterTeam>();
+  const duplicateUnits = new Set<string>();
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     // Must start with a unit code: BU1, PJ3, WK1, CP2, KG1, etc.
@@ -657,7 +723,8 @@ function parseRoster(text: string): RosterTeam[] {
     const vehicleMatch = line.match(/^[A-Z]{1,4}\d+\s+([A-Z0-9]{4,})\s*:/i);
     const vehicleNumber = vehicleMatch ? vehicleMatch[1].toUpperCase() : "";
 
-    teams.push({
+    if (byUnit.has(unitCode)) duplicateUnits.add(unitCode);
+    byUnit.set(unitCode, {
       id: `${unitCode}-${vehicleNumber || "NA"}`,
       vehicleId: `${unitCode}-${vehicleNumber || "NA"}`,
       unitCode,
@@ -666,7 +733,7 @@ function parseRoster(text: string): RosterTeam[] {
       shift,
     });
   }
-  return teams;
+  return { teams: Array.from(byUnit.values()), duplicateUnits: Array.from(duplicateUnits) };
 }
 
 function extractAlertText(raw: string): string {
@@ -696,8 +763,9 @@ function weatherEmoji(weather: string | null): string {
   return "";
 }
 
-router.get("/deployments/state", requireManager, (req, res) => {
-  const etag = `"v${stateVersion}"`;
+router.get("/deployments/state", requireManager, async (req, res) => {
+  await syncDeploymentRosterFromCentralSource();
+  const etag = `"v${stateVersion}-${processEpoch}"`;
   if (req.headers["if-none-match"] === etag) {
     res.status(304).end();
     return;
@@ -719,15 +787,116 @@ router.get("/deployments/state", requireManager, (req, res) => {
   });
 });
 
-// ── Roster endpoints ──────────────────────────────────────────────────────────
-router.post("/roster/import", requireManager, (req, res) => {
-  const { text, merge } = req.body as { text: string; merge?: boolean };
-  if (!text) { res.status(400).json({ error: "text required" }); return; }
-  const teams = parseRoster(text);
-  if (!teams.length) {
-    res.status(400).json({ error: "no_teams", message: "No valid team lines found. Format: BU1 TST0004A: Name & Name (DAY)" });
-    return;
+// When a roster reimport changes a unit's vehicle (vehicleId embeds the
+// vehicle number: `${unitCode}-${vehicleNumber}`), migrate that unit's live
+// deployment state to the new identity instead of leaving it orphaned under
+// the old vehicleId — a "ghost" entry/assignment/position that never shows
+// up again — and instead of letting a crew device that pings its position
+// under the old id recreate a stale vehicle entry after the reimport. Only
+// handles units whose vehicle identity actually changed; a unit removed
+// from the roster entirely is out of scope here.
+// .scratch/replit-resync-2026-09-21/issues/15.
+function reconcileDeploymentStateWithRoster(previous: RosterTeam[], next: RosterTeam[]): void {
+  const nextByUnit = new Map(next.map((t) => [t.unitCode, t]));
+  for (const prevTeam of previous) {
+    const nextTeam = nextByUnit.get(prevTeam.unitCode);
+    if (!nextTeam || nextTeam.vehicleId === prevTeam.vehicleId) continue;
+    const oldId = prevTeam.vehicleId;
+    const newId = nextTeam.vehicleId;
+
+    const oldAssignment = assignments.get(oldId);
+    if (oldAssignment) {
+      deleteAssignment(oldId);
+      setAssignment({ ...oldAssignment, vehicleId: newId, vehicleNumber: nextTeam.vehicleNumber, unitCode: nextTeam.unitCode });
+    }
+
+    const oldPos = vehiclePositions.get(oldId);
+    if (oldPos) {
+      vehiclePositions.delete(oldId);
+      const migratedPos: VehiclePosition = { ...oldPos, vehicleId: newId, vehicleNumber: nextTeam.vehicleNumber, unitCode: nextTeam.unitCode };
+      vehiclePositions.set(newId, migratedPos);
+      persist(
+        () => db.insert(deploymentVehiclePositionsTable)
+          .values({ ...migratedPos, updatedAt: new Date(migratedPos.updatedAt) })
+          .onConflictDoUpdate({ target: deploymentVehiclePositionsTable.vehicleId, set: { ...migratedPos, updatedAt: new Date(migratedPos.updatedAt) } }),
+        `migrate position ${oldId} -> ${newId}`,
+      );
+      persist(
+        () => db.delete(deploymentVehiclePositionsTable).where(eq(deploymentVehiclePositionsTable.vehicleId, oldId)),
+        `delete stale position ${oldId}`,
+      );
+    }
+
+    for (const [key, entry] of Array.from(deploymentEntries.entries())) {
+      if (entry.vehicleId !== oldId) continue;
+      deploymentEntries.delete(key);
+      const migrated: DeploymentEntry = { ...entry, vehicleId: newId, vehicleNumber: nextTeam.vehicleNumber, unitCode: nextTeam.unitCode };
+      setEntry(migrated);
+      persist(
+        () => db.delete(deploymentEntriesTable).where(
+          and(eq(deploymentEntriesTable.locationId, entry.locationId), eq(deploymentEntriesTable.vehicleId, oldId)),
+        ),
+        `delete stale entry ${entry.locationId}:${oldId}`,
+      );
+    }
   }
+}
+
+function singaporeDateISO(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Singapore",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+// Auto-pulls today's roster from rosterPlan's own FIRB summary into the live
+// deployment roster, instead of requiring a manual paste-import every day.
+// Only touches state when the central roster actually differs from what's
+// currently loaded here (normalized comparison), so this is safe to call on
+// every read without generating unnecessary Postgres writes.
+// .scratch/replit-resync-2026-09-21/issues/27.
+async function syncDeploymentRosterFromCentralSource(): Promise<void> {
+  const date = singaporeDateISO();
+  const summaryText = await getRosterSummary(date);
+  const { teams } = parseRoster(summaryText);
+  if (teams.length === 0) return;
+
+  const normalized = (list: RosterTeam[]) =>
+    [...list]
+      .sort((a, b) => a.unitCode.localeCompare(b.unitCode))
+      .map(({ unitCode, vehicleNumber, partner, shift }) => ({ unitCode, vehicleNumber, partner, shift }));
+
+  if (JSON.stringify(normalized(currentRoster)) === JSON.stringify(normalized(teams))) return;
+
+  const previousRoster = currentRoster;
+  currentRoster = teams;
+  deploymentDate = new Date(`${date}T00:00:00+08:00`).toLocaleDateString("en-SG", {
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+    timeZone: "Asia/Singapore",
+  });
+  reconcileDeploymentStateWithRoster(previousRoster, currentRoster);
+  bumpState();
+  persistRoster();
+  persistSettings();
+}
+
+// ── Roster endpoints ──────────────────────────────────────────────────────────
+// Factored out of the route handler so autoDeployment.ts can trigger the same
+// import path directly (in-process function call) rather than an internal
+// HTTP self-call requiring its own auth story.
+// .scratch/replit-resync-2026-09-21/issues/32.
+export function importRosterText(text: string, merge?: boolean): {
+  count: number; teams: RosterTeam[]; deploymentDate: string; duplicateUnits: string[];
+} | { error: string; message: string } {
+  const { teams, duplicateUnits } = parseRoster(text);
+  if (!teams.length) {
+    return { error: "no_teams", message: "No valid team lines found. Format: BU1 TST0004A: Name & Name (DAY)" };
+  }
+  const previousRoster = currentRoster;
   if (merge && currentRoster.length > 0) {
     // Merge: update existing entries by id, append new ones — never wipes existing teams
     const existingMap = new Map(currentRoster.map(t => [t.id, t]));
@@ -736,24 +905,46 @@ router.post("/roster/import", requireManager, (req, res) => {
   } else {
     currentRoster = teams;
   }
+  reconcileDeploymentStateWithRoster(previousRoster, currentRoster);
   const rosterDate = parseDateFromRoster(text);
   if (rosterDate) deploymentDate = rosterDate;
   bumpState();
   persistRoster();
   persistSettings();
-  res.json({ success: true, count: teams.length, teams: currentRoster, deploymentDate });
+  return { count: teams.length, teams: currentRoster, deploymentDate, duplicateUnits };
+}
+
+router.post("/roster/import", requireManager, (req, res) => {
+  const { text, merge } = req.body as { text: string; merge?: boolean };
+  if (!text) { res.status(400).json({ error: "text required" }); return; }
+  const result = importRosterText(text, merge);
+  if ("error" in result) { res.status(400).json(result); return; }
+  res.json({ success: true, ...result });
 });
 
-router.get("/roster", (req, res) => {
+router.get("/roster", async (req, res) => {
+  await syncDeploymentRosterFromCentralSource();
   res.json({ teams: currentRoster });
 });
 
-router.delete("/roster", requireManager, (req, res) => {
+export function clearRoster(): void {
   currentRoster = [];
   bumpState();
   persistRoster();
+}
+
+router.delete("/roster", requireManager, (req, res) => {
+  clearRoster();
   res.json({ success: true });
 });
+
+// .scratch/replit-resync-2026-09-21/issues/32 — factored out for autoDeployment.ts.
+export function setActiveShiftsFiltered(shifts: string[]): string[] {
+  activeShifts = shifts.filter(s => ["DAY", "PD", "ND"].includes(s));
+  if (activeShifts.length === 0) activeShifts = ["DAY", "PD", "ND"];
+  persistSettings();
+  return activeShifts;
+}
 
 router.post("/roster/active-shifts", (req, res) => {
   const { shifts } = req.body as { shifts: string[] };
@@ -761,10 +952,7 @@ router.post("/roster/active-shifts", (req, res) => {
     res.status(400).json({ error: "shifts array required (e.g. [\"DAY\",\"PD\"])" });
     return;
   }
-  activeShifts = shifts.filter(s => ["DAY", "PD", "ND"].includes(s));
-  if (activeShifts.length === 0) activeShifts = ["DAY", "PD", "ND"];
-  persistSettings();
-  res.json({ success: true, activeShifts });
+  res.json({ success: true, activeShifts: setActiveShiftsFiltered(shifts) });
 });
 
 router.post("/roster/active-teams", (req, res) => {
@@ -780,9 +968,8 @@ router.post("/roster/active-teams", (req, res) => {
 });
 
 // ── Alert endpoints ───────────────────────────────────────────────────────────
-router.post("/alert/broadcast", requireManager, (req, res) => {
-  const { text } = req.body as { text: string };
-  if (!text) { res.status(400).json({ error: "text required" }); return; }
+// .scratch/replit-resync-2026-09-21/issues/32 — factored out for autoDeployment.ts.
+export function broadcastAlertText(text: string): string {
   const extracted = extractAlertText(text);
   activeAlert = {
     id: Date.now().toString(),
@@ -799,7 +986,6 @@ router.post("/alert/broadcast", requireManager, (req, res) => {
     }),
     `alert ${activeAlert.id}`,
   );
-  res.json({ success: true, extracted });
 
   // Push to managers and all crew
   const pushPayload = {
@@ -810,6 +996,14 @@ router.post("/alert/broadcast", requireManager, (req, res) => {
   };
   sendToManagers(pushPayload).catch(() => {});
   broadcastToCrew({ ...pushPayload, url: "/" }).catch(() => {});
+  return extracted;
+}
+
+router.post("/alert/broadcast", requireManager, (req, res) => {
+  const { text } = req.body as { text: string };
+  if (!text) { res.status(400).json({ error: "text required" }); return; }
+  const extracted = broadcastAlertText(text);
+  res.json({ success: true, extracted });
 });
 
 router.get("/alert", (req, res) => {
@@ -896,7 +1090,7 @@ interface AcceptLocationRequest {
 }
 
 router.post("/deployments/position", requireCrew, (req, res) => {
-  const { vehicleId, vehicleNumber, unitCode, partner, shift, lat, lng, acceptedLocationId, eta, etaMinutes } = req.body as {
+  const { vehicleId: clientVehicleId, vehicleNumber: clientVehicleNumber, unitCode, partner, shift, lat, lng, acceptedLocationId, eta, etaMinutes } = req.body as {
     vehicleId: string;
     vehicleNumber: string;
     unitCode: string;
@@ -909,10 +1103,20 @@ router.post("/deployments/position", requireCrew, (req, res) => {
     etaMinutes?: number;
   };
 
-  if (!vehicleId || !vehicleNumber || !unitCode) {
+  if (!clientVehicleId || !clientVehicleNumber || !unitCode) {
     res.status(400).json({ error: "bad_request", message: "Missing required fields" });
     return;
   }
+
+  // Re-resolve the roster-authoritative vehicleId/vehicleNumber for this unit
+  // before saving — a crew device can still be caching the vehicleId from
+  // before a roster reimport changed this unit's vehicle, which would
+  // otherwise recreate a stale vehicle position/entry under the old
+  // identity. unitCode is the stable identity here, not vehicleId.
+  // .scratch/replit-resync-2026-09-21/issues/15.
+  const currentTeam = currentRoster.find((t) => t.unitCode === unitCode);
+  const vehicleId = currentTeam?.vehicleId ?? clientVehicleId;
+  const vehicleNumber = currentTeam?.vehicleNumber ?? clientVehicleNumber;
 
   // Rate-limit: ignore duplicate position pings from same vehicle within 5s
   const now = Date.now();
@@ -1013,10 +1217,17 @@ router.get("/deployments/report", (req, res) => {
   const date = deploymentDate;
   const entries = Array.from(deploymentEntries.values());
   const deployedVehicleIds = new Set(entries.map(e => e.vehicleId));
+  // Also exclude by unitCode, not just vehicleId — a unit's entry and its
+  // pending assignment can end up keyed by different vehicleId strings after
+  // a roster reimport changes that unit's vehicle (see the stale-identity
+  // issue below), which would otherwise let both produce a report line for
+  // the same unit. The materialised entry is roster-authoritative; prefer it.
+  // .scratch/replit-resync-2026-09-21/issues/15.
+  const deployedUnitCodes = new Set(entries.map(e => e.unitCode));
 
   // Include pending assignments that haven't been accepted yet
   const pendingAssignments = Array.from(assignments.values()).filter(
-    a => a.status === "pending" && !deployedVehicleIds.has(a.vehicleId)
+    a => a.status === "pending" && !deployedVehicleIds.has(a.vehicleId) && !deployedUnitCodes.has(a.unitCode)
   );
 
   // Build combined line list, sort all by unitCode
@@ -1502,116 +1713,13 @@ router.put("/deployments/locations/:id", requireManager, (req, res) => {
   res.json({ success: true, location: updated });
 });
 
-// ── Rain-Path Auto-Assign (server fetches NEA rainfall, scores locations) ─────
-router.post("/deployments/rain-auto-assign", requireManager, async (_req, res) => {
-  const CLUSTERS: Record<string, string> = { BU: "A", PJ: "A", WK: "A", CP: "B", KG: "B" };
-  const clusterOf = (region: string) => CLUSTERS[region] ?? region;
-  const regionOf  = (unitCode: string) => unitCode.match(/^([A-Za-z]+)/)?.[1].toUpperCase() ?? "";
-
-  // ── Haversine distance (km) ──────────────────────────────────────────────
-  const haversine = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-    const R = 6371, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
-    const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  };
-
-  // ── Fetch NEA real-time rainfall ─────────────────────────────────────────
-  let scoreMap = new Map<string, number>();
-  try {
-    const r = await fetch("https://api-open.data.gov.sg/v2/real-time/api/rainfall", {
-      headers: { "User-Agent": "SG-Deployment-Tracker/1.0" },
-    });
-    if (r.ok) {
-      const json = await r.json() as any;
-      // Schema: json.data.readings[0].data = [{ stationId, value }]
-      // json.data.stations = [{ id, location: { latitude, longitude } }]
-      const stations: Array<{ id: string; lat: number; lng: number }> =
-        (json?.data?.stations ?? []).map((s: any) => ({
-          id: s.id,
-          lat: s.location?.latitude ?? 0,
-          lng: s.location?.longitude ?? 0,
-        }));
-      const readingMap = new Map<string, number>();
-      for (const entry of (json?.data?.readings?.[0]?.data ?? [])) {
-        readingMap.set(entry.stationId, Number(entry.value) || 0);
-      }
-      // For each location, find the nearest station's rainfall reading
-      for (const loc of customLocations.values()) {
-        let nearest = 0, nearestDist = Infinity;
-        for (const st of stations) {
-          const d = haversine(loc.lat, loc.lng, st.lat, st.lng);
-          if (d < nearestDist) { nearestDist = d; nearest = readingMap.get(st.id) ?? 0; }
-        }
-        scoreMap.set(loc.id, nearest);
-      }
-    }
-  } catch { /* fall through — use zero scores (same as auto-assign by priority) */ }
-
-  const assignedVehicleIds  = new Set(assignments.keys());
-  const occupiedLocationIds = new Set([
-    ...Array.from(assignments.values()).map(a => a.locationId),
-    ...Array.from(deploymentEntries.values()).map(e => e.locationId),
-  ]);
-
-  const availableByRegion = new Map<string, RosterTeam[]>();
-  for (const team of currentRoster) {
-    if (!activeShifts.includes(team.shift)) continue;
-    const region = regionOf(team.unitCode);
-    if (activeTeams.length > 0 && !activeTeams.includes(region)) continue;
-    const vid = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
-    if (assignedVehicleIds.has(vid)) continue;
-    if (!availableByRegion.has(region)) availableByRegion.set(region, []);
-    availableByRegion.get(region)!.push(team);
-  }
-
-  const takeTeam = (region: string): RosterTeam | null => {
-    const exact = availableByRegion.get(region);
-    if (exact?.length) return exact.shift()!;
-    const cluster = clusterOf(region);
-    for (const [r, teams] of availableByRegion) {
-      if (clusterOf(r) === cluster && teams.length) return teams.shift()!;
-    }
-    return null;
-  };
-
-  // Sort unoccupied locations: rainfall desc, then cluster/priority as tiebreaker
-  const unassignedLocs = Array.from(customLocations.values())
-    .filter(l => !occupiedLocationIds.has(l.id))
-    .sort((a, b) => {
-      const sa = scoreMap.get(a.id) ?? 0;
-      const sb = scoreMap.get(b.id) ?? 0;
-      if (Math.abs(sa - sb) > 0.001) return sb - sa;
-      const ca = clusterOf(a.region ?? ""), cb = clusterOf(b.region ?? "");
-      if (ca !== cb) return ca.localeCompare(cb);
-      return (a.priority ?? 999) - (b.priority ?? 999);
-    });
-
-  const newAssignments: Assignment[] = [];
-  for (const loc of unassignedLocs) {
-    const team = takeTeam(loc.region ?? "");
-    if (!team) continue;
-    const vehicleId = `${team.unitCode}-${team.vehicleNumber || "NA"}`;
-    const assignment: Assignment = {
-      vehicleId,
-      vehicleNumber: team.vehicleNumber || vehiclePositions.get(vehicleId)?.vehicleNumber || team.unitCode,
-      unitCode: team.unitCode, locationId: loc.id, locationName: loc.name,
-      lat: loc.lat, lng: loc.lng,
-      assignedAt: new Date().toISOString(), status: "pending",
-    };
-    setAssignment(assignment);
-    occupiedLocationIds.add(loc.id);
-    assignedVehicleIds.add(vehicleId);
-    newAssignments.push(assignment);
-  }
-
-  if (newAssignments.length > 0) bumpState();
-  res.json({
-    success: true,
-    count: newAssignments.length,
-    assignments: newAssignments.map(a => ({ unitCode: a.unitCode, locationName: a.locationName })),
-    rainfallScored: scoreMap.size > 0,
-  });
-});
+// The old POST /deployments/rain-auto-assign (server-fetched NEA rainfall,
+// region/cluster-only matching, ignored crew GPS entirely, and never even
+// read its own request body despite the frontend already sending
+// locationScores) has been removed — manager.ts's "Rain-Path Assign" button
+// now calls /deployments/optimize-assign instead, which already does
+// nearest-fresh-GPS-crew matching against the client-projected
+// locationScores. .scratch/replit-resync-2026-09-21/issues/16.
 
 router.post("/deployments/auto-assign", requireManager, (req, res) => {
   // Extract alphabetic prefix from unit code → region (e.g. "BU3" → "BU")
@@ -1831,22 +1939,59 @@ router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) =>
     const acknowledged = acknowledgedUnits.has(team.unitCode);
     const accepted = acceptedVehicleIds.has(vehicleId);
     // No-rain matching is initiated from the live map, so any active roster
-    // team can participate once it has a fresh GPS position. Rain mode keeps
-    // its existing alert acknowledgement/acceptance gate.
+    // team can participate once it has a fresh GPS position, including teams
+    // already deployed elsewhere (nearest-selected can reassign them to a
+    // closer location) — a pending assignment still makes a team
+    // unavailable. Rain mode keeps its existing acknowledgement/acceptance
+    // and occupied-vehicle gates. .scratch/replit-resync-2026-09-21/issues/22.
     const eligibleForMode = mode === "nearest-selected" || acknowledged || accepted;
-    return eligibleForMode && !occupiedVehicleIds.has(vehicleId);
+    const unavailableForMode = mode === "nearest-selected"
+      ? assignments.has(vehicleId)
+      : occupiedVehicleIds.has(vehicleId);
+    return eligibleForMode && !unavailableForMode;
   });
 
   const newAssignments: Assignment[] = [];
   let skippedNoGps = 0;
   const remainingLocations = targetLocations.filter(location => !occupiedLocationIds.has(location.id));
 
+  // Reassignment support (nearest-selected mode only) — reuses the same
+  // reassignment-history pattern the manual /deployments/assign route
+  // already uses below, so an already-deployed team picked for a closer
+  // location gets its old entry cleared and the move recorded, instead of
+  // ending up with both an old deployment entry and a new pending
+  // assignment at once. .scratch/replit-resync-2026-09-21/issues/22.
   const assignTeam = (
     team: typeof eligibleTeams[number],
     vehicleId: string,
     position: VehiclePosition,
     location: PresetLocation,
   ) => {
+    const oldEntry = mode === "nearest-selected"
+      ? Array.from(deploymentEntries.values()).find(entry => entry.vehicleId === vehicleId)
+      : undefined;
+    const previousLocationName = oldEntry
+      ? (customLocations.get(oldEntry.locationId)?.name ?? oldEntry.locationId)
+      : null;
+    if (oldEntry) {
+      const record: ReassignmentRecord = {
+        vehicleId,
+        vehicleNumber: oldEntry.vehicleNumber || team.vehicleNumber || position.vehicleNumber,
+        unitCode: oldEntry.unitCode || team.unitCode,
+        fromLocationId: oldEntry.locationId,
+        fromLocationName: previousLocationName!,
+        toLocationId: location.id,
+        toLocationName: location.name,
+        reassignedAt: new Date().toISOString(),
+        reassignedBy: "Optimize Assign",
+      };
+      reassignmentHistory.push(record);
+      persist(
+        () => db.insert(deploymentReassignmentHistoryTable).values({ ...record, reassignedAt: new Date(record.reassignedAt) }),
+        "reassignment history",
+      );
+      removeVehicleEntries(vehicleId);
+    }
     const assignment: Assignment = {
       vehicleId,
       vehicleNumber: team.vehicleNumber || position.vehicleNumber || team.unitCode,
@@ -1858,6 +2003,8 @@ router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) =>
       assignedAt: new Date().toISOString(),
       status: "pending",
       assignedBy: "Optimize Assign",
+      previousLocationId: oldEntry?.locationId ?? null,
+      previousLocationName,
     };
     setAssignment(assignment);
     occupiedVehicleIds.add(vehicleId);
@@ -1953,9 +2100,16 @@ router.post("/deployments/optimize-assign", requireAdminOrManager, (req, res) =>
   if (newAssignments.length > 0) {
     bumpState();
     for (const assignment of newAssignments) {
+      // Distinguish a reassignment from a fresh assignment — matches the
+      // wording the manual /deployments/assign route already uses, so a
+      // crew already in position isn't told "New Assignment" as if they
+      // had nothing before. .scratch/replit-resync-2026-09-21/issues/22.
+      const isReassignment = !!assignment.previousLocationId;
       sendToCrewVehicle(assignment.vehicleId, {
-        title: "📍 Optimized Assignment",
-        body: `You have been assigned to ${assignment.locationName}. Open the app to accept.`,
+        title: isReassignment ? `📍 Reassigned to ${assignment.locationName}` : "📍 Optimized Assignment",
+        body: isReassignment
+          ? `You have been reassigned to ${assignment.locationName}. Your previous location has been freed.`
+          : `You have been assigned to ${assignment.locationName}. Open the app to accept.`,
         tag: "assignment",
         url: "/",
       }).catch(() => {});

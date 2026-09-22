@@ -375,7 +375,13 @@ export default function SwapLeaveApply() {
 
   const canSubmitLeave = useMemo(() => {
     if (!leaveType || dates.length === 0 || !leaveOfficerId) return false;
-    return dates.every(d => { const info = dateCovers[d]; return info && !info.loading; });
+    // A DAY/PD date with no cover selected was previously submittable — the
+    // gate only checked that cover data finished loading, never that a cover
+    // was actually picked. .scratch/replit-resync-2026-09-21/issues/03.
+    return dates.every(d => {
+      const info = dateCovers[d];
+      return !!info && !info.loading && (!info.needsCover || !!info.selectedCoverId);
+    });
   }, [leaveOfficerId, leaveType, dates, dateCovers]);
 
   const reset = () => {

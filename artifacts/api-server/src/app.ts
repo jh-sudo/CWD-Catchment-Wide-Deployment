@@ -58,7 +58,7 @@ const CSP =
   "style-src 'self' 'unsafe-inline' https://unpkg.com https://fonts.googleapis.com; " +
   "font-src 'self' https://fonts.gstatic.com; " +
   "img-src 'self' data: https://*.googleapis.com https://*.gstatic.com https://*.basemaps.cartocdn.com https://unpkg.com; " +
-  "connect-src 'self' https://maps.googleapis.com wss://*.blitzortung.org; " +
+  "connect-src 'self' https://maps.googleapis.com; " +
   "object-src 'none'; base-uri 'self'; frame-ancestors 'none'";
 app.use((_req, res, next) => {
   res.setHeader("Content-Security-Policy", CSP);

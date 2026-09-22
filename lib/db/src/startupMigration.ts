@@ -160,6 +160,119 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
      ALTER TABLE ph_hr_ballot_state DROP COLUMN IF EXISTS initialized;`,
   );
 
+  // --- New-capability additive schema (2026-09-21 Replit resync, approved
+  // new-capability items) ---
+  await run(
+    "push_subscriptions.lightning_sectors",
+    `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS lightning_sectors text[]`,
+  );
+  await run(
+    "leave_requests.replacement_for_officer_id",
+    `ALTER TABLE leave_requests ADD COLUMN IF NOT EXISTS replacement_for_officer_id text REFERENCES officers(id)`,
+  );
+  await run(
+    "roster_config.strength",
+    `ALTER TABLE roster_config ADD COLUMN IF NOT EXISTS strength jsonb`,
+  );
+  await run(
+    "ph_builder_config table",
+    `CREATE TABLE IF NOT EXISTS ph_builder_config (
+       id integer PRIMARY KEY DEFAULT 1,
+       pattern text[] NOT NULL,
+       consecutive_ph boolean NOT NULL DEFAULT true,
+       same_holiday_previous_year boolean NOT NULL DEFAULT true,
+       excluded_officers text[] NOT NULL,
+       start_year smallint NOT NULL DEFAULT 2027
+     )`,
+  );
+  await run(
+    "ph_builder_presets table",
+    `CREATE TABLE IF NOT EXISTS ph_builder_presets (
+       id text PRIMARY KEY,
+       name text NOT NULL,
+       config jsonb NOT NULL,
+       updated_at text NOT NULL
+     )`,
+  );
+  await run(
+    "auto_deployment_settings table",
+    `CREATE TABLE IF NOT EXISTS auto_deployment_settings (
+       id integer PRIMARY KEY DEFAULT 1,
+       enabled boolean NOT NULL DEFAULT false,
+       recent_event_keys jsonb NOT NULL DEFAULT '[]',
+       last_run jsonb
+     )`,
+  );
+  await run(
+    "managers.meeting_groups",
+    `ALTER TABLE managers ADD COLUMN IF NOT EXISTS meeting_groups text[]`,
+  );
+  await run(
+    "push_subscriptions.account_id",
+    `ALTER TABLE push_subscriptions ADD COLUMN IF NOT EXISTS account_id text REFERENCES managers(id)`,
+  );
+  await run(
+    "meetings table",
+    `CREATE TABLE IF NOT EXISTS meetings (
+       id text PRIMARY KEY,
+       title text NOT NULL,
+       location text NOT NULL,
+       organizer_id text NOT NULL REFERENCES managers(id),
+       organizer_name text NOT NULL,
+       required_attendee_ids text[] NOT NULL,
+       optional_attendee_ids text[] NOT NULL,
+       proposed_slots jsonb NOT NULL,
+       responses jsonb NOT NULL,
+       status text NOT NULL,
+       confirmed_slot_id text,
+       confirmed_at text,
+       ready_notified_at text,
+       created_at text NOT NULL,
+       updated_at text NOT NULL,
+       reminder_state jsonb NOT NULL,
+       last_response_progress jsonb,
+       last_update_notice jsonb
+     )`,
+  );
+  await run(
+    "meeting_groups table",
+    `CREATE TABLE IF NOT EXISTS meeting_groups (
+       id text PRIMARY KEY,
+       name text NOT NULL,
+       owner_id text NOT NULL REFERENCES managers(id),
+       member_ids text[] NOT NULL,
+       created_at text NOT NULL,
+       updated_at text NOT NULL
+     )`,
+  );
+  await run(
+    "manager_calendar_events table",
+    `CREATE TABLE IF NOT EXISTS manager_calendar_events (
+       id text PRIMARY KEY,
+       owner_id text NOT NULL REFERENCES managers(id),
+       type text NOT NULL,
+       start_date text NOT NULL,
+       end_date text NOT NULL,
+       note text,
+       created_at text NOT NULL,
+       updated_at text NOT NULL
+     )`,
+  );
+  await run(
+    "roster_plan_backups table",
+    `CREATE TABLE IF NOT EXISTS roster_plan_backups (
+       id text PRIMARY KEY,
+       created_at text NOT NULL,
+       created_by text,
+       leave_count integer NOT NULL,
+       swap_count integer NOT NULL,
+       leaves jsonb NOT NULL,
+       overrides jsonb NOT NULL,
+       swaps jsonb NOT NULL,
+       leave_requests jsonb NOT NULL
+     )`,
+  );
+
   // --- Constraints (CHECK/FK/PK) deliberately NOT included here ---
   // These are data-integrity backstops, not required for any query to
   // succeed, so they don't belong in an emergency unblock-the-boot pass.

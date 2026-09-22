@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { getLightningSectorStatus } from "../lightning-cat.js";
 
 const router = Router();
 
@@ -13,24 +14,9 @@ function getFeatures() {
   return featuresCache;
 }
 
-router.get("/lightning/sectors", async (_req, res) => {
+router.get("/lightning/sectors", (_req, res) => {
   try {
-    const r = await fetch("https://api.andewmole.com/cat1/getWeatherInfo", {
-      signal: AbortSignal.timeout(8000),
-      headers: { "User-Agent": "FleetCoordinator/1.0" },
-    });
-    if (!r.ok) { res.status(502).json({ error: "Upstream unavailable" }); return; }
-    const data = await r.json() as any;
-    const armysectors = data?.data?.armysectors ?? {};
-    const sectors = Object.values(armysectors).map((s: any) => ({
-      name: (s.sector?.name ?? "Unknown").replace(/^Sector /, ""),
-      lat: s.sector?.latitude as number,
-      lng: s.sector?.longitude as number,
-      cat: String(s.weather?.CAT ?? "3"),
-      catStartOn: s.weather?.cat_start_on ?? null,
-      catEndOn: s.weather?.cat_end_on ?? null,
-    }));
-    res.json({ sectors, updatedAt: new Date().toISOString() });
+    res.json({ sectors: getLightningSectorStatus(), updatedAt: new Date().toISOString() });
   } catch {
     res.status(502).json({ error: "Lightning data unavailable" });
   }
@@ -129,10 +115,19 @@ publicRouter.get("/lightning", (_req, res) => {
     display:none;align-items:center;gap:10px;background:var(--card);border:1px solid var(--border);
     border-radius:12px;padding:10px 16px;box-shadow:0 4px 16px var(--shadow);
     font-family:system-ui,-apple-system,sans-serif}
+  #selection-box{min-width:190px;max-width:280px}
+  #selection-title{font-size:12px;font-weight:700;color:var(--fg)}
+  #selection-summary{font-size:10px;color:var(--muted);margin-top:2px;line-height:1.35}
+  #clear-sectors{margin-top:3px;border:0;background:none;color:#60a5fa;font-size:10px;
+    cursor:pointer;padding:0;text-decoration:underline}
   #push-btn{padding:8px 16px;border-radius:8px;border:none;font-size:13px;font-weight:700;
     cursor:pointer;background:#3b82f6;color:#fff;white-space:nowrap}
   #push-btn.on{background:var(--card);color:var(--fg);border:1px solid var(--border)}
   #push-label{font-size:11px;color:var(--muted);max-width:220px;line-height:1.4}
+  @media(max-width:700px){
+    #subscribe-bar{width:calc(100% - 24px);flex-wrap:wrap;justify-content:center}
+    #selection-box{flex:1;max-width:none;min-width:180px}
+  }
   /* ── Leaflet overrides ────────────────────────────────────── */
   .leaflet-container{background:var(--map-bg)}
   .leaflet-control-zoom{border:1px solid var(--border)!important;box-shadow:none!important}
@@ -144,16 +139,6 @@ publicRouter.get("/lightning", (_req, res) => {
   .lightning-label{background:transparent;border:none;box-shadow:none;color:#fff;
     font-size:10px;font-weight:700;text-shadow:0 1px 3px #000,0 0 6px #000;pointer-events:none}
   [data-theme="light"] .lightning-label{color:#1e293b;text-shadow:0 1px 2px rgba(255,255,255,.8)}
-  #regional-lightning-status{position:absolute;top:98px;left:50%;transform:translateX(-50%);z-index:999;
-    display:none;padding:5px 10px;border-radius:8px;border:1px solid #b45309;background:rgba(120,53,15,.9);
-    color:#ffedd5;font-size:11px;font-weight:700;font-family:system-ui,-apple-system,sans-serif;
-    white-space:nowrap;box-shadow:0 2px 8px var(--shadow);pointer-events:none}
-  #regional-lightning-status.on{display:block}
-  .regional-lightning-pin{background:transparent;border:0}
-  .regional-lightning-pin span{display:grid;place-items:center;width:22px;height:22px;border-radius:50%;
-    background:#f97316;color:#fff;border:2px solid #fff;font:700 16px/1 system-ui,-apple-system,sans-serif;
-    box-shadow:0 0 0 4px rgba(249,115,22,.28),0 2px 8px rgba(0,0,0,.48)}
-  [data-theme="light"] .regional-lightning-pin span{border-color:#fff7ed}
 </style>
 </head>
 <body>
@@ -174,11 +159,15 @@ publicRouter.get("/lightning", (_req, res) => {
 
 <div id="cat-banner"></div>
 <div id="radar-ts" id="radar-ts"></div>
-<div id="regional-lightning-status" aria-live="polite"></div>
 
 <div id="subscribe-bar">
+  <div id="selection-box">
+    <div id="selection-title">Tap zones on the map</div>
+    <div id="selection-summary">No zones selected — alerts for all sectors</div>
+    <button id="clear-sectors" type="button" onclick="clearSectorSelection()" style="display:none">Clear selection</button>
+  </div>
   <button id="push-btn" onclick="togglePush()">🔔 Subscribe to CAT 1</button>
-  <div id="push-label">Get a push alert every 5 min when CAT 1 is active.</div>
+  <div id="push-label">Select one or more zones, then subscribe.</div>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -186,7 +175,7 @@ publicRouter.get("/lightning", (_req, res) => {
 // ── Theme ─────────────────────────────────────────────────────────────────────
 var TILE_DARK  = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
 var TILE_LIGHT = 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
-var TILE_ATTR  = '&copy; <a href="https://carto.com">CARTO</a> | nearby strikes: <a href="https://www.blitzortung.org/">Blitzortung.org</a> contributors';
+var TILE_ATTR  = '&copy; <a href="https://carto.com">CARTO</a>';
 var isDark = localStorage.getItem('lgtn-theme') !== 'light';
 
 function applyTheme(dark) {
@@ -315,26 +304,6 @@ var lightningOn = false;
 var lightningLayers = [];
 var lightningTimer2 = null;
 var lightningFeaturesCache = null;
-var regionalLightningLayers = [];
-var regionalLightningWs = null;
-var regionalLightningWsIndex = 0;
-var regionalLightningReconnectTimer = null;
-var regionalLightningPruneTimer = null;
-
-// Nearby external strikes use the community Blitzortung live stream. The
-// rectangle is deliberately a conservative Singapore exclusion zone: points
-// within it are never shown by this layer, even if they are over nearby water.
-// The 30 km distance is measured from the nearest point on that exclusion zone,
-// so Johor and the northern Indonesian islands are included without mixing in
-// Singapore's own lightning data.
-var REGIONAL_LIGHTNING_WS = [
-  'wss://ws1.blitzortung.org/',
-  'wss://ws7.blitzortung.org/',
-  'wss://ws8.blitzortung.org/',
-];
-var SINGAPORE_EXCLUSION = { south: 1.15, north: 1.48, west: 103.55, east: 104.10 };
-var REGIONAL_LIGHTNING_RADIUS_KM = 30;
-var REGIONAL_LIGHTNING_MAX_AGE_MS = 15 * 60 * 1000;
 
 var CAT_COLORS = {
   '1': { fill: '#dc2626', stroke: '#991b1b', fillOpacity: 0.40 },
@@ -353,199 +322,6 @@ async function getLightningFeatures() {
 function clearLightningLayers() {
   lightningLayers.forEach(function(l){ try { map.removeLayer(l); } catch(e){} });
   lightningLayers = [];
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
-}
-
-function haversineKm(lat1, lng1, lat2, lng2) {
-  var toRad = Math.PI / 180;
-  var dLat = (lat2 - lat1) * toRad;
-  var dLng = (lng2 - lng1) * toRad;
-  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) *
-    Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function nearbyExternalDistanceKm(lat, lng) {
-  if (
-    lat >= SINGAPORE_EXCLUSION.south && lat <= SINGAPORE_EXCLUSION.north &&
-    lng >= SINGAPORE_EXCLUSION.west && lng <= SINGAPORE_EXCLUSION.east
-  ) return null;
-
-  var nearestLat = clamp(lat, SINGAPORE_EXCLUSION.south, SINGAPORE_EXCLUSION.north);
-  var nearestLng = clamp(lng, SINGAPORE_EXCLUSION.west, SINGAPORE_EXCLUSION.east);
-  return haversineKm(lat, lng, nearestLat, nearestLng);
-}
-
-function regionalStrikeTime(strike) {
-  // Blitzortung provides nanoseconds since Unix epoch. Treat malformed or
-  // stale timestamps as untrusted rather than surfacing old alerts.
-  var raw = Number(strike && strike.time);
-  var timestamp = raw > 1e14 ? Math.floor(raw / 1000000) : raw;
-  if (!Number.isFinite(timestamp) || timestamp < Date.now() - REGIONAL_LIGHTNING_MAX_AGE_MS || timestamp > Date.now() + 60000) {
-    return null;
-  }
-  return timestamp;
-}
-
-function updateRegionalLightningStatus(text, state) {
-  var status = document.getElementById('regional-lightning-status');
-  if (!status) return;
-  status.textContent = text;
-  status.className = state === 'off' ? '' : 'on';
-}
-
-function refreshRegionalLightningStatus() {
-  if (!lightningOn) return;
-  var count = regionalLightningLayers.length;
-  updateRegionalLightningStatus(
-    count
-      ? '⚡ Nearby external: ' + count + ' strike' + (count === 1 ? '' : 's') + ' in the last 15 min'
-      : '⚡ Nearby external: watching Malaysia / Indonesia within 30 km',
-    'on'
-  );
-}
-
-function clearRegionalLightningLayers() {
-  regionalLightningLayers.forEach(function(record) {
-    try { map.removeLayer(record.layer); } catch(e) {}
-  });
-  regionalLightningLayers = [];
-}
-
-function pruneRegionalLightning() {
-  var cutoff = Date.now() - REGIONAL_LIGHTNING_MAX_AGE_MS;
-  regionalLightningLayers = regionalLightningLayers.filter(function(record) {
-    if (record.timestamp >= cutoff) return true;
-    try { map.removeLayer(record.layer); } catch(e) {}
-    return false;
-  });
-  refreshRegionalLightningStatus();
-}
-
-// Blitzortung sends LZW-compressed JSON frames through its public live stream.
-function decodeRegionalLightningFrame(frame) {
-  var chars = ('' + frame).split('');
-  if (!chars.length) return '';
-  var current = chars[0];
-  var first = current;
-  var output = [current];
-  var nextCode = 256;
-  var dictionary = {};
-  for (var i = 1; i < chars.length; i++) {
-    var code = chars[i].charCodeAt(0);
-    var entry = code < 256 ? chars[i] : (dictionary[code] ? dictionary[code] : first + current);
-    output.push(entry);
-    current = entry.charAt(0);
-    dictionary[nextCode] = first + current;
-    nextCode++;
-    first = entry;
-  }
-  return output.join('');
-}
-
-function addNearbyExternalStrike(strike) {
-  var lat = Number(strike && strike.lat);
-  var lng = Number(strike && strike.lon);
-  var timestamp = regionalStrikeTime(strike);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) || timestamp === null) return;
-
-  var distance = nearbyExternalDistanceKm(lat, lng);
-  if (distance === null || distance > REGIONAL_LIGHTNING_RADIUS_KM) return;
-
-  var duplicate = regionalLightningLayers.some(function(record) {
-    return Math.abs(record.lat - lat) < 0.0001 && Math.abs(record.lng - lng) < 0.0001 &&
-      Math.abs(record.timestamp - timestamp) < 1000;
-  });
-  if (duplicate) return;
-
-  var observedAt = new Date(timestamp).toLocaleTimeString('en-SG', {
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
-  var marker = L.marker([lat, lng], {
-    icon: L.divIcon({
-      className: 'regional-lightning-pin',
-      html: '<span>ϟ</span>',
-      iconSize: [22, 22],
-      iconAnchor: [11, 11],
-    }),
-    title: 'Nearby external lightning strike',
-    keyboard: true,
-  }).bindTooltip(
-    'Nearby external lightning<br>' +
-    Math.round(distance) + ' km from Singapore • ' + observedAt + ' SGT',
-    { direction: 'top', offset: [0, -12], opacity: 0.95 }
-  ).addTo(map);
-
-  regionalLightningLayers.push({ lat: lat, lng: lng, timestamp: timestamp, layer: marker });
-  pruneRegionalLightning();
-}
-
-function connectRegionalLightningStream() {
-  if (!lightningOn || regionalLightningWs) return;
-  updateRegionalLightningStatus('⚡ Nearby external: connecting to live strike feed…', 'on');
-  var url = REGIONAL_LIGHTNING_WS[regionalLightningWsIndex % REGIONAL_LIGHTNING_WS.length];
-  try {
-    var ws = new WebSocket(url);
-    regionalLightningWs = ws;
-    ws.onopen = function() {
-      if (ws !== regionalLightningWs) return;
-      ws.send(JSON.stringify({ a: 111 }));
-      refreshRegionalLightningStatus();
-    };
-    ws.onmessage = function(event) {
-      try {
-        addNearbyExternalStrike(JSON.parse(decodeRegionalLightningFrame(event.data)));
-      } catch(e) {
-        // The stream occasionally sends non-strike frames. Ignore them.
-      }
-    };
-    ws.onerror = function() {
-      try { ws.close(); } catch(e) {}
-    };
-    ws.onclose = function() {
-      if (ws !== regionalLightningWs) return;
-      regionalLightningWs = null;
-      if (!lightningOn) return;
-      regionalLightningWsIndex++;
-      updateRegionalLightningStatus('⚡ Nearby external: reconnecting to live strike feed…', 'on');
-      clearTimeout(regionalLightningReconnectTimer);
-      regionalLightningReconnectTimer = setTimeout(connectRegionalLightningStream, 3000);
-    };
-  } catch(e) {
-    regionalLightningWs = null;
-    regionalLightningWsIndex++;
-    if (lightningOn) {
-      clearTimeout(regionalLightningReconnectTimer);
-      regionalLightningReconnectTimer = setTimeout(connectRegionalLightningStream, 3000);
-    }
-  }
-}
-
-function startRegionalLightningStream() {
-  clearTimeout(regionalLightningReconnectTimer);
-  pruneRegionalLightning();
-  connectRegionalLightningStream();
-  if (!regionalLightningPruneTimer) {
-    regionalLightningPruneTimer = setInterval(pruneRegionalLightning, 30000);
-  }
-}
-
-function stopRegionalLightningStream() {
-  clearTimeout(regionalLightningReconnectTimer);
-  regionalLightningReconnectTimer = null;
-  if (regionalLightningPruneTimer) {
-    clearInterval(regionalLightningPruneTimer);
-    regionalLightningPruneTimer = null;
-  }
-  var ws = regionalLightningWs;
-  regionalLightningWs = null;
-  if (ws) { try { ws.close(); } catch(e) {} }
-  clearRegionalLightningLayers();
-  updateRegionalLightningStatus('', 'off');
 }
 
 async function loadLightningSectors() {
@@ -569,14 +345,25 @@ async function loadLightningSectors() {
       (feat.polygons || []).forEach(function(rings) {
         // rings[0] = outer ring, rings[1..] = holes; each ring is [[lat,lng],...]
         var latlngs = rings.map(function(ring){ return ring.map(function(p){ return [p[0], p[1]]; }); });
+        var isSelected = selectedLightningSectors.indexOf(feat.name) >= 0;
         var poly = L.polygon(latlngs, {
           fillColor: c.fill,
-          fillOpacity: c.fillOpacity,
-          color: c.stroke,
-          weight: 1.2,
+          fillOpacity: isSelected ? Math.max(c.fillOpacity, 0.52) : c.fillOpacity,
+          color: isSelected ? '#38bdf8' : c.stroke,
+          weight: isSelected ? 4 : 1.2,
           opacity: 0.85,
-          interactive: false,
+          // Tap a zone to only be alerted for that sector.
+          // .scratch/replit-resync-2026-09-21/issues/24.
+          interactive: true,
         }).addTo(map);
+        poly.bindTooltip(
+          'Sector ' + feat.name + ' — ' + (LIGHTNING_SECTOR_NAMES[feat.name] || feat.name) +
+          '<br><b>' + (isSelected ? 'Selected for alerts' : 'Tap to select') + '</b>'
+        );
+        poly.on('click', function(e) {
+          L.DomEvent.stopPropagation(e);
+          toggleSectorSelection(feat.name);
+        });
         lightningLayers.push(poly);
       });
 
@@ -622,10 +409,8 @@ function toggleLightning() {
   if (lightningOn) {
     loadLightningSectors();
     lightningTimer2 = setInterval(loadLightningSectors, 5 * 60 * 1000);
-    startRegionalLightningStream();
   } else {
     clearLightningLayers();
-    stopRegionalLightningStream();
     if (lightningTimer2) { clearInterval(lightningTimer2); lightningTimer2 = null; }
     btn.className = 'ctl-btn';
     badge.textContent = 'OFF';
@@ -639,6 +424,77 @@ function toggleLightning() {
 var VAPID_KEY = null;
 var SW_REG = null;
 var pushState = 'off';
+// Per-sector CAT1 alert selection — tap a zone on the map to only be
+// notified for that sector instead of all of them. Empty means all sectors.
+// .scratch/replit-resync-2026-09-21/issues/24.
+var selectedLightningSectors = [];
+try {
+  selectedLightningSectors = JSON.parse(localStorage.getItem('lightning-alert-sectors') || '[]');
+  if (!Array.isArray(selectedLightningSectors)) selectedLightningSectors = [];
+} catch(e) { selectedLightningSectors = []; }
+
+var LIGHTNING_SECTOR_NAMES = {
+  '1N':'Tuas / Pioneer','1S':'Tuas','L1':'Tengah Reservoir / Pasir Laba',
+  'L2':'Poyan Reservoir','L3':'Murai Reservoir','L4':'Sarimbun / Lim Chu Kang',
+  '02':'Jurong West / Tengah','3S':'Choa Chu Kang','3N':'Kranji / Lim Chu Kang',
+  '04':'Sungei Buloh / Woodlands West','05':'Bukit Panjang','06':'Mandai / Woodlands',
+  '07':'Bukit Timah / Dairy Farm','8N':'Jurong Lake / Jurong East',
+  '8S':'Jurong Island / Tuas South','09':'Southern Islands / Sentosa',
+  '10N':'Woodlands / Mandai North','10S':'Upper Seletar / Mandai',
+  '11W':'Sembawang / Woodlands East','11E':'Yishun / Sembawang',
+  '12':'Bishan / Upper Thomson','13N':'Bukit Panjang East / Zhenghua',
+  '13S':'Buona Vista / Holland','14':'Queenstown / Redhill','15':'Tampines / Bedok',
+  '16N':'Sengkang / Punggol','16S':'Serangoon / Hougang','17':'Punggol North Coast',
+  '18W':'Pasir Ris / Tampines East','18E':'Pasir Ris / Changi Village',
+  '19N':'Pulau Ubin / NE Waters','19S':'Changi / Ubin South'
+};
+
+function updateSelectionSummary() {
+  var summary = document.getElementById('selection-summary');
+  var clear = document.getElementById('clear-sectors');
+  if (!summary || !clear) return;
+  if (!selectedLightningSectors.length) {
+    summary.textContent = 'No zones selected — alerts for all sectors';
+    clear.style.display = 'none';
+  } else {
+    summary.textContent = selectedLightningSectors.map(function(code){ return 'Sector ' + code; }).join(', ');
+    clear.style.display = 'inline-block';
+  }
+}
+
+async function saveSectorPreference() {
+  localStorage.setItem('lightning-alert-sectors', JSON.stringify(selectedLightningSectors));
+  updateSelectionSummary();
+  if (!SW_REG) return;
+  var existing = await SW_REG.pushManager.getSubscription();
+  if (existing) {
+    var response = await fetch('/api/push/subscribe', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        subscription:existing,
+        type:'crew',
+        lightningSectors:selectedLightningSectors
+      })
+    });
+    if (response.ok) updatePushBtn();
+  }
+}
+
+async function toggleSectorSelection(code) {
+  var index = selectedLightningSectors.indexOf(code);
+  if (index >= 0) selectedLightningSectors.splice(index, 1);
+  else selectedLightningSectors.push(code);
+  selectedLightningSectors.sort();
+  await saveSectorPreference();
+  loadLightningSectors();
+}
+
+async function clearSectorSelection() {
+  selectedLightningSectors = [];
+  await saveSectorPreference();
+  loadLightningSectors();
+}
 
 function urlBase64ToUint8Array(b) {
   var p = b.replace(/-/g,'+').replace(/_/g,'/').padEnd(b.length+(4-b.length%4)%4,'=');
@@ -682,11 +538,15 @@ function updatePushBtn() {
   if (pushState === 'on') {
     btn.textContent = '🔕 Unsubscribe';
     btn.className = 'on';
-    lbl.textContent = 'You will be notified every 5 min while CAT 1 is active.';
+    lbl.textContent = selectedLightningSectors.length
+      ? 'Subscribed only to ' + selectedLightningSectors.map(function(code){ return 'Sector ' + code; }).join(', ') + '.'
+      : 'Subscribed to all CAT 1 sectors.';
   } else {
     btn.textContent = '🔔 Subscribe to CAT 1';
     btn.className = '';
-    lbl.textContent = 'Get a push alert every 5 min when CAT 1 is active.';
+    lbl.textContent = selectedLightningSectors.length
+      ? 'Subscribe only to ' + selectedLightningSectors.map(function(code){ return 'Sector ' + code; }).join(', ') + '.'
+      : 'Subscribe for alerts in all CAT 1 sectors.';
   }
 }
 
@@ -710,7 +570,16 @@ async function togglePush() {
       }
       if (!VAPID_KEY) VAPID_KEY = (await (await fetch('/api/push/vapid-key')).json()).publicKey;
       var sub = await SW_REG.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_KEY) });
-      await fetch('/api/push/subscribe', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ subscription: sub, type: 'crew' }) });
+      var response = await fetch('/api/push/subscribe', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          subscription: sub,
+          type: 'crew',
+          lightningSectors: selectedLightningSectors
+        })
+      });
+      if (!response.ok) throw new Error('Unable to save CAT 1 subscription');
       pushState = 'on';
     }
     updatePushBtn();
@@ -720,6 +589,10 @@ async function togglePush() {
   btn.disabled = false;
 }
 
+// Lightning display now shown by default on page load, instead of requiring
+// a manual "Lightning" button click first. .scratch/replit-resync-2026-09-21/issues/24.
+toggleLightning();
+updateSelectionSummary();
 initPush();
 </script>
 </body>

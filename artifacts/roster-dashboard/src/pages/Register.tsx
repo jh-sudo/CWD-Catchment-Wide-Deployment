@@ -18,9 +18,8 @@ const CATCHMENT_OPTIONS = [
 interface Officer {
   id: string;
   name: string;
-  unitCode: string;
-  catchment: string;
-  active: boolean;
+  unitCode?: string;
+  catchment?: string;
 }
 
 export default function Register() {
@@ -36,9 +35,15 @@ export default function Register() {
   const [done, setDone] = useState(false);
 
   useEffect(() => {
-    fetch("/api/roster-plan/officers")
+    // The full /officers endpoint is unauthenticated and returns every
+    // column on the officer record — this signup page only needs a name to
+    // pick from, so use the minimal, purpose-built picker endpoint instead.
+    // activeOnly=1 preserves this page's existing active-only filtering
+    // (the endpoint defaults to including inactive officers for
+    // RosterBuilder.tsx's different needs). .scratch/replit-resync-2026-09-21/issues/21.
+    fetch("/api/roster-plan/officer-names?activeOnly=1")
       .then(r => r.json())
-      .then((all: Officer[]) => setOfficers(all.filter(o => o.active)))
+      .then((all: Officer[]) => setOfficers(all))
       .catch(() => {});
   }, []);
 
@@ -156,7 +161,7 @@ export default function Register() {
                       .sort((a, b) => a.name.localeCompare(b.name))
                       .map(o => (
                         <SelectItem key={o.id} value={o.id}>
-                          {o.name} — {o.unitCode}
+                          {o.name}{o.unitCode ? ` — ${o.unitCode}` : ""}
                         </SelectItem>
                       ))}
                   </SelectContent>

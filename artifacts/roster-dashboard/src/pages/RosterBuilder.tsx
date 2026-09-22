@@ -24,6 +24,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/context/AuthContext";
 import { useRosterVersion } from "@/context/RosterVersionContext";
+import StrengthTab from "@/components/StrengthTab";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface PatternSummary {
@@ -1221,9 +1222,10 @@ export default function RosterBuilder() {
         </div>
 
         <Tabs defaultValue="build" className="w-full">
-          <TabsList className="grid grid-cols-2 w-52">
+          <TabsList className="grid grid-cols-3 w-72">
             <TabsTrigger value="build">Build</TabsTrigger>
             <TabsTrigger value="requirements">Requirements</TabsTrigger>
+            <TabsTrigger value="strength">Strength</TabsTrigger>
           </TabsList>
 
           <TabsContent value="build" className="space-y-6 mt-4">
@@ -2082,6 +2084,10 @@ export default function RosterBuilder() {
 
           <TabsContent value="requirements" className="mt-4">
             <RosterRequirements />
+          </TabsContent>
+
+          <TabsContent value="strength" className="mt-4">
+            <StrengthTab />
           </TabsContent>
         </Tabs>
       </div>

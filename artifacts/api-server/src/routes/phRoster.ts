@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, gte, lte } from "drizzle-orm";
+import { eq, and, gte, lte, inArray } from "drizzle-orm";
 import { requireManager, getManager } from "./auth.js";
 import { applyPHRoster } from "./rosterPlan.js";
 import {
@@ -13,6 +13,8 @@ import {
   phFaqTable,
   phHrBallotStateTable,
   phRotationStateTable,
+  phBuilderConfigTable,
+  phBuilderPresetsTable,
 } from "@workspace/db";
 import {
   buildHRBallotPoolSummary,
@@ -243,6 +245,104 @@ phRosterRouter.patch("/ph-roster-ref/hr-ballot-pool", requireManager, (req, res)
   res.status(409).json({
     error: "Hari Raya ballot pools are derived from scheduled Puasa/Haji duties and refresh automatically only after every officer has served that specific holiday.",
   });
+});
+
+// These named routes must be registered before /ph-roster-ref/:date below,
+// otherwise Express treats "builder-config" as a date parameter.
+phRosterRouter.get("/ph-roster-ref/builder-config", requireManager, async (_req, res) => {
+  res.json(await loadPHBuilderConfig());
+});
+
+phRosterRouter.put("/ph-roster-ref/builder-config", requireManager, async (req, res) => {
+  try {
+    const config = await loadValidatedPHBuilderConfig(req.body);
+    await savePHBuilderConfig(config);
+    res.json({ ok: true, config });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Invalid PH Builder settings" });
+  }
+});
+
+phRosterRouter.get("/ph-roster-ref/builder-presets", requireManager, async (_req, res) => {
+  res.json({ presets: await loadPHBuilderPresets() });
+});
+
+phRosterRouter.post("/ph-roster-ref/builder-presets", requireManager, async (req, res) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    if (!name) throw new Error("Enter a name for these settings");
+    if (name.length > 60) throw new Error("Settings name must be 60 characters or fewer");
+
+    const config = await loadValidatedPHBuilderConfig(req.body?.config);
+    const presets = await loadPHBuilderPresets();
+    const existing = presets.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+    const now = new Date().toISOString();
+    const savedPreset: PHBuilderPreset = existing
+      ? { ...existing, name, config, updatedAt: now }
+      : { id: randomUUID(), name, config, updatedAt: now };
+
+    await db
+      .insert(phBuilderPresetsTable)
+      .values(savedPreset)
+      .onConflictDoUpdate({
+        target: phBuilderPresetsTable.id,
+        set: { name: savedPreset.name, config: savedPreset.config, updatedAt: savedPreset.updatedAt },
+      });
+    await savePHBuilderConfig(config);
+
+    const nextPresets = existing
+      ? presets.map((preset) => (preset.id === existing.id ? savedPreset : preset))
+      : [savedPreset, ...presets];
+    res.json({ ok: true, preset: savedPreset, presets: nextPresets, config });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not save PH Builder settings" });
+  }
+});
+
+phRosterRouter.patch("/ph-roster-ref/builder-presets/:id", requireManager, async (req, res) => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const name = String(req.body?.name ?? "").trim();
+    if (!name) throw new Error("Enter a name for these settings");
+    if (name.length > 60) throw new Error("Settings name must be 60 characters or fewer");
+
+    const presets = await loadPHBuilderPresets();
+    const existing = presets.find((preset) => preset.id === id);
+    if (!existing) {
+      res.status(404).json({ error: "Saved PH Builder settings not found" });
+      return;
+    }
+    const duplicate = presets.find(
+      (preset) => preset.id !== id && preset.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (duplicate) throw new Error("Another saved setting already uses that name");
+
+    const updatedAt = new Date().toISOString();
+    await db.update(phBuilderPresetsTable).set({ name, updatedAt }).where(eq(phBuilderPresetsTable.id, id));
+    const renamedPreset = { ...existing, name, updatedAt };
+    const nextPresets = presets.map((preset) => (preset.id === id ? renamedPreset : preset));
+    res.json({ ok: true, preset: renamedPreset, presets: nextPresets });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not rename PH Builder settings" });
+  }
+});
+
+phRosterRouter.delete("/ph-roster-ref/builder-presets/:id", requireManager, async (req, res) => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const presets = await loadPHBuilderPresets();
+    const existing = presets.find((preset) => preset.id === id);
+    if (!existing) {
+      res.status(404).json({ error: "Saved PH Builder settings not found" });
+      return;
+    }
+
+    await db.delete(phBuilderPresetsTable).where(eq(phBuilderPresetsTable.id, id));
+    const nextPresets = presets.filter((preset) => preset.id !== id);
+    res.json({ ok: true, deletedPreset: existing, presets: nextPresets });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Could not delete PH Builder settings" });
+  }
 });
 
 // GET /api/ph-roster-ref/:date — get reference rows for a date
@@ -494,9 +594,9 @@ const PH_YEAR_SLOTS: Record<number, PHSlot[]> = {
   ],
   2027: [
     // 11 Public Holidays.  OIL only when the PH itself falls on a Sunday.
-    // HR Haji (16 May) falls on a Sunday → OIL on 17 May (Monday). CNY Day 2
-    // (7 Feb) also falls on a Sunday → OIL on 8 Feb (Monday). No other 2027
-    // PHs fall on Sunday.
+    // CNY Day 2 (7 Feb) falls on a Sunday → OIL on 8 Feb (Monday). Neither
+    // Hari Raya date falls on a Sunday in 2027, so neither gets an in-lieu
+    // day.
     //
     // Corrected 2026-09-08 (.scratch/roster-qa/issues/05) — this table
     // previously had CNY 2027 on 29-30 Jan with no in-lieu day, which was
@@ -506,15 +606,27 @@ const PH_YEAR_SLOTS: Record<number, PHSlot[]> = {
     // live-broken for the common no-args case, not just a stale comment —
     // it would generate a real PH roster on dates that aren't CNY at all
     // and silently skip the actual 6-8 Feb dates entirely.
+    //
+    // Hari Raya dates corrected 2026-09-21 (.scratch/replit-resync-2026-09-21/
+    // issues/02) — this table previously had Hari Raya Puasa on 9 Mar (with
+    // no in-lieu day) and Hari Raya Haji on 16 May + an in-lieu day on 17 May
+    // (on the assumption 16 May fell on a Sunday). Verified against MOM's
+    // official 18-June-2026 gazette (mom.gov.sg/newsroom/press-releases/2026/
+    // 0618-public-holidays-for-2027): Hari Raya Puasa is 10 Mar 2027 (Wed),
+    // Hari Raya Haji is 17 May 2027 (Mon) — neither is a Sunday, so there is
+    // no in-lieu day for either. Same underlying mistake as the CNY bug
+    // above: an independently-estimated lunar date that disagreed with the
+    // later-published official calendar. If MOM's moon-sighting confirmation
+    // ever shifts either date, this table (and usePHActuals.ts's SG_PH_META,
+    // which must stay in sync) will need updating again.
     { date: "2027-01-01", phName: "New Year's Day",                        isOilCopy: false },
     { date: "2027-02-06", phName: "Chinese New Year Day 1",                isOilCopy: false },
     { date: "2027-02-07", phName: "Chinese New Year Day 2",                isOilCopy: false },
     { date: "2027-02-08", phName: "Chinese New Year Day 2 (In Lieu)",      isOilCopy: true,  copyFromDate: "2027-02-07" },
-    { date: "2027-03-09", phName: "Hari Raya Puasa",                       isOilCopy: false },
+    { date: "2027-03-10", phName: "Hari Raya Puasa",                       isOilCopy: false },
     { date: "2027-03-26", phName: "Good Friday",                           isOilCopy: false },
     { date: "2027-05-01", phName: "Labour Day",                            isOilCopy: false },
-    { date: "2027-05-16", phName: "Hari Raya Haji",                        isOilCopy: false },
-    { date: "2027-05-17", phName: "Hari Raya Haji (In Lieu)",              isOilCopy: true,  copyFromDate: "2027-05-16" },
+    { date: "2027-05-17", phName: "Hari Raya Haji",                        isOilCopy: false },
     { date: "2027-05-20", phName: "Vesak Day",                             isOilCopy: false },
     { date: "2027-08-09", phName: "National Day",                          isOilCopy: false },
     { date: "2027-10-28", phName: "Deepavali",                             isOilCopy: false },
@@ -583,6 +695,129 @@ const PH_SEQ_LEN = PH_ROTATION_SEQUENCE.length; // 24
 
 // Christmas 2026 ended on WK1 (index 4).  NY 2027 therefore starts at index 5 (CP2).
 const PH_2027_ROT_START = 5;
+
+// ── PH Builder — configurable/preset-driven layer over the generator above ──
+// .scratch/replit-resync-2026-09-21/issues/31. A user-reorderable rotation
+// pattern only makes sense with each unit appearing once — unlike
+// PH_ROTATION_SEQUENCE above (which intentionally double-weights
+// CP4/KG4/BU4/PJ4 "per spec"), the builder's pattern is deduplicated. This is
+// a deliberate, user-approved change to that weighting when PH Builder is
+// adopted, not an oversight.
+export interface PHBuilderConfig {
+  pattern: string[];
+  consecutivePH: boolean;
+  sameHolidayPreviousYear: boolean;
+  excludedOfficers: string[];
+  startYear: number;
+}
+
+export interface PHBuilderPreset {
+  id: string;
+  name: string;
+  config: PHBuilderConfig;
+  updatedAt: string;
+}
+
+function defaultPHBuilderConfig(): PHBuilderConfig {
+  return {
+    pattern: [...new Set(PH_ROTATION_SEQUENCE)],
+    consecutivePH: true,
+    sameHolidayPreviousYear: true,
+    // Replit's own default seeded one specific officer's name here — not
+    // meaningful outside their environment, so this repo starts with no
+    // default exclusions instead.
+    excludedOfficers: [],
+    startYear: 2027,
+  };
+}
+
+async function activeUnitCodes(): Promise<string[]> {
+  const rows = await db.select({ unitCode: officersTable.unitCode }).from(officersTable).where(eq(officersTable.active, true));
+  return [...new Set(
+    rows.map((r) => r.unitCode?.trim().toUpperCase()).filter((u): u is string => !!u && u !== "TBC"),
+  )];
+}
+
+function getPHRotationPattern(config: PHBuilderConfig): string[] {
+  return config.pattern;
+}
+
+// Self-healing read: reconciles whatever pattern was last saved against the
+// currently active units, so a roster change (a unit added/retired) doesn't
+// leave the pattern silently out of sync with normalizePHBuilderConfig's
+// "each active unit exactly once" invariant.
+async function loadPHBuilderConfig(): Promise<PHBuilderConfig> {
+  const [row, activeUnits] = await Promise.all([
+    db.select().from(phBuilderConfigTable).where(eq(phBuilderConfigTable.id, 1)).then((rows) => rows[0]),
+    activeUnitCodes(),
+  ]);
+  const defaults = defaultPHBuilderConfig();
+  const requested = row?.pattern ?? [];
+  const pattern = [...new Set([...requested, ...PH_ROTATION_SEQUENCE, ...activeUnits])]
+    .filter((unit) => activeUnits.includes(unit));
+  return {
+    pattern: pattern.length >= 6 ? pattern : defaults.pattern,
+    consecutivePH: row?.consecutivePH ?? defaults.consecutivePH,
+    sameHolidayPreviousYear: row?.sameHolidayPreviousYear ?? defaults.sameHolidayPreviousYear,
+    excludedOfficers: row?.excludedOfficers ?? defaults.excludedOfficers,
+    startYear: row?.startYear ?? defaults.startYear,
+  };
+}
+
+async function savePHBuilderConfig(config: PHBuilderConfig): Promise<void> {
+  await db
+    .insert(phBuilderConfigTable)
+    .values({ id: 1, ...config })
+    .onConflictDoUpdate({ target: phBuilderConfigTable.id, set: { ...config } });
+}
+
+// Shared by the builder-config PUT and builder-presets POST routes below —
+// both need the same active-officer/unit sets to validate a submitted config.
+async function loadValidatedPHBuilderConfig(rawConfig: unknown): Promise<PHBuilderConfig> {
+  const officers = await db.select().from(officersTable).where(eq(officersTable.active, true));
+  return normalizePHBuilderConfig(
+    (rawConfig ?? {}) as Partial<PHBuilderConfig>,
+    new Set(officers.map((o) => o.name)),
+    new Set(officers.map((o) => o.unitCode?.trim().toUpperCase()).filter((u): u is string => !!u && u !== "TBC")),
+  );
+}
+
+async function loadPHBuilderPresets(): Promise<PHBuilderPreset[]> {
+  const rows = await db.select().from(phBuilderPresetsTable);
+  return rows
+    .map((r) => ({ id: r.id, name: r.name, config: r.config as PHBuilderConfig, updatedAt: r.updatedAt }))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+function normalizePHBuilderConfig(
+  input: Partial<PHBuilderConfig>,
+  officerNames: Set<string>,
+  activeUnits: Set<string>,
+): PHBuilderConfig {
+  const defaults = defaultPHBuilderConfig();
+  const pattern = Array.isArray(input.pattern)
+    ? input.pattern.map((value) => String(value).trim().toUpperCase()).filter(Boolean)
+    : defaults.pattern;
+  if (pattern.length !== activeUnits.size || new Set(pattern).size !== activeUnits.size || pattern.some((unit) => !activeUnits.has(unit))) {
+    throw new Error(`Pattern must contain each of the ${activeUnits.size} active roster teams exactly once`);
+  }
+  const excludedOfficers = Array.isArray(input.excludedOfficers)
+    ? [...new Set(input.excludedOfficers.map((value) => String(value).trim()).filter(Boolean))]
+    : [];
+  const unknown = excludedOfficers.filter((name) => !officerNames.has(name));
+  if (unknown.length) throw new Error(`Unknown officer: ${unknown.join(", ")}`);
+  const startYear = Number(input.startYear ?? defaults.startYear);
+  if (!Number.isInteger(startYear) || startYear < 2027) {
+    throw new Error("Start year must be 2027 or later");
+  }
+  return {
+    pattern,
+    consecutivePH: input.consecutivePH !== false,
+    sameHolidayPreviousYear: input.sameHolidayPreviousYear !== false,
+    excludedOfficers,
+    startYear,
+  };
+}
 
 // ── Default officer pairs per unit (exactly 2 per unit, per spec) ─────────────
 const UNIT_DEFAULTS: Record<string, [string, string]> = {
@@ -782,19 +1017,24 @@ function buildHRBallotResponse(state: HRBallotState, ref: PHRosterRef) {
  *   Rotation does NOT advance. Rows do NOT count toward PH count or rules.
  *
  * Pure function — all persisted state (prior years' ref data, rotation
- * cursor, HR ballot pool) is loaded by the caller and passed in; nothing
- * here touches the database directly.
+ * cursor, HR ballot pool, PH Builder config) is loaded by the caller and
+ * passed in; nothing here touches the database directly.
  */
 function autoAllocate(
   officers: { name: string; unitCode: string }[],
   slots: PHSlot[],
   savedRef: PHRosterRef,
   rotState: Record<number, number>,
+  builderConfig: PHBuilderConfig,
 ): { result: PHRosterRef; hrBallot: HRBallotState; rotIdx: number; targetYear: number } {
 
-  // ── All active officer names ─────────────────────────────────────────
+  const rotationPattern = getPHRotationPattern(builderConfig);
+  const sequenceLength = rotationPattern.length;
+  const staffExceptions = new Set(builderConfig.excludedOfficers);
+
+  // ── All active, non-excluded officer names ───────────────────────────
   const allOfficers = officers
-    .filter(o => o.unitCode && o.unitCode.toUpperCase() !== "TBC")
+    .filter(o => o.unitCode && o.unitCode.toUpperCase() !== "TBC" && !staffExceptions.has(o.name))
     .map(o => o.name);
 
   // ── Target year ──────────────────────────────────────────────────────
@@ -905,8 +1145,8 @@ function autoAllocate(
   const isDp  = (ph: string) => /deepavali/i.test(ph);
 
   // ── Rule checks ──────────────────────────────────────────────────────
-  const failsRuleA = (n: string)              => prevPHOfficers.has(n);
-  const failsRuleB = (n: string, ph: string)  => priorYearPH.get(n)?.has(ph) ?? false;
+  const failsRuleA = (n: string)              => builderConfig.consecutivePH && prevPHOfficers.has(n);
+  const failsRuleB = (n: string, ph: string)  => builderConfig.sameHolidayPreviousYear && (priorYearPH.get(n)?.has(ph) ?? false);
 
   // ── Pick up to n officers from candidates ────────────────────────────
   // Lowest PH count first.  Fallback tiers (per spec):
@@ -944,7 +1184,7 @@ function autoAllocate(
 
   // ── Get 6 consecutive units from rotation ────────────────────────────
   const getUnits = (idx: number): string[] =>
-    Array.from({ length: 6 }, (_, i) => PH_ROTATION_SEQUENCE[(idx + i) % PH_SEQ_LEN]);
+    Array.from({ length: 6 }, (_, i) => rotationPattern[(idx + i) % sequenceLength]);
 
   // ── Build PHRefRow array from unit/shift/officer pairs ───────────────
   const makeRows = (units: string[], pairs: string[][]): PHRefRow[] => {
@@ -1054,7 +1294,7 @@ function autoAllocate(
 
     const { date, phName } = slot;
     const units = getUnits(rotIdx);
-    rotIdx = (rotIdx + 6) % PH_SEQ_LEN;
+    rotIdx = (rotIdx + 6) % sequenceLength;
 
     let rows: PHRefRow[];
     const hrPoolKind = getHRPoolKind(phName);
@@ -1121,7 +1361,7 @@ function autoAllocate(
           if (phExclMap.get(date)?.has(candidate)) continue;
 
           // Rule A: candidate must not have worked the preceding PH
-          if (precWorkersMap.get(date)?.has(candidate)) continue;
+          if (builderConfig.consecutivePH && precWorkersMap.get(date)?.has(candidate)) continue;
 
           // Find highest-count officer in this PH we can replace (must be at maxC)
           const victim = rows
@@ -1152,6 +1392,61 @@ function autoAllocate(
   return { result, hrBallot, rotIdx, targetYear };
 }
 
+// Generation-time safety nets, run after autoAllocate() returns and before
+// persisting — throw rather than silently persist a roster that violates
+// either invariant. Ported from Replit's assertNoHRCrossHolidayDoubleDuty /
+// assertBalancedPHCounts. .scratch/replit-resync-2026-09-21/issues/07.
+function assertNoHRCrossHolidayDoubleDuty(generated: PHRosterRef, slots: PHSlot[]): void {
+  const puasaDate = slots.find((s) => !s.isOilCopy && s.phName === "Hari Raya Puasa")?.date;
+  const hajiDate = slots.find((s) => !s.isOilCopy && s.phName === "Hari Raya Haji")?.date;
+  if (!puasaDate || !hajiDate) return;
+  const namesOn = (date: string) =>
+    new Set(
+      (generated[date] ?? [])
+        .map((r) => (r.actualName || r.scheduledName || "").trim())
+        .filter(Boolean),
+    );
+  const both = [...namesOn(puasaDate)].filter((n) => namesOn(hajiDate).has(n));
+  if (both.length > 0) {
+    throw new Error(
+      `Generated roster assigns ${both.join(", ")} to both Hari Raya Puasa and Hari Raya Haji in the same year — refusing to save.`,
+    );
+  }
+}
+
+function assertBalancedPHCounts(generated: PHRosterRef, slots: PHSlot[], eligibleNames: string[]): void {
+  const eligible = new Set(eligibleNames);
+  const counts = new Map<string, number>(eligibleNames.map((n) => [n, 0]));
+  const ineligibleAssigned = new Set<string>();
+  for (const slot of slots) {
+    if (slot.isOilCopy) continue; // in-lieu rows duplicate the original PH's names — would double-count
+    for (const row of generated[slot.date] ?? []) {
+      const name = (row.actualName || row.scheduledName || "").trim();
+      if (!name) continue;
+      if (!eligible.has(name)) { ineligibleAssigned.add(name); continue; }
+      counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
+  if (ineligibleAssigned.size > 0) {
+    throw new Error(
+      `Generated roster assigns PH duty to ineligible officer(s): ${[...ineligibleAssigned].join(", ")} — refusing to save.`,
+    );
+  }
+  const values = [...counts.values()];
+  if (values.length === 0) return;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  // autoAllocate's own swap loop already tries to reach exactly this state
+  // (balanced within 1) and only gives up when it truly can't improve
+  // further — a violation here indicates a genuine generation bug, not a
+  // normal edge case.
+  if (max - min > 1) {
+    throw new Error(
+      `Generated roster's PH-duty counts are unbalanced (min ${min}, max ${max}) — refusing to save.`,
+    );
+  }
+}
+
 // POST /api/ph-roster-ref/auto-allocate — generate PH roster for a year (manager+)
 phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, res) => {
   const { targetYear = 2027, dryRun = false } = req.body as {
@@ -1177,9 +1472,10 @@ phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, 
     return;
   }
 
-  const [savedRef, rotStateRows] = await Promise.all([
+  const [savedRef, rotStateRows, builderConfig] = await Promise.all([
     loadAllPHRosterRef(),
     db.select().from(phRotationStateTable),
+    loadPHBuilderConfig(),
   ]);
   const rotState: Record<number, number> = {};
   for (const r of rotStateRows) rotState[r.year] = r.cursorIndex;
@@ -1189,7 +1485,19 @@ phRosterRouter.post("/ph-roster-ref/auto-allocate", requireManager, async (req, 
   // (createHRBallotStateFromRoster), which is more robust than trusting a
   // possibly-stale saved pool. The persisted ph_hr_ballot_state row below is
   // written for GET /ph-roster-ref/hr-ballot-pool to read without re-deriving.
-  const { result: generated, hrBallot, rotIdx, targetYear: yr } = autoAllocate(officers, slots, savedRef, rotState);
+  const { result: generated, hrBallot, rotIdx, targetYear: yr } = autoAllocate(officers, slots, savedRef, rotState, builderConfig);
+
+  try {
+    const staffExceptions = new Set(builderConfig.excludedOfficers);
+    const eligibleNames = officers
+      .filter((o) => o.unitCode && o.unitCode.toUpperCase() !== "TBC" && !staffExceptions.has(o.name))
+      .map((o) => o.name);
+    assertNoHRCrossHolidayDoubleDuty(generated, slots);
+    assertBalancedPHCounts(generated, slots, eligibleNames);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+    return;
+  }
 
   if (!dryRun) {
     await db.transaction(async (tx) => {
@@ -1258,11 +1566,16 @@ phRosterRouter.post("/ph-roster-ref/realign-subcatchments", requireManager, asyn
     return;
   }
 
-  const rotStateRows = await db.select().from(phRotationStateTable);
+  const [rotStateRows, builderConfig] = await Promise.all([
+    db.select().from(phRotationStateTable),
+    loadPHBuilderConfig(),
+  ]);
   const rotState: Record<number, number> = {};
   for (const r of rotStateRows) rotState[r.year] = r.cursorIndex;
   const yearStart = (year: number): number =>
     year === 2027 ? PH_2027_ROT_START : (rotState[year - 1] ?? PH_2027_ROT_START);
+  const rotationPattern = getPHRotationPattern(builderConfig);
+  const sequenceLength = rotationPattern.length;
 
   const slots = Object.values(PH_YEAR_SLOTS)
     .flat()
@@ -1286,8 +1599,8 @@ phRosterRouter.post("/ph-roster-ref/realign-subcatchments", requireManager, asyn
       const nonOilPosition = (PH_YEAR_SLOTS[year] ?? [])
         .filter((s) => !s.isOilCopy && s.date < slot.date)
         .length;
-      const rotationIndex = (yearStart(year) + nonOilPosition * 6) % PH_SEQ_LEN;
-      const units = Array.from({ length: 6 }, (_, i) => PH_ROTATION_SEQUENCE[(rotationIndex + i) % PH_SEQ_LEN]);
+      const rotationIndex = (yearStart(year) + nonOilPosition * 6) % sequenceLength;
+      const units = Array.from({ length: 6 }, (_, i) => rotationPattern[(rotationIndex + i) % sequenceLength]);
       rows.forEach((row, index) => {
         const rowIndex = Number.isInteger(row.rowIndex) ? row.rowIndex : index;
         const unit = units[Math.floor(rowIndex / 2)];
@@ -1299,6 +1612,197 @@ phRosterRouter.post("/ph-roster-ref/realign-subcatchments", requireManager, asyn
   }
 
   res.json({ ok: true, fromDate, changedDates });
+});
+
+// POST /api/ph-roster-ref/builder-run — replace only excluded future
+// assignments (manager+). This intentionally does not call autoAllocate: the
+// existing rotation, HR pools, and every non-excluded assignment stay
+// untouched — only the rows belonging to a newly-excluded (or newly
+// un-excluded) officer are swapped, from/to whichever eligible officer is
+// currently at the lowest/highest PH count. .scratch/replit-resync-2026-09-21/issues/31.
+phRosterRouter.post("/ph-roster-ref/builder-run", requireManager, async (req, res) => {
+  try {
+    const officerRows = await db.select().from(officersTable).where(eq(officersTable.active, true));
+    const officers = officerRows.map((o) => ({ name: o.name, unitCode: o.unitCode }));
+    if (!officers.length) throw new Error("No officers found — set up roster first.");
+
+    const previousConfig = await loadPHBuilderConfig();
+    const config = normalizePHBuilderConfig(
+      req.body ?? previousConfig,
+      new Set(officers.map((o) => o.name)),
+      new Set(officers.map((o) => o.unitCode?.trim().toUpperCase()).filter((u): u is string => !!u && u !== "TBC")),
+    );
+
+    const excluded = new Set(config.excludedOfficers);
+    const removedExceptions = previousConfig.excludedOfficers.filter((name) => !excluded.has(name));
+    if (!config.excludedOfficers.length && !removedExceptions.length) {
+      throw new Error("There are no staff exception changes to apply");
+    }
+
+    const working = await loadAllPHRosterRef();
+    const slots = Object.values(PH_YEAR_SLOTS)
+      .flat()
+      .filter((slot) => !slot.isOilCopy && Number(slot.date.slice(0, 4)) >= config.startYear)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const relevantDates = new Set(slots.map((slot) => slot.date));
+    const count = new Map<string, number>();
+    const getCount = (name: string) => count.get(name) ?? 0;
+    for (const [date, rows] of Object.entries(working)) {
+      if (!relevantDates.has(date)) continue;
+      for (const row of rows) {
+        if (!excluded.has(row.scheduledName)) count.set(row.scheduledName, getCount(row.scheduledName) + 1);
+      }
+    }
+
+    const priorYearByHoliday = new Map<string, Set<string>>();
+    for (const [date, rows] of Object.entries(working)) {
+      const year = Number(date.slice(0, 4));
+      const phName = PH_DATE_NAMES[date];
+      if (!phName || phName.includes("In Lieu")) continue;
+      priorYearByHoliday.set(`${year}:${phName}`, new Set(rows.map((row) => row.scheduledName)));
+    }
+
+    const eligibleNames = officers
+      .filter((officer) => officer.unitCode && officer.unitCode.toUpperCase() !== "TBC" && !excluded.has(officer.name))
+      .map((officer) => officer.name);
+    const changes: Array<{ date: string; holiday: string; from: string; to: string; subCatchment: string; shift: string }> = [];
+    const changedDates = new Set<string>();
+    const actualName = (row: PHRefRow) => (row.actualName || row.scheduledName || "").trim();
+
+    for (let slotIndex = 0; slotIndex < slots.length; slotIndex++) {
+      const slot = slots[slotIndex];
+      const rows = working[slot.date] ?? [];
+      const previousRows = slotIndex > 0 ? working[slots[slotIndex - 1].date] ?? [] : [];
+      const nextRows = slotIndex + 1 < slots.length ? working[slots[slotIndex + 1].date] ?? [] : [];
+      const adjacentNames = new Set([...previousRows, ...nextRows].map(actualName));
+      const sameDateNames = new Set(rows.map((row) => row.scheduledName).filter((name) => !excluded.has(name)));
+      const previousYearNames = priorYearByHoliday.get(`${Number(slot.date.slice(0, 4)) - 1}:${slot.phName}`) ?? new Set<string>();
+      const hrKind = getHRPoolKind(slot.phName);
+      const otherHRNames = new Set<string>();
+      if (hrKind) {
+        const otherKind: HRPoolKind = hrKind === "puasa" ? "haji" : "puasa";
+        for (const [date, otherRows] of Object.entries(working)) {
+          if (Number(date.slice(0, 4)) !== Number(slot.date.slice(0, 4))) continue;
+          if (getHRPoolKind(PH_DATE_NAMES[date] ?? "") !== otherKind) continue;
+          otherRows.forEach((row) => otherHRNames.add(row.scheduledName));
+        }
+      }
+
+      for (const row of rows) {
+        if (!excluded.has(row.scheduledName)) continue;
+        const globalLowestCount = Math.min(...eligibleNames.map(getCount));
+        let candidates = eligibleNames.filter((name) => {
+          // Exception replacement is deliberately narrower than a full
+          // allocation: only an officer currently at the lowest PH count may
+          // receive the extra duty. Never create a count gap larger than +1
+          // merely to satisfy a soft preference.
+          if (getCount(name) !== globalLowestCount) return false;
+          if (sameDateNames.has(name)) return false;
+          if (config.consecutivePH && adjacentNames.has(name)) return false;
+          if (/chinese new year/i.test(slot.phName) && CNY_EXCLUDED.has(name)) return false;
+          if (/deepavali/i.test(slot.phName) && DEEPAVALI_EXCLUDED.has(name)) return false;
+          if (hrKind && (!ALL_MUSLIM_OFFICERS.includes(name) || otherHRNames.has(name))) return false;
+          return true;
+        });
+        if (config.sameHolidayPreviousYear) {
+          const differentHolidayCandidates = candidates.filter((name) => !previousYearNames.has(name));
+          if (differentHolidayCandidates.length) candidates = differentHolidayCandidates;
+        }
+        if (!candidates.length) {
+          throw new Error(
+            `No lowest-count officer is eligible to replace ${row.scheduledName} on ${slot.date}; no changes were saved`,
+          );
+        }
+        candidates.sort((a, b) => getCount(a) - getCount(b) || a.localeCompare(b));
+        const replacement = candidates[0];
+        const previous = row.scheduledName;
+        row.scheduledName = replacement;
+        if (!row.actualName || row.actualName === previous) row.actualName = replacement;
+        sameDateNames.add(replacement);
+        count.set(replacement, getCount(replacement) + 1);
+        changedDates.add(slot.date);
+        changes.push({
+          date: slot.date, holiday: slot.phName, from: previous, to: replacement,
+          subCatchment: row.subCatchment, shift: row.shift,
+        });
+      }
+    }
+
+    // When an exception is removed, make that officer eligible again immediately.
+    // We do not rebuild the year: duties are moved from the currently highest-count
+    // eligible officers until the restored officer is back within one duty of them.
+    for (const restoredName of removedExceptions) {
+      while (true) {
+        const donors = eligibleNames
+          .filter((name) => name !== restoredName && getCount(name) > getCount(restoredName) + 1)
+          .sort((a, b) => getCount(b) - getCount(a) || a.localeCompare(b));
+        if (!donors.length) break;
+
+        let restored = false;
+        for (let slotIndex = 0; slotIndex < slots.length && !restored; slotIndex++) {
+          const slot = slots[slotIndex];
+          // Hari Raya duties are governed by their independent ballot pools.
+          if (getHRPoolKind(slot.phName)) continue;
+          if (/chinese new year/i.test(slot.phName) && CNY_EXCLUDED.has(restoredName)) continue;
+          if (/deepavali/i.test(slot.phName) && DEEPAVALI_EXCLUDED.has(restoredName)) continue;
+
+          const rows = working[slot.date] ?? [];
+          if (rows.some((row) => row.scheduledName === restoredName)) continue;
+          const previousRows = slotIndex > 0 ? working[slots[slotIndex - 1].date] ?? [] : [];
+          const nextRows = slotIndex + 1 < slots.length ? working[slots[slotIndex + 1].date] ?? [] : [];
+          if (config.consecutivePH &&
+              [...previousRows, ...nextRows].some((row) => actualName(row) === restoredName)) {
+            continue;
+          }
+
+          const row = rows.find((candidate) => donors.includes(candidate.scheduledName));
+          if (!row) continue;
+          const donor = row.scheduledName;
+          row.scheduledName = restoredName;
+          if (!row.actualName || row.actualName === donor) row.actualName = restoredName;
+          count.set(donor, getCount(donor) - 1);
+          count.set(restoredName, getCount(restoredName) + 1);
+          changedDates.add(slot.date);
+          changes.push({
+            date: slot.date, holiday: slot.phName, from: donor, to: restoredName,
+            subCatchment: row.subCatchment, shift: row.shift,
+          });
+          restored = true;
+        }
+
+        if (!restored) {
+          throw new Error(`No eligible PH assignment can be restored to ${restoredName}; no changes were saved`);
+        }
+      }
+    }
+
+    const maxYear = Math.max(...slots.map((slot) => Number(slot.date.slice(0, 4))));
+    for (let year = config.startYear; year <= maxYear; year++) {
+      const yearSlots = PH_YEAR_SLOTS[year] ?? [];
+      assertNoHRCrossHolidayDoubleDuty(working, yearSlots);
+      assertBalancedPHCounts(working, yearSlots, eligibleNames);
+    }
+
+    await savePHBuilderConfig(config);
+    if (changes.length) {
+      await db.transaction(async (tx) => {
+        await tx.delete(phRosterRefTable).where(inArray(phRosterRefTable.date, [...changedDates]));
+        const insertRows: (typeof phRosterRefTable.$inferInsert)[] = [];
+        for (const date of changedDates) {
+          for (const r of working[date] ?? []) {
+            insertRows.push({
+              date, rowIndex: r.rowIndex, subCatchment: r.subCatchment, shift: r.shift,
+              scheduledName: r.scheduledName, actualName: r.actualName, remarks: r.remarks ?? null,
+            });
+          }
+        }
+        if (insertRows.length > 0) await tx.insert(phRosterRefTable).values(insertRows);
+      });
+    }
+    res.json({ ok: true, changedCount: changes.length, changes, config });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "PH Builder run failed" });
+  }
 });
 
 // GET /api/ph-roster-ref — all ref data (manager+)

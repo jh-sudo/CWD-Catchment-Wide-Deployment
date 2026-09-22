@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
-import { randomInt } from "crypto";
+import { randomInt, randomBytes } from "crypto";
 import { eq } from "drizzle-orm";
 import { db, managersTable, appConfigTable, officersTable, type Manager } from "@workspace/db";
 import {
@@ -153,6 +153,10 @@ export interface ManagerAccount {
   officerName?: string;
   // ic: which catchments they can approve for
   catchments?: string[];
+  // manager: self-tagged org groups from the meeting scheduler's fixed
+  // MANAGER_GROUPS enum (meetings.ts) — filters the attendee picker.
+  // .scratch/replit-resync-2026-09-21/issues/33.
+  meetingGroups?: string[];
   pendingReset?: { passwordHash: string; requestedAt: string };
   // MFA — see .scratch/flood-commander-web/issues/09-manager-mfa-totp.md.
   // Originally admin/manager/ic only (crew's PIN flow was deliberately kept
@@ -191,6 +195,7 @@ function toManagerAccount(row: Manager): ManagerAccount {
     officerId: row.officerId ?? undefined,
     officerName: row.officerName ?? undefined,
     catchments: row.catchments ?? undefined,
+    meetingGroups: row.meetingGroups ?? undefined,
     pendingReset: row.pendingResetPasswordHash
       ? {
           passwordHash: row.pendingResetPasswordHash,
@@ -220,6 +225,10 @@ function generatePin(digits: number): string {
   return randomInt(0, 10 ** digits).toString().padStart(digits, "0");
 }
 
+function generatePassword(): string {
+  return randomBytes(16).toString("base64url");
+}
+
 async function refreshManagersCache(): Promise<void> {
   const rows = await db.select().from(managersTable);
   managers = rows.map(toManagerAccount);
@@ -232,6 +241,35 @@ async function refreshAppConfigCache(): Promise<void> {
 
 export function getManager(id: string): ManagerAccount | undefined {
   return managers.find(m => m.id === id);
+}
+
+export interface ApprovedAccountSummary {
+  id: string;
+  displayName: string;
+  username: string;
+  role: AccountRole;
+  meetingGroups: string[];
+}
+
+/** Account details safe to expose when selecting meeting attendees.
+ *  .scratch/replit-resync-2026-09-21/issues/33. */
+export function getApprovedAccountSummaries(): ApprovedAccountSummary[] {
+  return managers
+    .filter((account) => account.approved)
+    .map((account) => ({
+      id: account.id,
+      displayName: account.officerName ?? account.username,
+      username: account.username,
+      role: account.role,
+      meetingGroups: account.meetingGroups ?? [],
+    }));
+}
+
+export async function setManagerMeetingGroups(id: string, meetingGroups: string[]): Promise<boolean> {
+  const account = managers.find((m) => m.id === id);
+  if (!account || account.role !== "manager") return false;
+  await updateManager(id, { meetingGroups });
+  return true;
 }
 
 async function updateManager(id: string, patch: Partial<typeof managersTable.$inferInsert>) {
@@ -248,30 +286,50 @@ async function seedAdmin() {
     // Random, not a fixed default — a hardcoded value here would be a known
     // working credential for anyone who reads the source, not just an
     // internal convenience. Printed once so whoever deploys can retrieve it.
+    // onConflictDoNothing + gating the log on `inserted` covers concurrent
+    // first-boot replicas racing this same insert — only the winner logs.
     const managerPin = generatePin(6);
     const crewPin = generatePin(4);
-    await db.insert(appConfigTable).values({ id: 1, managerPin, crewPin });
-    console.log(`[auth] Manager/crew PINs seeded — manager: ${managerPin}  crew: ${crewPin} (change these via the admin panel)`);
+    const [inserted] = await db
+      .insert(appConfigTable)
+      .values({ id: 1, managerPin, crewPin })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) {
+      console.log(`[auth] Manager/crew PINs seeded — manager: ${managerPin}  crew: ${crewPin} (change these via the admin panel)`);
+    }
   }
   await refreshAppConfigCache();
 
   if (!managers.find(m => m.role === "admin")) {
-    const passwordHash = await bcrypt.hash("Admin@1234", 10);
-    await db.insert(managersTable).values({
-      id: "admin",
-      username: "admin",
-      passwordHash,
-      role: "admin",
-      approved: true,
-      createdAt: new Date(),
-      mustChangePassword: true,
-    });
-    await refreshManagersCache();
-    console.log("[auth] Admin seeded — username: admin  password: Admin@1234 (must be changed on first login)");
+    // Random, not a fixed default — same reasoning as the PINs above: a
+    // hardcoded admin password would be a known working credential for
+    // anyone with repo access.
+    const adminPassword = generatePassword();
+    const passwordHash = await bcrypt.hash(adminPassword, 10);
+    const [inserted] = await db
+      .insert(managersTable)
+      .values({
+        id: "admin",
+        username: "admin",
+        passwordHash,
+        role: "admin",
+        approved: true,
+        createdAt: new Date(),
+        mustChangePassword: true,
+      })
+      .onConflictDoNothing()
+      .returning();
+    if (inserted) {
+      await refreshManagersCache();
+      console.log(`[auth] Admin seeded — username: admin  password: ${adminPassword} (must be changed on first login)`);
+    }
   }
 }
 
-seedAdmin();
+seedAdmin().catch((error) => {
+  console.error("[auth] seedAdmin failed:", error);
+});
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 export function requireManager(req: Request, res: Response, next: NextFunction) {
@@ -344,6 +402,34 @@ export function requireAdminOrManager(req: Request, res: Response, next: NextFun
   if (!m || !m.approved) { res.status(403).json({ error: "Account pending approval" }); return; }
   if (m.role !== "admin" && m.role !== "manager") {
     res.status(403).json({ error: "Manager access required" }); return;
+  }
+  next();
+}
+
+// Allow any roster-editing role (admin, manager, or IC) but never crew —
+// tighter than requireManager, which (per its own name being a slight
+// misnomer here) allows any approved role including crew. Same
+// X-Manager-Pin bypass as requireManager, since the shared PIN is itself a
+// manager-tier credential, not crew's. .scratch/replit-resync-2026-09-21/issues/26.
+export function requireRosterEditor(req: Request, res: Response, next: NextFunction) {
+  const pinHeader = req.headers["x-manager-pin"] as string | undefined;
+  if (pinHeader) {
+    managerPinBypassRateLimit(req, res, () => {
+      if (pinHeader === appConfig.managerPin) { next(); return; }
+      requireRosterEditorSession(req, res, next);
+    });
+    return;
+  }
+  requireRosterEditorSession(req, res, next);
+}
+
+function requireRosterEditorSession(req: Request, res: Response, next: NextFunction) {
+  const mid = req.session?.managerId;
+  if (!mid) { res.status(401).json({ error: "Authentication required" }); return; }
+  const m = managers.find(a => a.id === mid);
+  if (!m || !m.approved) { res.status(403).json({ error: "Account pending approval" }); return; }
+  if (m.role === "crew") {
+    res.status(403).json({ error: "Roster editor access required" }); return;
   }
   next();
 }

@@ -29,6 +29,10 @@ interface Assignment {
   vehicle?: string;
   officers: string[];
   duty: string;
+  /** OT/CVG column contained a unit code → this officer is cross-posted there */
+  coveringUnitCode?: string;
+  /** OT/CVG column contained an officer name (rare for shift rows) */
+  coveringOfficerName?: string;
 }
 
 interface LeaveEntry {
@@ -36,13 +40,34 @@ interface LeaveEntry {
   targetDuty?: string;
   leaveType: string;
   coveringOfficerName?: string;
+  /** OT/CVG column contained a unit code (rare for leave rows) */
+  coveringUnitCode?: string;
 }
 
-interface ParsedBrief {
+interface ParsedBriefGroup {
   date: string;
   assignments: Assignment[];
   off: string[];
   leave: LeaveEntry[];
+}
+
+interface ParsedBrief {
+  date: string;              // empty when multi-date
+  assignments: Assignment[];
+  off: string[];
+  leave: LeaveEntry[];
+  dateGroups?: ParsedBriefGroup[]; // set when a multi-date sheet (horizontal or vertical) is detected
+}
+
+// One run of Apply — whether single- or multi-date, always reported this way
+// so the UI (and Revert) has one shape to work with. .scratch/replit-resync-2026-09-21/issues/29.
+interface ImportRunResult {
+  datesFound:   number;
+  datesChanged: string[];   // dates where at least one override was written
+  datesSkipped: string[];   // dates where every row matched — no write needed
+  datesErrored: string[];   // dates where the API call failed or had unmatched names
+  unmatchedNames: string[]; // officer names not found in roster
+  totalChanges: number;     // total officer records changed across all dates
 }
 
 interface OvRow {
@@ -71,7 +96,10 @@ const LEAVE_CODE_SET = new Set([
   "PPTW","SL","SLWOMC","SPL","TO","UL","VL",
 ]);
 
-const UNIT_CODE_RE = /^[A-Z]{2}\d{1,2}$/;
+// Was \d{1,2} (max 2 digits) — a 3-digit unit code was misclassified as an
+// officer name instead of a cross-post unit in the OT/CVG column.
+// .scratch/replit-resync-2026-09-21/issues/20.
+const UNIT_CODE_RE = /^[A-Z]{2}\d{1,3}$/;
 
 
 const OV_ACTUAL_COLORS: Record<string, string> = {
@@ -90,7 +118,378 @@ const DUTY_COLORS: Record<string, string> = {
   REST: "bg-[#F5C7F5] text-pink-900",
 };
 
+// ── Parse debug capture (module-level so parsers can populate it; snapshotted
+// into React state right after a parse so the UI can show what was detected —
+// helps diagnose "why didn't this sheet import" without guesswork).
+// .scratch/replit-resync-2026-09-21/issues/29.
+
+interface ParseDebugInfo {
+  parser: "horizontal" | "vertical" | "none";
+  dateRowIdx: number;
+  dateCols: { col: number; date: string; rawVal: string; rawType: string }[];
+  firstRows: { rowIdx: number; cells: { col: number; val: string; type: string }[] }[];
+  firstDataRows: { name: string; entries: { date: string; target: string; actual: string; cover: string; vehicle: string }[] }[];
+}
+
+let _lastParseDebug: ParseDebugInfo = {
+  parser: "none", dateRowIdx: -1, dateCols: [], firstRows: [], firstDataRows: [],
+};
+
+function cellDebugStr(val: unknown): { val: string; type: string } {
+  if (val === undefined || val === null || val === "") return { val: "—", type: "empty" };
+  if (val instanceof Date) return { val: val.toISOString(), type: "Date" };
+  if (typeof val === "number") return { val: String(val), type: "number" };
+  return { val: String(val), type: "string" };
+}
+
 // ── Excel parser ──────────────────────────────────────────────────────────────
+
+const EXCEL_LEAVE = new Set([
+  "VL","SL","MC","CCL","FCL","PL","SPL","UL","ML","BL","C","CSL",
+  "SLWOMC","AMC","AMMA","AMTO","PMTO","C/PMTO","NS","PPTW","TO","OVL","HL",
+  // Previously missing — silently dropped instead of recorded as
+  // leave on import. .scratch/replit-resync-2026-09-21/issues/20.
+  "MA","OIL","PCL","PMC","PMMA","PMOVL",
+]);
+const SHIFT_DUTIES = new Set(["ND","DAY","PD","OFF","REST"]);
+const MONTH_MAP: Record<string, string> = {
+  jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",
+  jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12",
+};
+
+/**
+ * Convert various date representations → "YYYY-MM-DD". Returns "" on failure.
+ * Handles:
+ *   "2025-08-01"        ISO (already correct)
+ *   "2025-8-1"          non-padded ISO from Excel
+ *   "1 Aug 2025 (Fri)"  system-download format
+ *   "1 August 2025"     full month name
+ *   "30/3/2026"         DD/M/YYYY (Singapore date format)
+ *   "30-03-2026"        DD-MM-YYYY
+ */
+function parseDateLabel(s: string): string {
+  const t = s.trim();
+  if (!t) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t;
+
+  const isoLoose = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (isoLoose) {
+    const [, y, m, d] = isoLoose;
+    const yr = parseInt(y);
+    if (yr >= 2000 && yr <= 2100)
+      return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // DD/MM/YYYY or D/M/YYYY or DD-MM-YYYY (Singapore Excel format)
+  const dmy = t.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    const yr = parseInt(y), mo = parseInt(m), da = parseInt(d);
+    if (yr >= 2000 && yr <= 2100 && mo >= 1 && mo <= 12 && da >= 1 && da <= 31)
+      return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // "1 Aug 2025 (Fri)" or "1 August 2025" — day + month name (3+ chars) + year
+  const named = t.match(/(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})/);
+  if (named) {
+    const mm = MONTH_MAP[named[2].toLowerCase().slice(0, 3)];
+    if (mm) return `${named[3]}-${mm}-${named[1].padStart(2, "0")}`;
+  }
+
+  return "";
+}
+
+function parseRows(
+  rows: Record<string, string>[],
+): { date: string; assignments: Assignment[]; off: string[]; leave: LeaveEntry[] } {
+  const assignments: Assignment[] = [];
+  const off: string[] = [];
+  const leave: LeaveEntry[] = [];
+
+  for (const row of rows) {
+    const rawKeys = Object.keys(row);
+    const vals    = rawKeys.map(k => String(row[k] ?? "").trim());
+    const keys    = rawKeys.map(k => k.toLowerCase().trim());
+
+    const nameIdx     = keys.findIndex(k => /name|officer/i.test(k));
+    const targetIdx   = keys.findIndex(k => /target/i.test(k));
+    const actualIdx   = keys.findIndex(k => /actual/i.test(k));
+    const coveringIdx = keys.findIndex(k => /cover|cvg/i.test(k));
+    const otIdx       = coveringIdx >= 0 ? coveringIdx : keys.findIndex(k => /\bot\b/i.test(k));
+    const vehicleIdx  = keys.findIndex(k => /vehicle|veh|plate/i.test(k));
+
+    if (nameIdx < 0 || actualIdx < 0) continue;
+
+    const name     = vals[nameIdx]?.trim();
+    const actual   = vals[actualIdx]?.trim().toUpperCase();
+    const target   = targetIdx >= 0 ? vals[targetIdx]?.trim().toUpperCase() : "";
+    const coverRaw = otIdx >= 0 ? vals[otIdx]?.trim() : "";
+    const vehicle  = vehicleIdx >= 0 ? vals[vehicleIdx]?.trim() : "";
+
+    if (!name || !actual) continue;
+
+    // Classify OT/CVG column: unit code vs officer name — a shift row can
+    // carry a cross-post unit here too, not just leave rows.
+    // .scratch/replit-resync-2026-09-21/issues/29.
+    const coverIsUnit  = !!(coverRaw && UNIT_CODE_RE.test(coverRaw));
+    const coverIsName  = !!(coverRaw && !coverIsUnit && isNaN(Number(coverRaw)));
+    const coveringUnit = coverIsUnit ? coverRaw : undefined;
+    const coveringName = coverIsName ? coverRaw : undefined;
+
+    if (actual === "OFF") {
+      off.push(name);
+    } else if (EXCEL_LEAVE.has(actual) && !SHIFT_DUTIES.has(actual)) {
+      const entry: LeaveEntry = { name, leaveType: actual };
+      if (target)       entry.targetDuty         = target;
+      if (coveringName) entry.coveringOfficerName = coveringName;
+      if (coveringUnit) entry.coveringUnitCode    = coveringUnit;
+      leave.push(entry);
+    } else if (SHIFT_DUTIES.has(actual)) {
+      const asgn: Assignment = { unitCode: "IMPORT", officers: [name], duty: actual };
+      if (vehicle)      asgn.vehicle             = vehicle;
+      if (coveringUnit) asgn.coveringUnitCode     = coveringUnit;
+      if (coveringName) asgn.coveringOfficerName  = coveringName;
+      assignments.push(asgn);
+    }
+  }
+
+  return { date: "", assignments, off, leave };
+}
+
+/**
+ * Convert a raw cell value from XLSX (with cellDates:true, raw:true) to "YYYY-MM-DD".
+ * Handles:
+ *   - JS Date objects  (produced when cellDates:true and the cell is a date)
+ *   - Excel serial numbers > 40000  (fallback when cellDates is off)
+ *   - ISO timestamp strings "2026-03-30T00:00:00.000Z"
+ *   - Already-ISO strings "2026-03-30"
+ *   - Any other string is passed through parseDateLabel
+ */
+function cellToISO(val: unknown): string {
+  if (!val) return "";
+  // JS Date (produced by XLSX cellDates:true).
+  //
+  // Excel date-only cells in SGT files carry a fractional time component
+  // (~15:59:35 UTC = 23:59:35 SGT) because the XLSX serial includes a
+  // sub-day offset — both .getDate() and .getUTCDate() would return the
+  // wrong day. Adding 12 hours before extracting the UTC date snaps it back:
+  // safe as long as the embedded time is within ±12h of midnight, which is
+  // always true for a date-only cell regardless of timezone.
+  if (val instanceof Date) {
+    if (isNaN(val.getTime())) return "";
+    const shifted = new Date(val.getTime() + 12 * 3600 * 1000);
+    return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth()+1).padStart(2,"0")}-${String(shifted.getUTCDate()).padStart(2,"0")}`;
+  }
+  // Excel serial number (fallback — add 12h = noon UTC to avoid DST edges)
+  if (typeof val === "number" && val > 40000) {
+    const ms = (val - 25569) * 86400 * 1000 + 12 * 3600 * 1000;
+    const dt = new Date(ms);
+    if (isNaN(dt.getTime())) return "";
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,"0")}-${String(dt.getUTCDate()).padStart(2,"0")}`;
+  }
+  // String — could be ISO timestamp or anything parseDateLabel understands
+  if (typeof val === "string") {
+    if (/^\d{4}-\d{2}-\d{2}T/.test(val)) return val.slice(0, 10);
+    return parseDateLabel(val);
+  }
+  return "";
+}
+
+/**
+ * Parse a HORIZONTAL multi-date roster Excel.
+ *
+ * Layout (used for the team's own weekly/monthly leave sheets):
+ *   Row N  — col 2 = "Date"/"Month"/"Day", cols 3/7/11/… = date cells (one per group of 4)
+ *   Row N+k — col 3 = "Target", col 4 = "Actual", col 5 = "OT Hour/Covering", col 6 = "Vehicle" (repeating)
+ *   Row N+k+1+ — officer data rows: col 1 = unit, col 2 = name, then groups of [Target, Actual, Covering, Vehicle]
+ *
+ * rawRows should be read with { header:1, raw:true } on a cellDates:true workbook so that
+ * date cells arrive as JS Date objects (not formatted strings).
+ *
+ * Returns null if this horizontal layout is not detected (falls back to the vertical parser).
+ */
+function parseHorizontalBrief(rawRows: unknown[][]): ParsedBrief | null {
+  // ── Detect a row that has date values at cols 3, 7, 11… ──────────────────
+  let dateRowIdx = -1;
+  for (let ri = 0; ri < Math.min(12, rawRows.length); ri++) {
+    const row = rawRows[ri];
+    const col2 = String(row[2] ?? "").toLowerCase().trim();
+    const iso3  = cellToISO(row[3]);
+    if ((col2 === "date" || col2 === "month" || col2 === "day") && iso3 !== "") {
+      dateRowIdx = ri;
+      break;
+    }
+  }
+  // Fallback: any row within the first 12 that has 3+ convertible dates at cols 3, 7, 11…
+  if (dateRowIdx < 0) {
+    for (let ri = 0; ri < Math.min(12, rawRows.length); ri++) {
+      let hits = 0;
+      const row = rawRows[ri];
+      for (let c = 3; c < row.length; c += 4) {
+        if (cellToISO(row[c]) !== "") hits++;
+      }
+      if (hits >= 3) { dateRowIdx = ri; break; }
+    }
+  }
+
+  const firstRows: ParseDebugInfo["firstRows"] = [];
+  for (let ri = 0; ri < Math.min(5, rawRows.length); ri++) {
+    const row = rawRows[ri];
+    const cells = Array.from({ length: 15 }, (_, c) => {
+      const { val, type } = cellDebugStr(row[c]);
+      return { col: c, val, type };
+    });
+    firstRows.push({ rowIdx: ri, cells });
+  }
+
+  if (dateRowIdx < 0) {
+    _lastParseDebug = { parser: "none", dateRowIdx: -1, dateCols: [], firstRows, firstDataRows: [] };
+    return null;
+  }
+
+  // ── Extract date column positions ─────────────────────────────────────────
+  const dateRow = rawRows[dateRowIdx];
+  const dateCols: { date: string; col: number }[] = [];
+  const debugDateCols: ParseDebugInfo["dateCols"] = [];
+
+  // Support the "Month name + day number in a sibling row" format — the
+  // Month row stores text like "August" at every 4th column while a separate
+  // Date row (col 2 = "date") holds the day numbers. Build ISO dates by
+  // combining month name + day + year, tracking rollovers.
+  const MONTH_NAMES: Record<string, number> = {
+    january:1,february:2,march:3,april:4,may:5,june:6,
+    july:7,august:8,september:9,october:10,november:11,december:12,
+  };
+  let altDayRow: unknown[] | null = null;
+  let altCurrentYear = 0;
+  let altPrevMonth  = 0;
+  {
+    for (let ri = Math.max(0, dateRowIdx - 2); ri <= Math.min(rawRows.length - 1, dateRowIdx + 5); ri++) {
+      if (ri === dateRowIdx) continue;
+      const col2 = String(rawRows[ri][2] ?? "").toLowerCase().trim();
+      if (col2 === "date") { altDayRow = rawRows[ri]; break; }
+    }
+    const seedISO = cellToISO(dateRow[3]);
+    if (seedISO) {
+      altCurrentYear = parseInt(seedISO.slice(0, 4));
+      altPrevMonth   = parseInt(seedISO.slice(5, 7));
+    }
+  }
+
+  for (let c = 3; c < dateRow.length; c += 4) {
+    let iso = cellToISO(dateRow[c]);
+
+    if (!iso && altDayRow && altCurrentYear > 0) {
+      const monthStr = String(dateRow[c] ?? "").toLowerCase().trim();
+      const dayStr   = String(altDayRow[c] ?? "").trim();
+      const monthNum = MONTH_NAMES[monthStr];
+      const dayNum   = parseInt(dayStr, 10);
+      if (monthNum && !isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+        if (monthNum < altPrevMonth) altCurrentYear++;
+        altPrevMonth = monthNum;
+        iso = `${altCurrentYear}-${String(monthNum).padStart(2,"0")}-${String(dayNum).padStart(2,"0")}`;
+      }
+    }
+
+    const { val: rawVal, type: rawType } = cellDebugStr(dateRow[c]);
+    debugDateCols.push({ col: c, date: iso || "(none)", rawVal, rawType });
+    if (iso) dateCols.push({ date: iso, col: c });
+  }
+  if (dateCols.length === 0) return null;
+
+  // ── Find first officer data row ───────────────────────────────────────────
+  // Skip any header rows (Target/Actual column labels, "Officer", "Catchment") after the date row.
+  let dataStartIdx = dateRowIdx + 1;
+  for (let ri = dateRowIdx + 1; ri < Math.min(dateRowIdx + 8, rawRows.length); ri++) {
+    const row = rawRows[ri];
+    const col2 = String(row[2] ?? "").toLowerCase().trim();
+    const col3 = String(row[3] ?? "").toLowerCase().trim();
+    if (
+      col2 === "officer" || col2 === "name" || col2 === "catchment" ||
+      col3 === "target" || col3 === "actual"
+    ) {
+      dataStartIdx = ri + 1;
+    }
+  }
+
+  // ── Build result map keyed by date ────────────────────────────────────────
+  const resultMap = new Map<string, ParsedBriefGroup>();
+  for (const { date } of dateCols) {
+    resultMap.set(date, { date, assignments: [], off: [], leave: [] });
+  }
+
+  // ── Parse officer rows ────────────────────────────────────────────────────
+  for (let ri = dataStartIdx; ri < rawRows.length; ri++) {
+    const row = rawRows[ri];
+    const name = String(row[2] ?? "").trim();
+    if (!name) continue;
+    if (/^\d/.test(name)) continue;
+    if (/^(officer|name|catchment|week|cycle|month|day)$/i.test(name)) continue;
+
+    for (const { date, col } of dateCols) {
+      const target    = String(row[col]     ?? "").trim().toUpperCase();
+      const actual    = String(row[col + 1] ?? "").trim().toUpperCase();
+      const coverRaw  = String(row[col + 2] ?? "").trim();
+      const vehicle   = String(row[col + 3] ?? "").trim();
+
+      if (!actual) continue;
+      // Skip numeric strings (summary/totals cells) and column-header echoes
+      if (/^\d+(\.\d+)?$/.test(actual)) continue;
+      if (/^(target|actual|ot|hour|vehicle)$/i.test(actual)) continue;
+
+      const group = resultMap.get(date)!;
+
+      const coverIsUnit  = !!(coverRaw && UNIT_CODE_RE.test(coverRaw));
+      const coverIsName  = !!(coverRaw && !coverIsUnit && isNaN(Number(coverRaw)));
+      const coveringUnit = coverIsUnit ? coverRaw : undefined;
+      const coveringName = coverIsName ? coverRaw : undefined;
+
+      if (actual === "OFF") {
+        group.off.push(name);
+      } else if (SHIFT_DUTIES.has(actual)) {
+        const asgn: Assignment = { unitCode: "IMPORT", officers: [name], duty: actual };
+        if (vehicle)      asgn.vehicle          = vehicle;
+        if (coveringUnit) asgn.coveringUnitCode = coveringUnit;
+        if (coveringName) asgn.coveringOfficerName = coveringName;
+        group.assignments.push(asgn);
+      } else if (EXCEL_LEAVE.has(actual)) {
+        const entry: LeaveEntry = { name, leaveType: actual };
+        if (target && SHIFT_DUTIES.has(target)) entry.targetDuty = target;
+        if (coveringName) entry.coveringOfficerName = coveringName;
+        if (coveringUnit) entry.coveringUnitCode    = coveringUnit;
+        group.leave.push(entry);
+      }
+      // Unknown actuals (P, WK1, etc.) — silently ignored
+    }
+  }
+
+  const firstDataRows: ParseDebugInfo["firstDataRows"] = [];
+  for (let ri = dataStartIdx; ri < Math.min(dataStartIdx + 5, rawRows.length); ri++) {
+    const row = rawRows[ri];
+    const name = String(row[2] ?? "").trim();
+    if (!name) continue;
+    const entries = dateCols.map(({ date, col }) => ({
+      date,
+      target:  String(row[col]     ?? "").trim(),
+      actual:  String(row[col + 1] ?? "").trim(),
+      cover:   String(row[col + 2] ?? "").trim(),
+      vehicle: String(row[col + 3] ?? "").trim(),
+    }));
+    firstDataRows.push({ name, entries });
+  }
+
+  _lastParseDebug = { parser: "horizontal", dateRowIdx, dateCols: debugDateCols, firstRows, firstDataRows };
+
+  // ── Filter to dates with at least one entry, sort chronologically ─────────
+  const dateGroups = [...resultMap.values()]
+    .filter(g => g.assignments.length + g.off.length + g.leave.length > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  if (dateGroups.length === 0) return null;
+
+  return { date: "", assignments: [], off: [], leave: [], dateGroups };
+}
 
 function parseExcelBrief(file: File): Promise<ParsedBrief> {
   return new Promise((resolve, reject) => {
@@ -98,64 +497,88 @@ function parseExcelBrief(file: File): Promise<ParsedBrief> {
     reader.onload = (e) => {
       try {
         const data = new Uint8Array(e.target!.result as ArrayBuffer);
-        const wb   = XLSX.read(data, { type: "array" });
+        // cellDates:true → actual Excel date cells become JS Dates;
+        // dateNF:"yyyy-mm-dd" → those are then formatted as ISO strings by sheet_to_json
+        const wb   = XLSX.read(data, { type: "array", cellDates: true });
         const ws   = wb.Sheets[wb.SheetNames[0]];
+
+        // ── Try horizontal multi-date format first ──────────────────────────
+        // Read with raw:true so Excel date cells arrive as JS Date objects
+        // (cellDates:true on the workbook). parseDateLabel can't handle the
+        // custom-formatted strings raw:false would produce for these files
+        // (e.g. day-number "30" instead of "2026-03-30").
+        const rawRowsH = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+          header: 1, defval: "", raw: true,
+        }) as unknown[][];
+        const horizontal = parseHorizontalBrief(rawRowsH);
+        if (horizontal) { resolve(horizontal); return; }
+
+        // ── Fall back to vertical / single-date parser ───────────────────────
+        _lastParseDebug = { ..._lastParseDebug, parser: "vertical" };
+
         const rows = XLSX.utils.sheet_to_json<Record<string, string>>(ws, {
-          defval: "", raw: false,
+          defval: "", raw: false, dateNF: "yyyy-mm-dd",
         });
 
-        const date = "";
-        const assignments: Assignment[] = [];
-        const off: string[] = [];
-        const leave: LeaveEntry[] = [];
+        if (rows.length === 0) { resolve({ date: "", assignments: [], off: [], leave: [] }); return; }
 
-        const EXCEL_LEAVE = new Set([
-          "VL","SL","MC","CCL","FCL","PL","SPL","UL","ML","BL","C","CSL",
-          "SLWOMC","AMC","AMMA","AMTO","PMTO","C/PMTO","NS","PPTW","TO","OVL","HL",
-        ]);
-        const SHIFT_DUTIES = new Set(["ND","DAY","PD","OFF","REST"]);
+        // Check if there's a Date column — if so, do multi-date grouping.
+        // Strategy 1: column whose header looks like a date label.
+        // Strategy 2: auto-detect by scanning up to 100 rows for the column with the
+        //             most parseable date values. Handles merged-cell Excels where
+        //             the date appears only in the first row of each day-group (so
+        //             only 1 in N rows has a date — a 50% threshold would always fail).
+        const rawColKeys = Object.keys(rows[0]);
+        const firstKeys  = rawColKeys.map(k => k.toLowerCase().trim());
+        let dateColIdx   = firstKeys.findIndex(k =>
+          /date|tarikh|hari|tanggal|\bdt\b/i.test(k) && !/update|create|modif/i.test(k)
+        );
 
-        for (const row of rows) {
-          const rawKeys = Object.keys(row);
-          const vals    = rawKeys.map(k => String(row[k] ?? "").trim());
-          const keys    = rawKeys.map(k => k.toLowerCase().trim());
-
-          const nameIdx     = keys.findIndex(k => /name|officer/i.test(k));
-          const targetIdx   = keys.findIndex(k => /target/i.test(k));
-          const actualIdx   = keys.findIndex(k => /actual/i.test(k));
-          const coveringIdx = keys.findIndex(k => /cover|cvg/i.test(k));
-          const otIdx       = coveringIdx >= 0 ? coveringIdx : keys.findIndex(k => /\bot\b/i.test(k));
-          const vehicleIdx  = keys.findIndex(k => /vehicle|veh|plate/i.test(k));
-
-          if (nameIdx < 0 || actualIdx < 0) continue;
-
-          const name     = vals[nameIdx]?.trim();
-          const actual   = vals[actualIdx]?.trim().toUpperCase();
-          const target   = targetIdx >= 0 ? vals[targetIdx]?.trim().toUpperCase() : "";
-          const coverRaw = otIdx >= 0 ? vals[otIdx]?.trim() : "";
-          const covering = coverRaw && isNaN(Number(coverRaw)) ? coverRaw : undefined;
-          const vehicle  = vehicleIdx >= 0 ? vals[vehicleIdx]?.trim() : "";
-
-          if (!name || !actual) continue;
-
-          if (actual === "OFF") {
-            off.push(name);
-          } else if (EXCEL_LEAVE.has(actual) && !SHIFT_DUTIES.has(actual)) {
-            const entry: LeaveEntry = { name, leaveType: actual };
-            if (target) entry.targetDuty = target;
-            if (covering) entry.coveringOfficerName = covering;
-            leave.push(entry);
-          } else if (SHIFT_DUTIES.has(actual)) {
-            assignments.push({
-              unitCode: "IMPORT",
-              vehicle: vehicle || undefined,
-              officers: [name],
-              duty: actual,
-            });
+        if (dateColIdx < 0) {
+          const sample = rows.slice(0, Math.min(100, rows.length));
+          let bestCol = -1, bestHits = 0;
+          for (let ci = 0; ci < rawColKeys.length; ci++) {
+            const col = rawColKeys[ci];
+            let hits = 0;
+            for (const r of sample) {
+              const v = String(r[col] ?? "").trim();
+              if (v.length > 0 && parseDateLabel(v) !== "") hits++;
+            }
+            if (hits > bestHits) { bestHits = hits; bestCol = ci; }
           }
+          if (bestHits >= 1) dateColIdx = bestCol;
         }
 
-        resolve({ date, assignments, off, leave });
+        const dateColKey = dateColIdx >= 0 ? rawColKeys[dateColIdx] : null;
+
+        if (dateColKey) {
+          // Group rows by parsed date. Carry the last-known date forward to
+          // handle merged/blank date cells — a common Excel pattern where the
+          // date appears only in the first row of each day group.
+          const groups = new Map<string, Record<string, string>[]>();
+          let lastKnownDate = "";
+          for (const row of rows) {
+            const raw = String(row[dateColKey] ?? "").trim();
+            if (raw) {
+              const iso = parseDateLabel(raw);
+              if (iso) lastKnownDate = iso;
+            }
+            if (!lastKnownDate) continue;
+            if (!groups.has(lastKnownDate)) groups.set(lastKnownDate, []);
+            groups.get(lastKnownDate)!.push(row);
+          }
+          const dateGroups: ParsedBriefGroup[] = [];
+          for (const [date, groupRows] of groups) {
+            const { assignments, off, leave } = parseRows(groupRows);
+            dateGroups.push({ date, assignments, off, leave });
+          }
+          dateGroups.sort((a, b) => a.date.localeCompare(b.date));
+          resolve({ date: "", assignments: [], off: [], leave: [], dateGroups });
+        } else {
+          // No date column — single-date mode (user picks date manually)
+          const { assignments, off, leave } = parseRows(rows);
+          resolve({ date: "", assignments, off, leave });
+        }
       } catch (err) {
         reject(err);
       }
@@ -471,7 +894,7 @@ const CVR_CATCHMENT_BG: Record<string, string> = {
 
 // ── Override Editor ───────────────────────────────────────────────────────────
 
-function OverrideEditor() {
+export function OverrideEditor() {
   const { data: rawOfficers } = useGetRosterOfficers();
   const officers = useMemo(
     () => ((rawOfficers ?? []) as any[]).sort((a: any, b: any) => {
@@ -495,14 +918,23 @@ function OverrideEditor() {
 
   const [scheduleByDate, setScheduleByDate] = useState<Record<string, Record<string, CellData>>>({});
 
-  // Daily strength counts (based on scheduled/target duty)
+  const officerById = useMemo(() => new Map(officers.map((o: any) => [o.id, o])), [officers]);
+
+  // Daily strength counts — actual/override duty (falling back to
+  // scheduled/target when no override exists), excluding TBC placeholder
+  // units, matching the convention already established in the backend
+  // (rosterPlan.ts, phRoster.ts). Previously counted scheduled duty only and
+  // included TBC units, inflating the displayed strength.
+  // .scratch/replit-resync-2026-09-21/issues/20.
   const strengthByDate = useMemo(() => {
     const result: Record<string, { day: number; pd: number; nd: number }> = {};
     for (const ds of dateStrs) {
-      const cells = Object.values(scheduleByDate[ds] ?? {});
+      const entries = Object.entries(scheduleByDate[ds] ?? {});
       let day = 0, pd = 0, nd = 0;
-      for (const cell of cells) {
-        const d = cell.scheduledDuty;
+      for (const [officerId, cell] of entries) {
+        const unitCode = officerById.get(officerId)?.unitCode;
+        if (!unitCode || unitCode.toUpperCase() === "TBC") continue;
+        const d = cell.duty || cell.scheduledDuty;
         if (d === "DAY") day++;
         else if (d === "PD") pd++;
         else if (d === "ND") nd++;
@@ -510,7 +942,7 @@ function OverrideEditor() {
       result[ds] = { day, pd, nd };
     }
     return result;
-  }, [scheduleByDate, dateStrs]);
+  }, [scheduleByDate, dateStrs, officerById]);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -654,30 +1086,32 @@ function OverrideEditor() {
     if (!allDates.length) return;
     setSaving(true); setMsg(null);
     try {
-      let totalSaved = 0;
-      for (const d of allDates) {
-        const dirtyForDate = pendingRef.current[d];
-        const res = await fetch("/api/roster-plan/overrides/bulk", {
-          method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
-          body: JSON.stringify({
-            date: d,
-            overrides: dirtyForDate.map(r => ({
-              officerId: r.id, duty: r.duty,
-              coveredByOfficerName: (r.cover && !UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
-              crossPostedToUnit:    (r.cover &&  UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
-              vehicle: r.vehicle || undefined,
-              overtimeHours: r.ot || undefined,
-              targetDuty: r.scheduledDuty || undefined,
-              comment: r.comment || undefined,
-            })),
-          }),
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          if (res.status === 401) { window.location.href = "/login"; return; }
-          throw new Error((body as any).error || "Save failed");
-        }
-        totalSaved += dirtyForDate.length;
+      // One atomic batch request across every pending date, not a per-date
+      // loop — previously a failure partway through the loop left earlier
+      // dates already committed server-side with pendingRef never cleared,
+      // showing them as still-unsaved even though they'd gone through.
+      // .scratch/replit-resync-2026-09-21/issues/20.
+      const dates = allDates.map((d) => ({
+        date: d,
+        overrides: pendingRef.current[d].map(r => ({
+          officerId: r.id, duty: r.duty,
+          coveredByOfficerName: (r.cover && !UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
+          crossPostedToUnit:    (r.cover &&  UNIT_CODE_RE.test(r.cover)) ? r.cover : undefined,
+          vehicle: r.vehicle || undefined,
+          overtimeHours: r.ot || undefined,
+          targetDuty: r.scheduledDuty || undefined,
+          comment: r.comment || undefined,
+        })),
+      }));
+      const totalSaved = dates.reduce((n, d) => n + d.overrides.length, 0);
+      const res = await fetch("/api/roster-plan/overrides/bulk", {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include",
+        body: JSON.stringify({ dates }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 401) { window.location.href = "/login"; return; }
+        throw new Error((body as any).error || "Save failed — no changes were saved.");
       }
       pendingRef.current = {};
       setPendingDates([]);
@@ -690,6 +1124,8 @@ function OverrideEditor() {
       });
       await loadWeek(dateStrs, officers);
     } catch (e: any) {
+      // Batched as one request, so a failure here means nothing was saved —
+      // pendingRef is deliberately left untouched, matching reality.
       setMsg({ ok: false, text: e.message });
     } finally { setSaving(false); }
   };
@@ -739,7 +1175,9 @@ function OverrideEditor() {
 
   const monthLabel = format(monthStart, "MMMM yyyy");
   const UNIT_W   = 40;
-  const NAME_W   = 90;
+  // Was 90, showing only the first name — ambiguous when two officers share
+  // one. Widened to fit the full name. .scratch/replit-resync-2026-09-21/issues/20.
+  const NAME_W   = 140;
   const FROZEN_W = UNIT_W + NAME_W;
   const TGT_W    = 64;
   const ACT_W    = 64;
@@ -945,9 +1383,9 @@ function OverrideEditor() {
                           openNamePicker({ officerId: o.id, currentName: o.name, top: rect.bottom + 4, left: rect.left });
                           setQuickPick(null);
                         } : undefined}
-                        title={!isReadOnly ? "Tap to rename officer" : undefined}
+                        title={!isReadOnly ? `${o.name} — tap to rename` : o.name}
                       >
-                        {o.name.split(/\s+/)[0]}
+                        {o.name}
                       </div>
                       {/* Date groups */}
                       {dateStrs.map(ds => {
@@ -1375,33 +1813,39 @@ export default function UploadBrief() {
 
   const [parsed, setParsed]       = useState<ParsedBrief | null>(null);
   const [dateOverride, setDateOverride] = useState("");
-  const [unmatched, setUnmatched] = useState<string[]>([]);
   const [applying, setApplying]   = useState(false);
-  const [appliedCount, setAppliedCount] = useState<number | null>(null);
-  const [skippedCount, setSkippedCount] = useState<number | null>(null);
-  const [appliedDate, setAppliedDate] = useState<string | null>(null);
   const [reverting, setReverting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportRunResult | null>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName]   = useState("");
   const [excelParsing, setExcelParsing] = useState(false);
+  const [parseDebug, setParseDebug] = useState<ParseDebugInfo | null>(null);
+  const [showDebug, setShowDebug]   = useState(false);
 
   const resetExcel = () => {
     setParsed(null); setDateOverride("");
-    setUnmatched([]); setAppliedCount(null); setSkippedCount(null); setAppliedDate(null); setFileName("");
+    setImportResult(null); setFileName("");
+    setParseDebug(null); setShowDebug(false);
   };
 
   const handleExcelFile = useCallback(async (file: File) => {
     setExcelParsing(true);
     setFileName(file.name);
+    // Reset the input so the same file can be re-selected after a reset
+    if (fileRef.current) fileRef.current.value = "";
     try {
       const result = await parseExcelBrief(file);
       setParsed(result);
-      setDateOverride(result.date);
-      setUnmatched([]);
-      setAppliedCount(null);
-      setSkippedCount(null);
-      setAppliedDate(null);
+      setParseDebug({ ..._lastParseDebug }); // snapshot after parse
+      // Single-date mode: default to today so Apply is immediately enabled
+      // (user can still change the date picker if needed)
+      if (!result.dateGroups?.length && !result.date) {
+        setDateOverride(format(new Date(), "yyyy-MM-dd"));
+      } else {
+        setDateOverride(result.date);
+      }
+      setImportResult(null);
     } catch {
       toast({ title: "Parse failed", description: "Could not read the Excel file.", variant: "destructive" });
     } finally {
@@ -1417,70 +1861,161 @@ export default function UploadBrief() {
 
   // Download section — own month state, fetches officers independently (no dependency on OverrideEditor)
   const [dlMonth, setDlMonth] = useState<string>(format(new Date(), "yyyy-MM"));
-  const [xlsDownloading, setXlsDownloading] = useState(false);
-  const handleDownloadXls = useCallback(async () => {
-    setXlsDownloading(true);
+  const [dlYear, setDlYear] = useState<string>(format(new Date(), "yyyy"));
+  const [xlsDownloading, setXlsDownloading] = useState<"month" | "year" | null>(null);
+  const handleDownloadXls = useCallback(async (scope: "month" | "year") => {
+    setXlsDownloading(scope);
     try {
       // Fetch officer list
       const offRes = await fetch("/api/roster-plan/officers", { credentials: "include" });
       if (!offRes.ok) throw new Error("Could not load officers");
       const offs: any[] = await offRes.json();
 
-      // Compute dates for the chosen month
-      const ms = startOfMonth(new Date(dlMonth + "-01"));
-      const dates = eachDayOfInterval({ start: ms, end: endOfMonth(ms) })
-        .map(d => format(d, "yyyy-MM-dd"));
+      const monthKeys = scope === "year"
+        ? Array.from({ length: 12 }, (_, monthIndex) => `${dlYear}-${String(monthIndex + 1).padStart(2, "0")}`)
+        : [dlMonth];
+      const wb = XLSX.utils.book_new();
 
-      // Fetch schedule data for every date in parallel
-      const fetched = await Promise.all(dates.map(async ds => {
-        const res = await fetch(`/api/roster-plan/schedule?date=${ds}`, { credentials: "include" });
-        const sched = res.ok ? await res.json() : { duties: [] };
-        return { ds, duties: (sched.duties ?? []) as any[] };
-      }));
+      for (const monthKey of monthKeys) {
+        const ms = startOfMonth(new Date(monthKey + "-01"));
+        const allDates = eachDayOfInterval({ start: ms, end: endOfMonth(ms) })
+          .map(d => format(d, "yyyy-MM-dd"));
 
-      // Build rows: header, then one row per (catchment officer × date)
-      const header = ["Date", "Name", "Unit", "Target", "Actual", "Covering", "Vehicle"];
-      const rows: (string | number)[][] = [header];
+        // Fetch one /schedule response per calendar WEEK (Monday anchor),
+        // deduped — the endpoint already returns a full week per call
+        // regardless of which day within it you pass, so fetching per-day
+        // (the old behaviour) made ~30 redundant calls per month.
+        // .scratch/replit-resync-2026-09-21/issues/29.
+        const seenMondays = new Set<string>();
+        const mondayAnchors: string[] = [];
+        for (const ds of allDates) {
+          const d = parseISO(ds);
+          const dow = d.getDay(); // 0=Sun
+          const offset = dow === 0 ? -6 : 1 - dow;
+          const mon = format(addDays(d, offset), "yyyy-MM-dd");
+          if (!seenMondays.has(mon)) { seenMondays.add(mon); mondayAnchors.push(mon); }
+        }
+        const weekDuties = await Promise.all(mondayAnchors.map(async mon => {
+          const res = await fetch(`/api/roster-plan/schedule?date=${mon}`, { credentials: "include" });
+          if (!res.ok) throw new Error(`Could not load roster for ${format(ms, "MMMM yyyy")}`);
+          const sched = await res.json();
+          return (sched.duties ?? []) as any[];
+        }));
 
-      for (const { ds, duties } of fetched) {
-        const dateLabel = format(parseISO(ds), "d MMM yyyy (EEE)");
-        for (const catchment of CATCHMENT_ORDER) {
-          const code = CATCHMENT_CODE[catchment];
-          const catchOfficers = offs.filter((o: any) => (o.unitCode ?? "").startsWith(code));
-          for (const o of catchOfficers) {
-            const entry = duties.find((x: any) => x.officerId === o.id && x.date === ds);
-            rows.push([
-              dateLabel,
-              o.name ?? o.officerName ?? "",
-              o.unitCode ?? "",
-              entry?.targetDuty ?? "",
-              entry?.duty ?? "",
-              entry?.crossPostedToUnit ?? entry?.coveredByOfficerName ?? entry?.swappedWithOfficerName
-                ?? entry?.coveringForUnit ?? "",
-              entry?.vehicle ?? "",
-            ]);
+        const dutyMap = new Map<string, any>();
+        for (const week of weekDuties) {
+          for (const d of week) dutyMap.set(`${d.officerId}:${d.date}`, d);
+        }
+
+        // Build rows: header, then one row per (catchment officer × date)
+        const header = ["Date", "Name", "Unit", "Target", "Actual", "Covering", "Vehicle"];
+        const rows: (string | number)[][] = [header];
+
+        for (const ds of allDates) {
+          const dateLabel = format(parseISO(ds), "d MMM yyyy (EEE)");
+          for (const catchment of CATCHMENT_ORDER) {
+            const code = CATCHMENT_CODE[catchment];
+            const catchOfficers = offs.filter((o: any) => (o.unitCode ?? "").startsWith(code));
+            for (const o of catchOfficers) {
+              const entry = dutyMap.get(`${o.id}:${ds}`);
+              rows.push([
+                dateLabel,
+                o.name ?? o.officerName ?? "",
+                o.unitCode ?? "",
+                entry?.targetDuty ?? "",
+                entry?.duty ?? "",
+                entry?.crossPostedToUnit ?? entry?.coveredByOfficerName ?? entry?.swappedWithOfficerName
+                  ?? entry?.coveringForUnit ?? "",
+                entry?.vehicle ?? "",
+              ]);
+            }
           }
         }
+
+        const ws = XLSX.utils.aoa_to_sheet(rows);
+        ws["!cols"] = [
+          { wch: 22 }, { wch: 20 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 14 }, { wch: 10 }
+        ];
+        XLSX.utils.book_append_sheet(wb, ws, format(ms, "MMM yyyy"));
       }
 
-      const ws = XLSX.utils.aoa_to_sheet(rows);
-      ws["!cols"] = [
-        { wch: 22 }, { wch: 20 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 14 }, { wch: 10 }
-      ];
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, format(ms, "MMM yyyy"));
-      XLSX.writeFile(wb, `Roster_${dlMonth}.xlsx`);
-      toast({ title: "Downloaded", description: `Roster_${dlMonth}.xlsx saved.` });
+      const filename = scope === "year" ? `Roster_${dlYear}.xlsx` : `Roster_${dlMonth}.xlsx`;
+      XLSX.writeFile(wb, filename);
+      toast({
+        title: "Downloaded",
+        description: scope === "year" ? `${filename} saved with 12 monthly tabs.` : `${filename} saved.`,
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       toast({ title: "Download failed", description: msg, variant: "destructive" });
     } finally {
-      setXlsDownloading(false);
+      setXlsDownloading(null);
     }
-  }, [dlMonth, toast]);
+  }, [dlMonth, dlYear, toast]);
 
   const handleApply = async () => {
     if (!parsed) return;
+
+    // ── Multi-date (bulk) mode ──────────────────────────────────────────────
+    if (parsed.dateGroups && parsed.dateGroups.length > 0) {
+      setApplying(true);
+      const result: ImportRunResult = {
+        datesFound:   parsed.dateGroups.length,
+        datesChanged: [],
+        datesSkipped: [],
+        datesErrored: [],
+        unmatchedNames: [],
+        totalChanges: 0,
+      };
+      try {
+        for (const group of parsed.dateGroups) {
+          try {
+            const res = await fetch("/api/roster-plan/import-brief", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify(group),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+              result.datesErrored.push(group.date);
+              continue;
+            }
+            if ((data.changed ?? 0) > 0) {
+              result.datesChanged.push(group.date);
+              result.totalChanges += data.changed ?? 0;
+            } else {
+              result.datesSkipped.push(group.date);
+            }
+            for (const u of (data.unmatched ?? []) as string[]) {
+              if (!result.unmatchedNames.includes(u)) result.unmatchedNames.push(u);
+            }
+            // Dates with unmatched names count as errored too
+            if ((data.unmatched ?? []).length > 0 && !result.datesErrored.includes(group.date)) {
+              result.datesErrored.push(group.date);
+            }
+          } catch {
+            result.datesErrored.push(group.date);
+          }
+        }
+        setImportResult(result);
+        bumpVersion(); // triggers OverrideEditor's useEffect to reload the grid
+        const hasErrors = result.datesErrored.length > 0;
+        toast({
+          title: hasErrors ? "Import completed with errors" : "Import complete",
+          description: `${result.totalChanges} change(s) across ${result.datesChanged.length} date(s). ${result.datesSkipped.length} skipped (no change). ${hasErrors ? `${result.datesErrored.length} with errors.` : ""}`.trim(),
+          variant: hasErrors ? "destructive" : "default",
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast({ title: "Import failed", description: msg, variant: "destructive" });
+      } finally {
+        setApplying(false);
+      }
+      return;
+    }
+
+    // ── Single-date mode ─────────────────────────────────────────────────────
     const date = dateOverride || parsed.date;
     if (!date) {
       toast({ title: "No date", description: "Set a date before applying.", variant: "destructive" });
@@ -1496,19 +2031,24 @@ export default function UploadBrief() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Import failed");
-      setUnmatched(data.unmatched ?? []);
-      // Backend now diffs against the existing overrides before writing
+      // Backend diffs against the existing overrides before writing
       // (read-before-write) and reports changed vs skipped-as-no-op counts
       // separately, rather than a single "applied" total that couldn't tell
       // "10 officers processed" from "10 officers actually changed".
-      setAppliedCount(data.changed ?? data.applied?.length ?? 0);
-      setSkippedCount(data.skipped ?? 0);
-      setAppliedDate(date);
+      const result: ImportRunResult = {
+        datesFound:   1,
+        datesChanged: (data.changed ?? 0) > 0 ? [date] : [],
+        datesSkipped: (data.changed ?? 0) === 0 ? [date] : [],
+        datesErrored: (data.unmatched ?? []).length > 0 ? [date] : [],
+        unmatchedNames: data.unmatched ?? [],
+        totalChanges: data.changed ?? 0,
+      };
+      setImportResult(result);
       bumpVersion();
       toast({
-        title: (data.changed ?? 0) > 0 ? "Brief imported" : "No changes — roster already up to date",
-        description: (data.changed ?? 0) > 0
-          ? `${data.changed} officer(s) updated for ${date}.${data.skipped ? ` ${data.skipped} already matched (skipped).` : ""}${data.unmatched?.length ? ` ${data.unmatched.length} unmatched.` : ""}`
+        title: result.totalChanges > 0 ? "Brief imported" : "No changes — roster already up to date",
+        description: result.totalChanges > 0
+          ? `${result.totalChanges} officer(s) updated for ${date}.${data.skipped ? ` ${data.skipped} already matched (skipped).` : ""}${data.unmatched?.length ? ` ${data.unmatched.length} unmatched.` : ""}`
           : `All entries for ${date} already match the current roster.`,
       });
     } catch (err: unknown) {
@@ -1519,26 +2059,26 @@ export default function UploadBrief() {
     }
   };
 
-  // Undo — clears every override/leave this import wrote for its date,
-  // restoring the roster to what it was before Apply. Mirrors handleApply's
-  // single-date scope: only the date just applied can be reverted this way.
+  // Undo — clears every override/leave the just-completed import wrote,
+  // restoring the roster to what it was before Apply. Reverts every date
+  // that import actually changed, single- or multi-date alike (the backend's
+  // DELETE already accepted a `dates` array; only the frontend was
+  // single-date-only). .scratch/replit-resync-2026-09-21/issues/29.
   const handleRevert = async () => {
-    if (!appliedDate) return;
+    const revertDates = importResult?.datesChanged ?? [];
+    if (revertDates.length === 0) return;
     setReverting(true);
     try {
       const res = await fetch("/api/roster-plan/import-brief", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ dates: [appliedDate] }),
+        body: JSON.stringify({ dates: revertDates }),
       });
       if (!res.ok) throw new Error("Revert failed");
-      const revertedDate = appliedDate;
-      setAppliedCount(null);
-      setSkippedCount(null);
-      setAppliedDate(null);
+      setImportResult(null);
       bumpVersion();
-      toast({ title: "Reverted", description: `Cleared overrides for ${revertedDate}. Roster is back to before this import.` });
+      toast({ title: "Reverted", description: `Cleared overrides for ${revertDates.length} date(s). Roster is back to before this import.` });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       toast({ title: "Revert failed", description: msg, variant: "destructive" });
@@ -1547,11 +2087,14 @@ export default function UploadBrief() {
     }
   };
 
+  const isMultiDate = !!(parsed?.dateGroups && parsed.dateGroups.length > 0);
   const effectiveDate = dateOverride || parsed?.date || "";
   const dateLabel = effectiveDate
     ? (() => { try { return format(new Date(effectiveDate + "T00:00:00Z"), "EEE, d MMM yyyy"); } catch { return effectiveDate; } })()
     : "";
-  const totalEntries = (parsed?.assignments.length ?? 0) + (parsed?.off.length ?? 0) + (parsed?.leave.length ?? 0);
+  const totalEntries = isMultiDate
+    ? parsed!.dateGroups!.reduce((s, g) => s + g.assignments.length + g.off.length + g.leave.length, 0)
+    : ((parsed?.assignments.length ?? 0) + (parsed?.off.length ?? 0) + (parsed?.leave.length ?? 0));
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -1634,14 +2177,14 @@ export default function UploadBrief() {
               </div>
               <button
                 type="button"
-                onClick={handleDownloadXls}
-                disabled={xlsDownloading}
+                onClick={() => handleDownloadXls("month")}
+                disabled={xlsDownloading !== null}
                 className={cn(
                   "w-full rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium py-2 transition-colors",
-                  xlsDownloading && "opacity-60 pointer-events-none"
+                  xlsDownloading !== null && "opacity-60 pointer-events-none"
                 )}
               >
-                {xlsDownloading ? (
+                {xlsDownloading === "month" ? (
                   <span className="flex items-center justify-center gap-2">
                     <Loader2 className="h-4 w-4 animate-spin" /> Preparing…
                   </span>
@@ -1649,6 +2192,38 @@ export default function UploadBrief() {
                   `Export ${dlMonth}`
                 )}
               </button>
+              <div className="border-t pt-3 space-y-2">
+                <div className="flex items-center gap-2 justify-center">
+                  <label className="text-xs text-muted-foreground">Year:</label>
+                  <input
+                    type="number"
+                    min="2025"
+                    max="2100"
+                    step="1"
+                    value={dlYear}
+                    onChange={e => setDlYear(e.target.value)}
+                    className="w-24 border border-gray-200 rounded-md px-2 py-1 text-xs bg-background"
+                    aria-label="Export year"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDownloadXls("year")}
+                  disabled={xlsDownloading !== null || !/^\d{4}$/.test(dlYear)}
+                  className={cn(
+                    "w-full rounded-lg bg-green-600 hover:bg-green-700 text-white text-sm font-medium py-2 transition-colors",
+                    (xlsDownloading !== null || !/^\d{4}$/.test(dlYear)) && "opacity-60 pointer-events-none"
+                  )}
+                >
+                  {xlsDownloading === "year" ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Preparing 12 tabs…
+                    </span>
+                  ) : (
+                    `Export Full Year ${dlYear}`
+                  )}
+                </button>
+              </div>
               <p className="text-xs text-muted-foreground text-center">
                 Date | Name | Unit | Target | Actual | Covering | Vehicle
               </p>
@@ -1658,51 +2233,168 @@ export default function UploadBrief() {
           {parsed && (
             <div className="space-y-4">
               <div className="rounded-lg border bg-card p-4 space-y-4">
-                {/* Date row */}
-                <div className="flex items-center gap-3 flex-wrap">
-                  <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date</span>
-                  <input
-                    type="date"
-                    value={dateOverride}
-                    onChange={e => setDateOverride(e.target.value)}
-                    className="h-7 px-2 text-xs border rounded bg-background"
-                  />
-                  {dateLabel && <span className="text-xs text-muted-foreground">{dateLabel}</span>}
-                  {!effectiveDate && (
-                    <span className="text-xs text-red-500 font-medium">⚠ Set a date before applying</span>
-                  )}
-                </div>
-                <PreviewTable brief={parsed} />
+                {isMultiDate ? (
+                  /* ── Multi-date summary ── */
+                  <div className="space-y-2">
+                    <div className="text-xs text-muted-foreground">
+                      <span className="font-semibold text-foreground">Dates parsed: </span>
+                      <span className="font-mono">
+                        {format(new Date(parsed.dateGroups![0].date + "T00:00:00"), "d MMM yyyy")}
+                        {" → "}
+                        {format(new Date(parsed.dateGroups![parsed.dateGroups!.length - 1].date + "T00:00:00"), "d MMM yyyy")}
+                      </span>
+                      <span className="ml-1.5 text-muted-foreground">({parsed.dateGroups!.length} dates)</span>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {/* Date row */}
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Date</span>
+                      <input
+                        type="date"
+                        value={dateOverride}
+                        onChange={e => setDateOverride(e.target.value)}
+                        className="h-7 px-2 text-xs border rounded bg-background"
+                      />
+                      {dateLabel && <span className="text-xs text-muted-foreground">{dateLabel}</span>}
+                      {!effectiveDate && (
+                        <span className="text-xs text-red-500 font-medium">⚠ Set a date before applying</span>
+                      )}
+                    </div>
+                    <PreviewTable brief={parsed} />
+                  </>
+                )}
               </div>
 
-              {unmatched.length > 0 && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 dark:bg-amber-950/20 p-3 flex gap-2">
-                  <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-xs font-semibold text-amber-800 dark:text-amber-400 mb-1">
-                      Unmatched names — not in officer list
-                    </p>
-                    <p className="text-xs text-amber-700 dark:text-amber-300">{unmatched.join(", ")}</p>
-                  </div>
+              {/* ── Debug panel (tap to expand — helps diagnose date import bugs) ── */}
+              {parseDebug && (
+                <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-950/20 text-[11px] overflow-hidden">
+                  <button
+                    type="button"
+                    className="w-full flex items-center justify-between px-3 py-2 text-amber-900 dark:text-amber-200 font-semibold"
+                    onClick={() => setShowDebug(v => !v)}
+                  >
+                    <span>🔍 Debug: parse info (tap to {showDebug ? "hide" : "show"})</span>
+                    <span className="text-amber-600">{showDebug ? "▲" : "▼"}</span>
+                  </button>
+                  {showDebug && (
+                    <div className="border-t border-amber-200 dark:border-amber-700 px-3 py-2 space-y-3 font-mono text-amber-900 dark:text-amber-100 overflow-x-auto">
+                      <div>
+                        <p className="font-bold text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-0.5">Parser used</p>
+                        <p>{parseDebug.parser}</p>
+                      </div>
+                      <div>
+                        <p className="font-bold text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-0.5">Date row index</p>
+                        <p>{parseDebug.dateRowIdx < 0 ? "not found" : `row ${parseDebug.dateRowIdx}`}</p>
+                      </div>
+                      {parseDebug.dateCols.length > 0 && (
+                        <div>
+                          <p className="font-bold text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-0.5">Date columns detected</p>
+                          {parseDebug.dateCols.map((dc, i) => (
+                            <p key={i} className={dc.date === "(none)" ? "text-red-600" : ""}>
+                              col {dc.col} → <b>{dc.date}</b> &nbsp;[{dc.rawType}: {dc.rawVal}]
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                      {parseDebug.firstRows.length > 0 && (
+                        <div>
+                          <p className="font-bold text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-0.5">First 5 rows (cols 0–14)</p>
+                          {parseDebug.firstRows.map(row => (
+                            <div key={row.rowIdx} className="mb-1.5">
+                              <p className="text-amber-500 dark:text-amber-400">row {row.rowIdx}:</p>
+                              <div className="pl-2 space-y-0.5">
+                                {row.cells.filter(c => c.val !== "—").map(c => (
+                                  <p key={c.col} className={c.type === "Date" ? "text-green-700 dark:text-green-400" : c.type === "number" ? "text-blue-700 dark:text-blue-400" : ""}>
+                                    [{c.col}] {c.type}: {c.val}
+                                  </p>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {parseDebug.firstDataRows.length > 0 && (
+                        <div>
+                          <p className="font-bold text-[10px] uppercase tracking-wider text-amber-700 dark:text-amber-400 mb-0.5">First data rows parsed</p>
+                          {parseDebug.firstDataRows.map((dr, i) => (
+                            <div key={i} className="mb-1.5">
+                              <p className="font-bold">{dr.name}</p>
+                              {dr.entries.map((e, j) => (
+                                <p key={j} className="pl-2">
+                                  {e.date}: tgt=<b>{e.target || "—"}</b> act=<b className={e.actual === "OFF" ? "text-green-700" : ""}>{e.actual || "—"}</b> cvr={e.cover || "—"} veh={e.vehicle || "—"}
+                                </p>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
-              {appliedCount !== null && (
-                <div className="rounded-lg border border-green-200 bg-green-50 dark:bg-green-950/20 p-3 flex items-start gap-2">
-                  <CheckCircle className="h-4 w-4 text-green-600 shrink-0 mt-0.5" />
-                  <div className="flex-1 flex items-center justify-between gap-2">
-                    <p className="text-xs text-green-800 dark:text-green-300 font-medium">
-                      Applied — {appliedCount} officer(s) updated for {dateLabel}
-                      {skippedCount ? ` (${skippedCount} already matched, skipped)` : ""}
+              {/* ── Import result summary (shown after Apply runs) ── */}
+              {importResult && (
+                <div className="rounded-lg border space-y-0 overflow-hidden">
+                  <div className={cn(
+                    "px-3 py-2 flex items-center gap-2",
+                    importResult.datesErrored.length > 0
+                      ? "bg-red-50 dark:bg-red-950/30 border-b border-red-200"
+                      : "bg-green-50 dark:bg-green-950/20 border-b border-green-200"
+                  )}>
+                    {importResult.datesErrored.length > 0
+                      ? <AlertTriangle className="h-4 w-4 text-red-600 shrink-0" />
+                      : <CheckCircle className="h-4 w-4 text-green-600 shrink-0" />}
+                    <p className={cn(
+                      "text-xs font-semibold flex-1",
+                      importResult.datesErrored.length > 0
+                        ? "text-red-800 dark:text-red-300"
+                        : "text-green-800 dark:text-green-300"
+                    )}>
+                      {importResult.totalChanges > 0
+                        ? `${importResult.totalChanges} change(s) written across ${importResult.datesChanged.length} date(s)`
+                        : "No changes — roster already matches the uploaded file"}
                     </p>
-                    {appliedDate && (
+                  </div>
+                  <div className="px-3 py-2.5 bg-card">
+                    <div className="grid grid-cols-[1fr_auto] gap-x-6 gap-y-1 text-xs">
+                      <span className="text-muted-foreground">Dates found in file</span>
+                      <span className="font-mono font-semibold text-right">{importResult.datesFound}</span>
+                      <span className="text-muted-foreground">Dates with changes applied</span>
+                      <span className="font-mono font-semibold text-green-700 dark:text-green-400 text-right">{importResult.datesChanged.length}</span>
+                      <span className="text-muted-foreground">Dates skipped (no change)</span>
+                      <span className="font-mono font-semibold text-right">{importResult.datesSkipped.length}</span>
+                      <span className="text-muted-foreground">Dates with errors</span>
+                      <span className={cn("font-mono font-semibold text-right", importResult.datesErrored.length > 0 ? "text-red-600 dark:text-red-400" : "")}>
+                        {importResult.datesErrored.length}
+                      </span>
+                    </div>
+                    {importResult.datesErrored.length > 0 && (
+                      <div className="mt-2.5 pt-2 border-t space-y-1">
+                        <p className="text-xs font-semibold text-red-700 dark:text-red-400">Error dates — review and resolve:</p>
+                        <div className="text-[11px] font-mono text-red-600 dark:text-red-300 leading-relaxed break-all bg-red-50 dark:bg-red-950/20 rounded p-2">
+                          {importResult.datesErrored.join(" · ")}
+                        </div>
+                      </div>
+                    )}
+                    {importResult.unmatchedNames.length > 0 && (
+                      <div className="mt-2.5 pt-2 border-t space-y-1">
+                        <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">Unmatched names — not in officer list:</p>
+                        <p className="text-xs text-amber-600 dark:text-amber-300">{importResult.unmatchedNames.join(", ")}</p>
+                      </div>
+                    )}
+                    {importResult.datesChanged.length > 0 && (
                       <button
+                        type="button"
                         onClick={handleRevert}
                         disabled={reverting}
-                        className="shrink-0 text-xs font-medium text-green-800 dark:text-green-300 underline hover:no-underline disabled:opacity-50"
-                        title="Clear the overrides/leave this import wrote and restore the previous roster for this date"
+                        className="mt-3 w-full text-xs font-semibold text-red-600 border border-red-200 bg-white dark:bg-transparent rounded-md py-1.5 hover:bg-red-50 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
                       >
-                        {reverting ? "Undoing…" : "Undo"}
+                        {reverting
+                          ? <><Loader2 className="h-3 w-3 animate-spin" /> Reverting…</>
+                          : <><RotateCcw className="h-3 w-3" /> Revert import — restore original roster</>}
                       </button>
                     )}
                   </div>
@@ -1711,12 +2403,14 @@ export default function UploadBrief() {
 
               <Button
                 onClick={handleApply}
-                disabled={applying || totalEntries === 0 || !effectiveDate}
+                disabled={applying || totalEntries === 0 || (!isMultiDate && !effectiveDate)}
                 className="w-full"
               >
                 {applying
                   ? <><Loader2 className="h-4 w-4 animate-spin mr-2" />Applying…</>
-                  : <><CheckCircle className="h-4 w-4 mr-2" />Apply to Roster — {effectiveDate || "set date"}</>}
+                  : isMultiDate
+                    ? <><CheckCircle className="h-4 w-4 mr-2" />Bulk Import — {parsed.dateGroups!.length} dates</>
+                    : <><CheckCircle className="h-4 w-4 mr-2" />Apply to Roster — {effectiveDate || "set date"}</>}
               </Button>
             </div>
           )}

@@ -31,6 +31,7 @@ export * from "./rosterRequirements";
 export * from "./activityLog";
 export * from "./rosterPatterns";
 export * from "./rosterVehicles";
+export * from "./rosterPlanBackups";
 
 // ── Core ops state domain ────────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/02-schema-core-ops-state.md
@@ -47,6 +48,8 @@ export * from "./deploymentReassignmentHistory";
 export * from "./deploymentVehiclePositions";
 export * from "./deploymentSwapRequests";
 export * from "./deploymentAlerts";
+export * from "./autoDeploymentSettings";
+export * from "./meetings";
 
 // ── PH roster domain ─────────────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/04-schema-ph-roster.md
@@ -56,6 +59,7 @@ export * from "./phBallot";
 export * from "./phFaq";
 export * from "./phHrBallotState";
 export * from "./phRotationState";
+export * from "./phBuilderConfig";
 
 // ── Inspections & push domain ────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/05-schema-inspections-push.md

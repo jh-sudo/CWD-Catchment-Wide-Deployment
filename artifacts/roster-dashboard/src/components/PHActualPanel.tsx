@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { getContrastColor } from "@/lib/contrast";
 import { Loader2 } from "lucide-react";
 import type { PHRefRow } from "@/lib/usePHActuals";
+import { phUnitSortKey } from "@/lib/phUnitOrder";
 
 const DUTY_COLORS: Record<string, string> = {
   DAY: "bg-blue-100 text-blue-700",
@@ -18,17 +19,12 @@ const CATCHMENT_PH_BG: Record<string, string> = {
   KG: "#CAEDFB",
 };
 
-const UNIT_ORDER = [
-  "CP1","CP2","CP3","CP4",
-  "KG1","KG2","KG3","KG4",
-  "BU1","BU2","BU3","BU4","BU5",
-  "PJ1","PJ2","PJ3","PJ4",
-  "WK1","WK2","WK3",
-];
-const unitSortKey = (code: string) => {
-  const idx = UNIT_ORDER.indexOf(code);
-  return idx === -1 ? 999 : idx;
-};
+// Ordering now comes from the shared @/lib/phUnitOrder module — this file
+// previously kept its own, differently-grouped copy (catchment-then-number
+// instead of the canonical interleaved-by-number order used elsewhere, e.g.
+// PHHoliday.tsx), which could disagree with the rest of the app.
+// .scratch/replit-resync-2026-09-21/issues/08.
+const unitSortKey = phUnitSortKey;
 
 interface Props {
   phName: string;

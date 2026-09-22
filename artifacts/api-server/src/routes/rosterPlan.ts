@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, inArray, desc, isNull, isNotNull } from "drizzle-orm";
+import { eq, and, or, ne, inArray, desc, isNull, isNotNull, sql } from "drizzle-orm";
 import {
   db,
   officersTable,
@@ -14,6 +14,7 @@ import {
   rosterDayOverridesTable,
   rosterDayOverrideApplicationsTable,
   leaveRequestsTable,
+  rosterPlanBackupsTable,
   phRosterRefTable,
   rosterRequirementsTable,
   type Officer,
@@ -21,8 +22,15 @@ import {
   type RosterLeave,
   type RosterSwap,
 } from "@workspace/db";
-import { getManager, requireManager } from "./auth.js";
+import { getManager, requireManager, requireRosterEditor } from "./auth.js";
 import { appendActivityLog, getActivityLog } from "../lib/activityLog.js";
+// vehicleArrangement.ts already imports several functions from this file;
+// this is the reverse edge of that same (safe) cycle — see
+// resolveOfficerVehicleMap's own comment for why. Used by buildSummary() so
+// the FIRB deployment text shows the day's actual vehicle arrangement
+// instead of an officer's static home-vehicle field.
+// .scratch/replit-resync-2026-09-21/issues/05.
+import { resolveOfficerVehicleMap } from "./vehicleArrangement.js";
 
 // ── Cycle patterns ─────────────────────────────────────────────────────────────
 const DAYS_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -209,6 +217,149 @@ export async function loadOfficers(): Promise<Officer[]> {
 }
 
 // ── Roster config ────────────────────────────────────────────────────────────
+
+// Per-shift weekday/weekend(+PH) minimum-manning bands driving the 3-tier
+// (below/minimum/full) strength coloring shown across roster/vehicle/
+// deployment views, plus named date exceptions. Mirrors the shape of
+// roster-dashboard's lib/strength.ts (kept as a separate, hand-duplicated
+// interface here rather than a shared package, matching how this route file
+// already duplicates its other frontend-facing shapes).
+// .scratch/replit-resync-2026-09-21/issues/30.
+export interface StrengthBand {
+  minimum: number;
+  full: number;
+  shiftMinimums: { PD: number; DAY: number; ND: number };
+}
+export interface StrengthSpecialRule extends StrengthBand {
+  id: string;
+  name: string;
+  dates: string[];
+}
+export interface StrengthConfigShape {
+  weekday: { default: StrengthBand; special: StrengthSpecialRule[] };
+  weekend: { default: StrengthBand; special: StrengthSpecialRule[] };
+  colors: { below: string; minimum: string; full: string };
+}
+
+const DEFAULT_STRENGTH_WEEKDAY: StrengthBand = { minimum: 24, full: 27, shiftMinimums: { PD: 4, DAY: 8, ND: 1 } };
+const DEFAULT_STRENGTH_WEEKEND: StrengthBand = { minimum: 12, full: 12, shiftMinimums: { PD: 3, DAY: 3, ND: 0 } };
+
+function normalizeStrengthBand(value: unknown, fallback: StrengthBand): StrengthBand {
+  const candidate = value as Partial<StrengthBand> | null;
+  const minimum = Number.isInteger(candidate?.minimum) && Number(candidate?.minimum) >= 0
+    ? Number(candidate?.minimum)
+    : fallback.minimum;
+  const full = Number.isInteger(candidate?.full) && Number(candidate?.full) >= minimum
+    ? Number(candidate?.full)
+    : Math.max(minimum, fallback.full);
+  const shiftMinimums = {
+    PD: Number.isInteger(candidate?.shiftMinimums?.PD) && Number(candidate?.shiftMinimums?.PD) >= 0
+      ? Number(candidate?.shiftMinimums?.PD) : fallback.shiftMinimums.PD,
+    DAY: Number.isInteger(candidate?.shiftMinimums?.DAY) && Number(candidate?.shiftMinimums?.DAY) >= 0
+      ? Number(candidate?.shiftMinimums?.DAY) : fallback.shiftMinimums.DAY,
+    ND: Number.isInteger(candidate?.shiftMinimums?.ND) && Number(candidate?.shiftMinimums?.ND) >= 0
+      ? Number(candidate?.shiftMinimums?.ND) : fallback.shiftMinimums.ND,
+  };
+  return { minimum, full, shiftMinimums };
+}
+
+// Normalizes (and backfills defaults for) whatever is currently stored,
+// so a never-configured or partially-configured row always yields a
+// complete, well-formed StrengthConfigShape. Unlike the reference this was
+// ported from, there's no "derive shiftMinimums from the roster cycle
+// pattern" auto-sync here — that needed a deeper port (walking this repo's
+// own Postgres cycle-duties table to recompute worst-case per-shift counts)
+// for a nice-to-have default-seeding behavior that StrengthTab.tsx's manual
+// editor already covers; deliberately simplified to a static fallback
+// instead. .scratch/replit-resync-2026-09-21/issues/30.
+function normalizeStrengthConfig(value: unknown): StrengthConfigShape {
+  const candidate = value as Partial<StrengthConfigShape> | null;
+  const seenSpecialDates = new Set<string>();
+  const normalizeSpecial = (rows: unknown, fallback: StrengthBand): StrengthSpecialRule[] => {
+    if (!Array.isArray(rows)) return [];
+    return rows.flatMap((raw, index) => {
+      const row = raw as Partial<StrengthSpecialRule>;
+      const dates = Array.isArray(row.dates)
+        ? row.dates.filter((date): date is string => typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date))
+        : [];
+      const uniqueDates = dates.filter((date) => {
+        if (seenSpecialDates.has(date)) return false;
+        seenSpecialDates.add(date);
+        return true;
+      });
+      if (uniqueDates.length === 0) return [];
+      return [{
+        id: typeof row.id === "string" && row.id.trim() ? row.id.trim() : `strength-${index + 1}`,
+        name: typeof row.name === "string" && row.name.trim() ? row.name.trim() : `Exception ${index + 1}`,
+        dates: uniqueDates,
+        ...normalizeStrengthBand(row, fallback),
+      }];
+    });
+  };
+  const validColor = (color: unknown, fallback: string) =>
+    typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+  return {
+    weekday: {
+      default: normalizeStrengthBand(candidate?.weekday?.default, DEFAULT_STRENGTH_WEEKDAY),
+      special: normalizeSpecial(candidate?.weekday?.special, DEFAULT_STRENGTH_WEEKDAY),
+    },
+    weekend: {
+      default: normalizeStrengthBand(candidate?.weekend?.default, DEFAULT_STRENGTH_WEEKEND),
+      special: normalizeSpecial(candidate?.weekend?.special, DEFAULT_STRENGTH_WEEKEND),
+    },
+    colors: {
+      below: validColor(candidate?.colors?.below, "#fecaca"),
+      minimum: validColor(candidate?.colors?.minimum, "#fef08a"),
+      full: validColor(candidate?.colors?.full, "#bbf7d0"),
+    },
+  };
+}
+
+// The overall weekday/weekend minimum+full pair is intentionally pinned —
+// StrengthTab.tsx only ever lets an admin edit the PD/DAY/ND shiftMinimums
+// breakdown and named-exception dates, never these two headline numbers, so
+// a request that tries to change them is rejected rather than silently
+// accepted and ignored by the UI.
+function validateStrengthConfig(value: unknown): string | null {
+  if (!value || typeof value !== "object") return "strength must be an object";
+  const strength = value as Partial<StrengthConfigShape>;
+  const seenIds = new Set<string>();
+  const seenDates = new Set<string>();
+  if (strength.weekday?.default?.minimum !== 24 || strength.weekday.default.full !== 27) {
+    return "Weekday default must remain red below 24, yellow from 24 to 26, and green from 27";
+  }
+  if (strength.weekend?.default?.minimum !== 12 || strength.weekend.default.full !== 12) {
+    return "Weekend/PH default must remain red below 12 and green from 12";
+  }
+  for (const type of ["weekday", "weekend"] as const) {
+    const group = strength[type];
+    if (!group || !group.default || !Array.isArray(group.special)) return `${type} strength settings are incomplete`;
+    for (const [label, band] of [["default", group.default], ...group.special.map((row, index) => [`special row ${index + 1}`, row] as const)] as const) {
+      if (!Number.isInteger(band.minimum) || band.minimum < 0) return `${type} ${label} minimum must be a whole number`;
+      if (!Number.isInteger(band.full) || band.full < band.minimum) return `${type} ${label} full strength must be at least its minimum`;
+      for (const duty of ["PD", "DAY", "ND"] as const) {
+        if (!Number.isInteger(band.shiftMinimums?.[duty]) || band.shiftMinimums[duty] < 0) {
+          return `${type} ${label} ${duty} minimum must be a non-negative whole number`;
+        }
+      }
+    }
+    for (const row of group.special) {
+      if (!row.id?.trim() || seenIds.has(row.id)) return "Each special-date row must have a unique ID";
+      seenIds.add(row.id);
+      if (!row.name?.trim()) return `${type} special rows require a name`;
+      if (!Array.isArray(row.dates) || row.dates.length === 0) return `${type} special rows require at least one date`;
+      for (const date of row.dates) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || seenDates.has(date)) return "Special dates must be valid and unique across weekday and weekend rules";
+        seenDates.add(date);
+      }
+    }
+  }
+  for (const key of ["below", "minimum", "full"] as const) {
+    if (!/^#[0-9a-f]{6}$/i.test(strength.colors?.[key] ?? "")) return `${key} strength colour must be a six-digit hex colour`;
+  }
+  return null;
+}
+
 export interface RosterConfigShape {
   teamCount: 20 | 24 | 28;
   cycleStartDate: string;
@@ -218,6 +369,7 @@ export interface RosterConfigShape {
   weekendPD?: number;
   weekendDAY?: number;
   weekdayMinStrength?: number;
+  strength: StrengthConfigShape;
 }
 
 export async function loadConfig(): Promise<RosterConfigShape> {
@@ -230,6 +382,7 @@ export async function loadConfig(): Promise<RosterConfigShape> {
     weekendPD: row?.weekendPD ?? undefined,
     weekendDAY: row?.weekendDay ?? undefined,
     weekdayMinStrength: row?.weekdayMinStrength ?? undefined,
+    strength: normalizeStrengthConfig(row?.strength),
   };
 }
 
@@ -244,6 +397,7 @@ async function saveConfig(config: RosterConfigShape): Promise<void> {
         weekendPD: config.weekendPD ?? null,
         weekendDay: config.weekendDAY ?? null,
         weekdayMinStrength: config.weekdayMinStrength ?? null,
+        strength: config.strength,
       })
       .onConflictDoUpdate({
         target: rosterConfigTable.id,
@@ -253,6 +407,7 @@ async function saveConfig(config: RosterConfigShape): Promise<void> {
           weekendPD: config.weekendPD ?? null,
           weekendDay: config.weekendDAY ?? null,
           weekdayMinStrength: config.weekdayMinStrength ?? null,
+          strength: config.strength,
         },
       });
     await tx.delete(rosterMaintenanceVehiclesTable);
@@ -334,6 +489,7 @@ function buildSummary(
   config: RosterConfigShape,
   overrides: RosterOverride[],
   leaves: RosterLeave[],
+  officerVehicleMap: Record<string, string>,
 ): string {
   const d = new Date(dateStr + "T00:00:00Z");
   const monday = getMondayOf(d);
@@ -434,14 +590,27 @@ function buildSummary(
   const block1Lines: string[] = [];
   const block2Lines: string[] = [];
   const offNames: string[] = [];
+  const restNames: string[] = [];
   const leaveLines: string[] = [];
+  // An officer named as an explicit cover for one absent slot must not also
+  // be named as the cover for a *different* absent slot elsewhere — without
+  // this guard the same person's name could be pushed into two different
+  // units' lines (e.g. one unit's coveredByOfficerName and another's
+  // swappedWithOfficerName both pointing at them).
+  // .scratch/replit-resync-2026-09-21/issues/10.
+  const alreadyPlacedCoverNames = new Set<string>();
 
   for (const unitCode of sortedUnits) {
     const crew = unitMap.get(unitCode)!;
     // Suppress the unit's vehicle when ALL regular crew are cross-posted elsewhere —
     // their vehicle travels with them; the covering ND officer brings no vehicle.
     const hasAnchorCrew = crew.some(c => !c.crossPostedToUnit);
-    const vehicle = hasAnchorCrew ? (crew[0].officer.vehicle || "") : "";
+    // Server-resolved daily plate (officerVehicleMap, from vehicle-arrangement's
+    // cascade), not the officer's static home-vehicle field — a reassigned
+    // plate or a unit with nobody actually working must never show the wrong
+    // (or a stale) vehicle. .scratch/replit-resync-2026-09-21/issues/05.
+    const plateHolder = crew.find(c => officerVehicleMap[c.officer.id]);
+    const vehicle = hasAnchorCrew && plateHolder ? officerVehicleMap[plateHolder.officer.id] : "";
     const isBlock1 = BLOCK1_CATCHMENTS.has(crew[0].officer.catchment);
 
     // Unit's operational duty: use actualDuty of first non-absent shift worker (reflects
@@ -473,10 +642,11 @@ function buildSummary(
         && (info.targetDuty === "OFF" || info.targetDuty === "REST");
 
       if (isOff) {
-        offNames.push(info.officer.name);
+        if (info.actualDuty === "REST") restNames.push(info.officer.name);
+        else offNames.push(info.officer.name);
       } else if (!absent) {
         effectiveCrew.push(info.officer.name);
-      } else if (info.swappedWithOfficerName) {
+      } else if (info.swappedWithOfficerName && !alreadyPlacedCoverNames.has(info.swappedWithOfficerName)) {
         // Swapped: the absent officer's home slot is filled by their swap partner.
         // Show ONLY the replacement — the absent officer's name must not appear here
         // (they are already shown at their partner's unit via the partner's crew entry).
@@ -485,11 +655,13 @@ function buildSummary(
         const coverUnit = coverInfo?.officer.unitCode ?? "";
         const label = unitDuty === "ND" ? "swp" : coverUnit;
         effectiveCrew.push(`${info.swappedWithOfficerName} [${label}]`);
-      } else if (info.coveredByOfficerName) {
+        alreadyPlacedCoverNames.add(info.swappedWithOfficerName);
+      } else if (info.coveredByOfficerName && !alreadyPlacedCoverNames.has(info.coveredByOfficerName)) {
         // Absent with named cover — use covering officer
         effectiveCrew.push(info.coveredByOfficerName);
+        alreadyPlacedCoverNames.add(info.coveredByOfficerName);
       }
-      // Absent without cover → empty slot
+      // Absent without cover, or cover already placed elsewhere → empty slot
     }
 
     if (effectiveCrew.length > 0 && SHIFTS.has(unitDuty)) {
@@ -542,6 +714,9 @@ function buildSummary(
     "OFF",
     ...offNames,
     SEP,
+    "REST",
+    ...restNames,
+    SEP,
     "LEAVE",
     ...leaveLines,
     SEP,
@@ -555,6 +730,41 @@ const SHIFTS = new Set(["DAY", "PD", "ND"]);
 // ── Router ────────────────────────────────────────────────────────────────────
 export const rosterPlanRouter = Router();
 
+// Every table that materially affects what a roster screen shows. Replit's
+// original signal stat()s its flat JSON files (mtime+size) — no direct
+// equivalent in Postgres, so this uses Postgres's own per-table
+// insert/update/delete counters (pg_stat_user_tables) instead: a system
+// catalog lookup, not a data scan, and needs zero changes to any existing
+// write path (unlike an explicit updated_at column threaded through every
+// mutation here). .scratch/replit-resync-2026-09-21/issues/28.
+const ROSTER_REVISION_TABLES = [
+  "officers", "roster_patterns", "roster_config", "roster_requirements",
+  "roster_swaps", "roster_overrides", "roster_leaves", "roster_day_overrides",
+  "roster_cycle_meta", "roster_cycle_duties", "ph_roster_ref", "leave_requests",
+  "roster_vehicle_arrangements", "roster_vehicle_defaults",
+];
+// pg_stat_user_tables' counters reset to 0 on every restart, same class of
+// bug as the deployments.ts ETag fix (issue 15) — without this, a client's
+// cached revision from before a restart could coincidentally match the
+// fresh counters and hide a real change. .scratch/replit-resync-2026-09-21/issues/28.
+const rosterVersionProcessEpoch = Date.now();
+
+// A lightweight revision shared by every roster client. Screens poll this
+// endpoint so changes made in another browser/session invalidate local data.
+rosterPlanRouter.get("/roster-plan/version", async (_req, res) => {
+  res.set("Cache-Control", "no-store");
+  const result = await db.execute<{ relname: string; n_tup_ins: string; n_tup_upd: string; n_tup_del: string }>(sql`
+    SELECT relname, n_tup_ins, n_tup_upd, n_tup_del
+    FROM pg_stat_user_tables
+    WHERE relname = ANY(${ROSTER_REVISION_TABLES})
+  `);
+  const revision = result.rows
+    .map((r) => `${r.relname}:${r.n_tup_ins}:${r.n_tup_upd}:${r.n_tup_del}`)
+    .sort()
+    .join("|") + `|epoch:${rosterVersionProcessEpoch}`;
+  res.json({ revision });
+});
+
 // GET /api/roster-plan/config
 rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
   res.set("Cache-Control", "no-store");
@@ -565,14 +775,15 @@ rosterPlanRouter.get("/roster-plan/config", async (_req, res) => {
 });
 
 // PUT /api/roster-plan/config
-rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => {
-  const { teamCount, cycleStartDate, maintenanceVehicles, weekendPD, weekendDAY, weekdayMinStrength } = req.body as {
+rosterPlanRouter.put("/roster-plan/config", requireRosterEditor, async (req, res) => {
+  const { teamCount, cycleStartDate, maintenanceVehicles, weekendPD, weekendDAY, weekdayMinStrength, strength } = req.body as {
     teamCount: number;
     cycleStartDate: string;
     maintenanceVehicles?: string[];
     weekendPD?: number;
     weekendDAY?: number;
     weekdayMinStrength?: number;
+    strength?: unknown;
   };
   if (![20, 24, 28].includes(teamCount)) {
     return res.status(400).json({ error: "invalid teamCount" });
@@ -582,6 +793,17 @@ rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => 
   // defaults buildSummary() uses) rather than being reset, so a caller that
   // only wants to change teamCount doesn't accidentally blank these out.
   const existing = await loadConfig();
+  // strength (the StrengthConfigShape object), by contrast, is validated
+  // when present rather than silently normalized — a caller that sends a
+  // malformed or out-of-bounds strength config gets a 400 with the specific
+  // reason, instead of having it silently coerced to something else.
+  let nextStrength = existing.strength;
+  if (strength !== undefined) {
+    const normalized = normalizeStrengthConfig(strength);
+    const validationError = validateStrengthConfig(normalized);
+    if (validationError) return res.status(400).json({ error: validationError });
+    nextStrength = normalized;
+  }
   const config: RosterConfigShape = {
     teamCount: teamCount as 20 | 24 | 28,
     cycleStartDate,
@@ -589,6 +811,7 @@ rosterPlanRouter.put("/roster-plan/config", requireManager, async (req, res) => 
     weekendPD: weekendPD ?? existing.weekendPD ?? 3,
     weekendDAY: weekendDAY ?? existing.weekendDAY ?? 3,
     weekdayMinStrength: weekdayMinStrength ?? existing.weekdayMinStrength ?? 40,
+    strength: nextStrength,
   };
   await saveConfig(config);
   const targetMonday = getMondayOf(new Date());
@@ -601,20 +824,26 @@ rosterPlanRouter.get("/roster-plan/officers", async (_req, res) => {
   res.json(await loadOfficers());
 });
 
-// GET /api/roster-plan/officer-names
+// GET /api/roster-plan/officer-names?activeOnly=1
 // Deduplicated, sorted {id, name, unitCode?, catchment?} list — a lighter
 // picker source than the full officers list for UI dropdowns. Excludes
-// blank names and generic placeholders ("Crew 1", "Crew 2", …).
+// blank names and generic placeholders ("Crew 1", "Crew 2", …). Defaults to
+// every officer (including inactive) to preserve RosterBuilder.tsx's
+// existing behavior, which deliberately wants historical/inactive names too
+// — pass activeOnly=1 for a consumer (e.g. Register.tsx) that must not list
+// deactivated officers. .scratch/replit-resync-2026-09-21/issues/21.
 // NOTE: the Replit original also merged in every officer name ever saved in
 // a roster-pattern (a second source, for names that only exist in a
 // historical pattern, not the live officers table) — that source doesn't
 // exist here yet since roster-patterns hasn't been ported (see the
 // capability-parity plan's Phase C). Add it back here once it lands.
-rosterPlanRouter.get("/roster-plan/officer-names", async (_req, res) => {
+rosterPlanRouter.get("/roster-plan/officer-names", async (req, res) => {
+  const activeOnly = req.query.activeOnly === "1" || req.query.activeOnly === "true";
   const seen = new Set<string>();
   const result: { id: string; name: string; unitCode?: string; catchment?: string }[] = [];
 
   for (const o of await loadOfficers()) {
+    if (activeOnly && !o.active) continue;
     const trimmed = o.name.trim();
     if (!trimmed) continue;
     if (/^crew\s*\d+$/i.test(trimmed)) continue;
@@ -841,7 +1070,7 @@ rosterPlanRouter.get("/roster-plan/schedule", async (req, res) => {
 // ── Leave endpoints ───────────────────────────────────────────────────────────
 
 // GET /api/roster-plan/leave?date=YYYY-MM-DD
-rosterPlanRouter.get("/roster-plan/leave", async (req, res) => {
+rosterPlanRouter.get("/roster-plan/leave", requireManager, async (req, res) => {
   const date = req.query.date as string | undefined;
   const leaves = date
     ? await db.select().from(rosterLeavesTable).where(eq(rosterLeavesTable.date, date))
@@ -850,7 +1079,7 @@ rosterPlanRouter.get("/roster-plan/leave", async (req, res) => {
 });
 
 // POST /api/roster-plan/leave
-rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => {
+rosterPlanRouter.post("/roster-plan/leave", requireRosterEditor, async (req, res) => {
   const { officerId, date, leaveType, coveringOfficerId } = req.body as {
     officerId: string; date: string; leaveType: string; coveringOfficerId?: string;
   };
@@ -858,8 +1087,64 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
   const officer = officers.find((o) => o.id === officerId);
   if (!officer) return res.status(404).json({ error: "Officer not found" });
 
+  if (coveringOfficerId && coveringOfficerId === officerId) {
+    return res.status(400).json({ error: "An officer cannot cover their own leave" });
+  }
+
   const coverOfficer = coveringOfficerId ? officers.find((o) => o.id === coveringOfficerId) : undefined;
+  if (coveringOfficerId && !coverOfficer) return res.status(404).json({ error: "Cover officer not found" });
   const coveringOfficerName = coverOfficer?.name;
+
+  // Cover-officer validation — without this, a manager could apply DAY/PD
+  // leave with no cover at all (a silently unfilled shift), or assign a
+  // cover officer who is themselves working, already on leave, or already
+  // covering someone else that date. Found via a Replit-resync diff triage
+  // (.scratch/replit-resync-2026-09-21/issues/03).
+  {
+    const config = await loadConfig();
+    const [overrideRows, leaveRows] = await Promise.all([loadOverridesForDates([date]), loadLeavesForDates([date])]);
+    const overridesForDate = new Map(overrideRows.map((o) => [o.officerId, o]));
+    const leavesForDate = new Map(leaveRows.map((l) => [l.officerId, l]));
+    const utcDay = new Date(date + "T00:00:00Z").getUTCDay();
+    const isWeekend = utcDay === 0 || utcDay === 6;
+    const absentDuty = getOfficerEffectiveDutyForDate(officer, date, overridesForDate, leavesForDate, config).duty;
+
+    if (!coverOfficer && (absentDuty === "DAY" || absentDuty === "PD")) {
+      return res.status(400).json({ error: "A cover officer is required for DAY/PD duty" });
+    }
+
+    if (coverOfficer) {
+      const coverDuty = getOfficerEffectiveDutyForDate(coverOfficer, date, overridesForDate, leavesForDate, config).duty;
+      const eligible = isWeekend
+        ? coverDuty === "OFF" || coverDuty === "REST"
+        : coverDuty === "ND" || coverDuty === "OFF";
+      if (!eligible) {
+        return res.status(400).json({
+          error: `${coverOfficer.name} is not available to cover on ${date} (scheduled ${coverDuty})`,
+        });
+      }
+      const [selfOnLeave] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.officerId, coverOfficer.id)));
+      if (selfOnLeave) {
+        return res.status(409).json({ error: `${coverOfficer.name} is already on leave on ${date}` });
+      }
+      const [alreadyCovering] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(
+          and(
+            eq(rosterLeavesTable.date, date),
+            eq(rosterLeavesTable.coveringOfficerId, coverOfficer.id),
+            ne(rosterLeavesTable.officerId, officerId),
+          ),
+        );
+      if (alreadyCovering) {
+        return res.status(409).json({ error: `${coverOfficer.name} is already covering another officer on ${date}` });
+      }
+    }
+  }
 
   // Resolve who is applying — used for the activity-log entry below.
   const applierMid    = req.session?.managerId;
@@ -898,6 +1183,13 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
       leaveType,
       coveringOfficerId: coveringOfficerId ?? null,
       coveringOfficerName: coveringOfficerName ?? null,
+      // Set on first write only — deliberately absent from onConflictDoUpdate's
+      // `set` below so a later edit/re-import never overwrites who originally
+      // applied the leave (see the schema's own comment on this column). Was
+      // missing entirely before this fix, despite the schema already
+      // supporting it — .scratch/replit-resync-2026-09-21/issues/04.
+      appliedBy: appliedByName ?? null,
+      appliedAt: new Date(),
     })
     .onConflictDoUpdate({
       target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
@@ -942,7 +1234,7 @@ rosterPlanRouter.post("/roster-plan/leave", requireManager, async (req, res) => 
 });
 
 // DELETE /api/roster-plan/leave/:id
-rosterPlanRouter.delete("/roster-plan/leave/:id", requireManager, async (req, res) => {
+rosterPlanRouter.delete("/roster-plan/leave/:id", requireRosterEditor, async (req, res) => {
   const { id } = req.params as { id: string };
   const deleted = await db
     .delete(rosterLeavesTable)
@@ -987,21 +1279,31 @@ rosterPlanRouter.get("/activity-log", requireManager, async (req, res) => {
 
 // ── Summary endpoint ──────────────────────────────────────────────────────────
 
-// GET /api/roster-plan/summary?date=YYYY-MM-DD
-rosterPlanRouter.get("/roster-plan/summary", async (req, res) => {
-  res.set("Cache-Control", "no-store");
+// Factored out of the route below so server-side callers (deployments.ts's
+// syncDeploymentRosterFromCentralSource) can generate the same FIRB
+// deployment text without an HTTP self-call — the per-unit lines
+// ("BU1 GBL378Z: Name & Name (DAY)") double as both a human-readable report
+// and a machine-reparseable roster-import source via parseRoster().
+// .scratch/replit-resync-2026-09-21/issues/27.
+export async function getRosterSummary(dateStr: string): Promise<string> {
   await ensureCycleCacheLoaded();
   const config = await loadConfig();
   const officers = await loadOfficers();
 
-  const dateParam = req.query.date as string | undefined;
-  const dateStr = dateParam ?? new Date().toISOString().slice(0, 10);
-
   const overrides = await loadOverridesForDates([dateStr]);
   const leaves = await loadLeavesForDates([dateStr]);
+  const officerVehicleMap = await resolveOfficerVehicleMap(dateStr);
 
   const officersInRotation = officers.filter((o) => o.active && o.teamSlot <= config.teamCount);
-  const text = buildSummary(dateStr, officersInRotation, config, overrides, leaves);
+  return buildSummary(dateStr, officersInRotation, config, overrides, leaves, officerVehicleMap);
+}
+
+// GET /api/roster-plan/summary?date=YYYY-MM-DD
+rosterPlanRouter.get("/roster-plan/summary", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const dateParam = req.query.date as string | undefined;
+  const dateStr = dateParam ?? new Date().toISOString().slice(0, 10);
+  const text = await getRosterSummary(dateStr);
   res.json({ date: dateStr, text });
 });
 
@@ -1150,22 +1452,35 @@ const OVERRIDE_LEAVE_SET = new Set([
 ]);
 
 // POST /api/roster-plan/overrides/bulk — visual editor bulk-save
+interface OverrideBulkEntry {
+  officerId: string;
+  duty: string;
+  coveredByOfficerName?: string;
+  crossPostedToUnit?: string;
+  targetDuty?: string;
+  vehicle?: string;
+  overtimeHours?: string;
+  comment?: string;
+}
+
+// Accepts either the original single-date shape ({date, overrides}) or a
+// multi-date batch ({dates: [{date, overrides}, ...]}), saved atomically in
+// one transaction across every date — previously UploadBrief.tsx's save()
+// posted one request per date in a loop, so a failure partway through left
+// earlier dates already committed server-side with no way for the UI to
+// tell which had and hadn't succeeded. .scratch/replit-resync-2026-09-21/issues/20.
 rosterPlanRouter.post("/roster-plan/overrides/bulk", requireManager, async (req, res) => {
-  const { date, overrides: entries } = req.body as {
-    date: string;
-    overrides: Array<{
-      officerId: string;
-      duty: string;
-      coveredByOfficerName?: string;
-      crossPostedToUnit?: string;
-      targetDuty?: string;
-      vehicle?: string;
-      overtimeHours?: string;
-      comment?: string;
-    }>;
+  const body = req.body as {
+    date?: string;
+    overrides?: OverrideBulkEntry[];
+    dates?: Array<{ date: string; overrides: OverrideBulkEntry[] }>;
   };
-  if (!date || !Array.isArray(entries) || entries.length === 0) {
-    res.status(400).json({ error: "date and overrides[] required" });
+  const groups = Array.isArray(body.dates)
+    ? body.dates
+    : (body.date && Array.isArray(body.overrides) ? [{ date: body.date, overrides: body.overrides }] : []);
+
+  if (groups.length === 0 || groups.some((g) => !g.date || !Array.isArray(g.overrides) || g.overrides.length === 0)) {
+    res.status(400).json({ error: "date and overrides[] (or dates[] of the same shape) required" });
     return;
   }
 
@@ -1176,63 +1491,67 @@ rosterPlanRouter.post("/roster-plan/overrides/bulk", requireManager, async (req,
   const madeByName = caller?.officerName ?? caller?.username;
   const madeAt     = new Date();
 
-  const officerIds = [...new Set(entries.map((e) => e.officerId))];
   const allOfficers = await loadOfficers();
   const officerMap = new Map(allOfficers.map((o) => [o.id, o]));
 
   await db.transaction(async (tx) => {
-    // Save duty overrides
-    await tx
-      .delete(rosterOverridesTable)
-      .where(and(inArray(rosterOverridesTable.officerId, officerIds), eq(rosterOverridesTable.date, date)));
-    await tx.insert(rosterOverridesTable).values(
-      entries.map((e) => ({
-        officerId: e.officerId,
-        date,
-        duty: e.duty,
-        coveredByOfficerName: e.coveredByOfficerName ?? null,
-        crossPostedToUnit: e.crossPostedToUnit ?? null,
-        targetDuty: e.targetDuty ?? null,
-        vehicle: e.vehicle ?? null,
-        overtimeHours: e.overtimeHours ?? null,
-        comment: e.comment ?? null,
-        madeBy: madeBy ?? null,
-        madeByName: madeByName ?? null,
-        madeAt,
-      })),
-    );
+    for (const { date, overrides: entries } of groups) {
+      const officerIds = [...new Set(entries.map((e) => e.officerId))];
 
-    // Sync leave entries: leave code → upsert; non-leave → remove override-sourced entry
-    for (const e of entries) {
-      if (OVERRIDE_LEAVE_SET.has(e.duty)) {
-        const officerName = officerMap.get(e.officerId)?.name ?? e.officerId;
-        await tx
-          .insert(rosterLeavesTable)
-          .values({
-            id: randomUUID(),
-            officerId: e.officerId,
-            officerName,
-            date,
-            leaveType: e.duty,
-            coveringOfficerName: e.coveredByOfficerName ?? null,
-            coveringOfficerId: null,
-            source: "override",
-          })
-          .onConflictDoUpdate({
-            target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
-            set: { leaveType: e.duty, coveringOfficerName: e.coveredByOfficerName ?? null, coveringOfficerId: null, source: "override" },
-          });
-      } else {
-        // Excel > Master is the authoritative record — clear ALL leaves for this officer
-        // on this date (regardless of source) when a non-leave duty is explicitly set.
-        await tx
-          .delete(rosterLeavesTable)
-          .where(and(eq(rosterLeavesTable.officerId, e.officerId), eq(rosterLeavesTable.date, date)));
+      // Save duty overrides
+      await tx
+        .delete(rosterOverridesTable)
+        .where(and(inArray(rosterOverridesTable.officerId, officerIds), eq(rosterOverridesTable.date, date)));
+      await tx.insert(rosterOverridesTable).values(
+        entries.map((e) => ({
+          officerId: e.officerId,
+          date,
+          duty: e.duty,
+          coveredByOfficerName: e.coveredByOfficerName ?? null,
+          crossPostedToUnit: e.crossPostedToUnit ?? null,
+          targetDuty: e.targetDuty ?? null,
+          vehicle: e.vehicle ?? null,
+          overtimeHours: e.overtimeHours ?? null,
+          comment: e.comment ?? null,
+          madeBy: madeBy ?? null,
+          madeByName: madeByName ?? null,
+          madeAt,
+        })),
+      );
+
+      // Sync leave entries: leave code → upsert; non-leave → remove override-sourced entry
+      for (const e of entries) {
+        if (OVERRIDE_LEAVE_SET.has(e.duty)) {
+          const officerName = officerMap.get(e.officerId)?.name ?? e.officerId;
+          await tx
+            .insert(rosterLeavesTable)
+            .values({
+              id: randomUUID(),
+              officerId: e.officerId,
+              officerName,
+              date,
+              leaveType: e.duty,
+              coveringOfficerName: e.coveredByOfficerName ?? null,
+              coveringOfficerId: null,
+              source: "override",
+            })
+            .onConflictDoUpdate({
+              target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
+              set: { leaveType: e.duty, coveringOfficerName: e.coveredByOfficerName ?? null, coveringOfficerId: null, source: "override" },
+            });
+        } else {
+          // Excel > Master is the authoritative record — clear ALL leaves for this officer
+          // on this date (regardless of source) when a non-leave duty is explicitly set.
+          await tx
+            .delete(rosterLeavesTable)
+            .where(and(eq(rosterLeavesTable.officerId, e.officerId), eq(rosterLeavesTable.date, date)));
+        }
       }
     }
   });
 
-  res.json({ applied: entries.length });
+  const totalApplied = groups.reduce((n, g) => n + g.overrides.length, 0);
+  res.json({ applied: totalApplied, dates: groups.map((g) => g.date) });
 });
 
 // POST /api/roster-plan/ph-extract-sunday/:date — OIL Monday: extract preceding Sunday's
@@ -1392,10 +1711,23 @@ export async function applyPHRoster(
     await tx.delete(rosterOverridesTable).where(eq(rosterOverridesTable.date, date));
     if (newOverrides.length > 0) await tx.insert(rosterOverridesTable).values(newOverrides);
 
-    // Sync leave records — clear override-sourced leaves for this date, then add OIL entries
+    // Sync leave records — clear leaves for this date that would otherwise mask
+    // the PH roster's own view of who's on leave/OIL: override-sourced leaves
+    // (as before), any leftover OIL leave from a previous apply, and any
+    // pre-existing leave (of any source, e.g. ordinary VL/SL applied via
+    // POST /roster-plan/leave before this date became a PH/OIL day) for an
+    // officer this PH roster covers — without this, that officer could show
+    // up in both the PH-duty section and the LEAVE section of the FIRB
+    // summary/grid. .scratch/replit-resync-2026-09-21/issues/06.
+    const phParticipantIds = newOverrides.map((o) => o.officerId);
+    const leaveClearConditions = [
+      eq(rosterLeavesTable.source, "override"),
+      eq(rosterLeavesTable.leaveType, "OIL"),
+    ];
+    if (phParticipantIds.length > 0) leaveClearConditions.push(inArray(rosterLeavesTable.officerId, phParticipantIds));
     await tx
       .delete(rosterLeavesTable)
-      .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.source, "override")));
+      .where(and(eq(rosterLeavesTable.date, date), or(...leaveClearConditions)));
     const oilLeaves = newOverrides
       .filter((o) => o.duty === "OIL")
       .map((o) => ({
@@ -1461,11 +1793,17 @@ rosterPlanRouter.delete("/roster-plan/overrides/:officerId/:date", requireManage
   res.json({ success: true });
 });
 
-// DELETE /api/roster-plan/history/clear
-// mode=log  → clear only the application log (leave-requests).
-// mode=all  → clear leave-requests + leaves + overrides + swaps.
-// Postgres writes are already durable, so unlike the old JSON-file version
-// there's no separate "force-sync to cloud" step before clearing.
+// DELETE /api/roster-plan/history/clear — clears the application log
+// (leave-requests) only.
+//
+// Used to also support mode=all, which additionally wiped leaves + overrides
+// + swaps system-wide — i.e. the actual committed roster data, for every
+// officer and every date, with no backup and no confirmation beyond a
+// client-side typed string. Removed entirely (not just tightened) per
+// .scratch/replit-resync-2026-09-21/issues/19 — Replit's own team reached the
+// same conclusion and removed the equivalent feature on their side. If a
+// bulk-undo capability is ever needed again, it should be a real
+// backup-before-delete flow, not an unconditional system-wide truncate.
 rosterPlanRouter.delete("/roster-plan/history/clear", requireManager, async (req, res) => {
   const mid = req.session?.managerId;
   const caller = mid ? getManager(mid) : null;
@@ -1474,18 +1812,138 @@ rosterPlanRouter.delete("/roster-plan/history/clear", requireManager, async (req
     return;
   }
 
-  const mode = (req.query.mode as string) ?? "log";
+  await db.delete(leaveRequestsTable);
+  res.json({ success: true });
+});
 
-  await db.transaction(async (tx) => {
-    await tx.delete(leaveRequestsTable);
-    if (mode === "all") {
-      await tx.delete(rosterLeavesTable);
-      await tx.delete(rosterSwapsTable);
-      await tx.delete(rosterOverridesTable);
-    }
+// ── Roster-plan backups ─────────────────────────────────────────────────────
+// Reference replaced the removed full-wipe button (issues/19) with a
+// "Restore from Backup" flow instead of just deleting the capability
+// outright. That gap was never ported — see issues/35. Snapshots are
+// admin/manager-triggered on demand (there's no more automatic
+// "before a full wipe" event to hook into, since that wipe was removed
+// entirely rather than hardened).
+function reviveDate(v: unknown): Date | null {
+  return v == null ? null : new Date(v as string);
+}
+
+// POST /api/roster-plan/history/backups — snapshot the 4 committed
+// roster/leave datasets now.
+rosterPlanRouter.post("/roster-plan/history/backups", requireManager, async (req, res) => {
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  if (!caller || (caller.role !== "admin" && caller.role !== "manager")) {
+    res.status(403).json({ error: "Admin or manager access required" });
+    return;
+  }
+
+  const [leaves, overrides, swaps, leaveReqs] = await Promise.all([
+    loadAllLeaves(),
+    loadAllOverrides(),
+    loadSwaps(),
+    db.select().from(leaveRequestsTable),
+  ]);
+
+  const id = randomUUID();
+  const createdAt = new Date().toISOString();
+  const createdBy = caller.officerName ?? caller.username;
+
+  await db.insert(rosterPlanBackupsTable).values({
+    id,
+    createdAt,
+    createdBy,
+    leaveCount: leaves.length,
+    swapCount: swaps.length,
+    leaves,
+    overrides,
+    swaps,
+    leaveRequests: leaveReqs,
   });
 
-  res.json({ success: true, mode });
+  res.json({ id, createdAt, createdBy, leaveCount: leaves.length, swapCount: swaps.length });
+});
+
+// GET /api/roster-plan/history/backups — list available snapshots.
+rosterPlanRouter.get("/roster-plan/history/backups", requireManager, async (req, res) => {
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  if (!caller || (caller.role !== "admin" && caller.role !== "manager")) {
+    res.status(403).json({ error: "Admin or manager access required" });
+    return;
+  }
+
+  const rows = await db
+    .select({
+      id: rosterPlanBackupsTable.id,
+      createdAt: rosterPlanBackupsTable.createdAt,
+      createdBy: rosterPlanBackupsTable.createdBy,
+      leaveCount: rosterPlanBackupsTable.leaveCount,
+      swapCount: rosterPlanBackupsTable.swapCount,
+    })
+    .from(rosterPlanBackupsTable)
+    .orderBy(desc(rosterPlanBackupsTable.createdAt));
+
+  res.json(rows);
+});
+
+// POST /api/roster-plan/history/restore — restore all 4 datasets from a
+// chosen snapshot, replacing current data entirely.
+rosterPlanRouter.post("/roster-plan/history/restore", requireManager, async (req, res) => {
+  const mid = req.session?.managerId;
+  const caller = mid ? getManager(mid) : null;
+  if (!caller || (caller.role !== "admin" && caller.role !== "manager")) {
+    res.status(403).json({ error: "Admin or manager access required" });
+    return;
+  }
+
+  const id = typeof (req.body as { id?: unknown })?.id === "string" ? (req.body as { id: string }).id : "";
+  if (!id) {
+    res.status(400).json({ error: "Missing backup id" });
+    return;
+  }
+
+  const [backup] = await db.select().from(rosterPlanBackupsTable).where(eq(rosterPlanBackupsTable.id, id));
+  if (!backup) {
+    res.status(404).json({ error: "Backup not found" });
+    return;
+  }
+
+  // jsonb round-trips timestamp columns as ISO strings, not Date objects —
+  // revive them before re-inserting so drizzle's timestamp mapping doesn't
+  // choke on a plain string.
+  const leaves = (backup.leaves as Record<string, unknown>[]).map((r) => ({
+    ...r, appliedAt: reviveDate(r.appliedAt),
+  }));
+  const overrides = (backup.overrides as Record<string, unknown>[]).map((r) => ({
+    ...r, madeAt: reviveDate(r.madeAt),
+  }));
+  const swaps = (backup.swaps as Record<string, unknown>[]).map((r) => ({
+    ...r, createdAt: reviveDate(r.createdAt), reviewedAt: reviveDate(r.reviewedAt),
+  }));
+  const leaveReqs = (backup.leaveRequests as Record<string, unknown>[]).map((r) => ({
+    ...r,
+    coverRespondedAt: reviveDate(r.coverRespondedAt),
+    icReviewedAt: reviveDate(r.icReviewedAt),
+    createdAt: reviveDate(r.createdAt),
+    updatedAt: reviveDate(r.updatedAt),
+    lastEditedOn: reviveDate(r.lastEditedOn),
+  }));
+
+  await db.transaction(async (tx) => {
+    // Children before parents on delete (leave_requests.committed_leave_id
+    // -> roster_leaves.id); parents before children on insert.
+    await tx.delete(leaveRequestsTable);
+    await tx.delete(rosterSwapsTable);
+    await tx.delete(rosterOverridesTable);
+    await tx.delete(rosterLeavesTable);
+
+    if (leaves.length > 0) await tx.insert(rosterLeavesTable).values(leaves as unknown as RosterLeave[]);
+    if (overrides.length > 0) await tx.insert(rosterOverridesTable).values(overrides as unknown as RosterOverride[]);
+    if (swaps.length > 0) await tx.insert(rosterSwapsTable).values(swaps as unknown as RosterSwap[]);
+    if (leaveReqs.length > 0) await tx.insert(leaveRequestsTable).values(leaveReqs as unknown as (typeof leaveRequestsTable.$inferInsert)[]);
+  });
+
+  res.json({ success: true, id, leaveCount: leaves.length, swapCount: swaps.length });
 });
 
 rosterPlanRouter.get("/roster-plan/day-overrides", requireManager, async (_req, res) => {

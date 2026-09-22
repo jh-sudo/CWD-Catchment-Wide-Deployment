@@ -1,16 +1,8 @@
-import { broadcastToCrew, sendToManagers } from "./routes/push.js";
+import { broadcastToCrew, sendLightningToCrew, sendToManagers } from "./routes/push.js";
+import { getLightningSectorStatus, type SectorStatus } from "./lightning-cat.js";
 import { logger } from "./lib/logger.js";
 
 const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-
-interface LightningSector {
-  name: string;
-  lat: number;
-  lng: number;
-  cat: string;
-  catStartOn: string | null;
-  catEndOn: string | null;
-}
 
 const SECTOR_NAMES: Record<string, string> = {
   "1N":  "Tuas / Pioneer",
@@ -51,33 +43,27 @@ function sectorDisplayName(code: string): string {
   return SECTOR_NAMES[code] ?? code;
 }
 
+// e.g. "4 Aug 2026 until 1200hrs" — previously the push body embedded the raw
+// ISO timestamp verbatim (e.g. "until 2026-08-04T12:00:00.000Z").
+// .scratch/replit-resync-2026-09-21/issues/17.
+function formatCat1End(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Singapore" });
+  const hhmm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Singapore" }).replace(":", "");
+  return `${day} until ${hhmm}hrs`;
+}
+
 const MAX_CAT1_ALERTS = 3;
 
 let lastNotifiedCatStartOn: string | null = null;
 let cat1Active = false;
 let cat1AlertCount = 0; // how many pushes sent for the current CAT 1 event
 
-async function fetchSectors(): Promise<LightningSector[]> {
-  const r = await fetch("https://api.andewmole.com/cat1/getWeatherInfo", {
-    signal: AbortSignal.timeout(10_000),
-    headers: { "User-Agent": "FleetCoordinator/1.0" },
-  });
-  if (!r.ok) throw new Error(`Upstream returned ${r.status}`);
-  const data = await r.json() as any;
-  const armysectors = data?.data?.armysectors ?? {};
-  return Object.values(armysectors).map((s: any) => ({
-    name: (s.sector?.name ?? "Unknown").replace(/^Sector /, ""),
-    lat: s.sector?.latitude as number,
-    lng: s.sector?.longitude as number,
-    cat: String(s.weather?.CAT ?? "3"),
-    catStartOn: s.weather?.cat_start_on ?? null,
-    catEndOn: s.weather?.cat_end_on ?? null,
-  }));
-}
-
 export async function checkLightningAndNotify(): Promise<void> {
   try {
-    const sectors = await fetchSectors();
+    const sectors: SectorStatus[] = getLightningSectorStatus();
     const cat1Sectors = sectors.filter(s => s.cat === "1");
 
     if (cat1Sectors.length === 0) {
@@ -123,21 +109,36 @@ export async function checkLightningAndNotify(): Promise<void> {
 
     cat1AlertCount += 1;
 
-    const names = cat1Sectors.map(s => sectorDisplayName(s.name)).join(", ");
-    const endTime = cat1Sectors[0]?.catEndOn
-      ? ` until ${cat1Sectors[0].catEndOn}`
-      : "";
+    // Each sector's own end time, not the first sector's reused for all —
+    // .scratch/replit-resync-2026-09-21/issues/17.
+    const formatSectorList = (sectors: SectorStatus[]) => sectors.map(s => {
+      const label = sectorDisplayName(s.name);
+      const end = formatCat1End(s.catEndOn);
+      return end ? `${label} (${end})` : label;
+    }).join(", ");
 
-    const alert = {
+    const names = formatSectorList(cat1Sectors);
+    const activeSectorCodes = cat1Sectors.map(s => s.name.toUpperCase());
+    const cat1ByCode = new Map(cat1Sectors.map(s => [s.name.toUpperCase(), s]));
+
+    const managerAlert = {
       title: `⚡ Lightning CAT 1 Alert (${cat1AlertCount}/${MAX_CAT1_ALERTS})`,
-      body: `CAT 1 active in: ${names}${endTime}. Seek shelter immediately.`,
+      body: `CAT 1 active in: ${names}. Seek shelter immediately.`,
       tag: "lightning-cat1",
       url: "/lightning",
     };
 
     await Promise.all([
-      broadcastToCrew(alert),
-      sendToManagers(alert),
+      // Crew with a saved per-sector preference only get notified — and only
+      // see — the sectors they actually selected; managers always see every
+      // active sector. .scratch/replit-resync-2026-09-21/issues/24.
+      sendLightningToCrew(activeSectorCodes, matchingCodes => ({
+        title: `⚡ Lightning CAT 1 Alert (${cat1AlertCount}/${MAX_CAT1_ALERTS})`,
+        body: `CAT 1 active in: ${formatSectorList(matchingCodes.map(code => cat1ByCode.get(code)!).filter(Boolean))}. Seek shelter immediately.`,
+        tag: "lightning-cat1",
+        url: "/lightning",
+      })),
+      sendToManagers(managerAlert),
     ]);
     logger.info({ sectors: names, isNewEvent, eventKey, alertCount: cat1AlertCount }, "Lightning monitor: CAT 1 push sent to crew + managers");
   } catch (err) {

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { randomUUID } from "crypto";
-import { eq, and, isNotNull } from "drizzle-orm";
+import { eq, and, ne, isNotNull, inArray } from "drizzle-orm";
 import { requireManager } from "./auth.js";
 import type { ManagerAccount } from "./auth.js";
 import { getManager } from "./auth.js";
@@ -54,6 +54,10 @@ export interface LeaveRequest {
   lastEditedOn?: string;
   // Reference to committed leave entry (after approval)
   committedLeaveId?: string;
+  // "Chain of cover" — set when this request's officer was themselves
+  // currently covering someone else; references that ORIGINAL absent
+  // officer. .scratch/replit-resync-2026-09-21/issues/25.
+  replacementForOfficerId?: string;
 }
 
 function toApiRequest(row: typeof leaveRequestsTable.$inferSelect): LeaveRequest {
@@ -81,6 +85,7 @@ function toApiRequest(row: typeof leaveRequestsTable.$inferSelect): LeaveRequest
     lastEditedBy: row.lastEditedBy ?? undefined,
     lastEditedOn: row.lastEditedOn?.toISOString(),
     committedLeaveId: row.committedLeaveId ?? undefined,
+    replacementForOfficerId: row.replacementForOfficerId ?? undefined,
   };
 }
 
@@ -233,9 +238,86 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
   let coverOfficer: Officer | undefined;
   let coverOfficerName: string | undefined;
   if (coverOfficerId) {
+    if (coverOfficerId === officerId) {
+      res.status(400).json({ error: "An officer cannot cover their own leave" }); return;
+    }
     coverOfficer = officers.find(o => o.id === coverOfficerId);
     if (!coverOfficer) { res.status(404).json({ error: "Cover officer not found" }); return; }
     coverOfficerName = coverOfficer.name;
+  }
+
+  // "Chain of cover" — if this officer is themselves currently covering
+  // someone else's leave on this date, granting them leave too would leave
+  // that other post uncovered again unless a replacement takes over. Find
+  // that original leave record (if any) so the validation and the
+  // cover-officer assignment below can target it instead of this officer's
+  // own (usually non-existent, since they're on duty) required-cover check.
+  // .scratch/replit-resync-2026-09-21/issues/25.
+  const [activeCoveredLeave] = await db
+    .select()
+    .from(rosterLeavesTable)
+    .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.coveringOfficerId, officerId), ne(rosterLeavesTable.officerId, officerId)));
+  const coveredPositionOfficer = activeCoveredLeave
+    ? officers.find(o => o.id === activeCoveredLeave.officerId)
+    : undefined;
+
+  // Cover-officer validation — without this, any approved account could
+  // apply DAY/PD leave with no cover at all (a silently unfilled shift), or
+  // assign a cover officer who is themselves working, already on leave, or
+  // already covering someone else that date. Found via a Replit-resync diff
+  // triage (.scratch/replit-resync-2026-09-21/issues/03).
+  let requiredCoverDuty: string | null = null;
+  {
+    const utcDay = new Date(date + "T00:00:00Z").getUTCDay();
+    const isWeekend = utcDay === 0 || utcDay === 6;
+    const absentDuty = await getScheduledDuty(officer.unitCode, date);
+    const coveredPositionDuty = coveredPositionOfficer
+      ? await getScheduledDuty(coveredPositionOfficer.unitCode, date)
+      : null;
+    requiredCoverDuty = coveredPositionDuty ?? absentDuty;
+
+    if (!coverOfficer && (!!activeCoveredLeave || absentDuty === "DAY" || absentDuty === "PD")) {
+      res.status(400).json({
+        error: activeCoveredLeave
+          ? `You are covering ${activeCoveredLeave.officerName}; choose a replacement cover officer`
+          : "A cover officer is required for DAY/PD duty",
+      });
+      return;
+    }
+
+    if (coverOfficer) {
+      const coverDuty = await getScheduledDuty(coverOfficer.unitCode, date);
+      const eligible = isWeekend
+        ? coverDuty === "OFF" || coverDuty === "REST"
+        : coverDuty === "ND" || coverDuty === "OFF";
+      if (!eligible) {
+        res.status(400).json({
+          error: `${coverOfficer.name} is not available to cover on ${date} (scheduled ${coverDuty})`,
+        });
+        return;
+      }
+      const [selfOnLeave] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(and(eq(rosterLeavesTable.date, date), eq(rosterLeavesTable.officerId, coverOfficer.id)));
+      if (selfOnLeave) {
+        res.status(409).json({ error: `${coverOfficer.name} is already on leave on ${date}` }); return;
+      }
+      const [alreadyCovering] = await db
+        .select({ id: rosterLeavesTable.id })
+        .from(rosterLeavesTable)
+        .where(
+          and(
+            eq(rosterLeavesTable.date, date),
+            eq(rosterLeavesTable.coveringOfficerId, coverOfficer.id),
+            ne(rosterLeavesTable.officerId, officerId),
+          ),
+        );
+      if (alreadyCovering) {
+        res.status(409).json({ error: `${coverOfficer.name} is already covering another officer on ${date}` });
+        return;
+      }
+    }
   }
 
   // Prevent duplicate for same officer + date
@@ -254,15 +336,16 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
   const leaveEntryId = randomUUID();
   const requestId = randomUUID();
   const callerName = caller.officerName ?? caller.username;
-
-  // Cover officer takes the absent officer's scheduled unit duty (e.g. DAY) instead
-  // of their own home cycle duty (e.g. REST) — resolved before the transaction since
-  // it only reads.
-  const scheduledDuty = coverOfficer ? await getScheduledDuty(officer.unitCode, date) : null;
+  // Who the new cover officer actually ends up covering — the chain target
+  // when this is a chain-of-cover handoff, otherwise this officer.
+  const coveredOfficerId = activeCoveredLeave?.officerId ?? officer.id;
 
   try {
     await db.transaction(async (tx) => {
-      // Directly commit as APPROVED — management is the approving authority
+      // Directly commit as APPROVED — management is the approving authority.
+      // When this is a chain-of-cover handoff, this leave record's own
+      // covering fields stay null — the cover officer is recorded against
+      // the ORIGINAL leave record (activeCoveredLeave) instead, updated below.
       await tx
         .insert(rosterLeavesTable)
         .values({
@@ -271,13 +354,26 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
           officerName: officer.name,
           date,
           leaveType,
-          coveringOfficerId: coverOfficerId ?? null,
-          coveringOfficerName: coverOfficerName ?? null,
+          coveringOfficerId: activeCoveredLeave ? null : (coverOfficerId ?? null),
+          coveringOfficerName: activeCoveredLeave ? null : (coverOfficerName ?? null),
         })
         .onConflictDoUpdate({
           target: [rosterLeavesTable.officerId, rosterLeavesTable.date],
-          set: { leaveType, coveringOfficerId: coverOfficerId ?? null, coveringOfficerName: coverOfficerName ?? null },
+          set: {
+            leaveType,
+            coveringOfficerId: activeCoveredLeave ? null : (coverOfficerId ?? null),
+            coveringOfficerName: activeCoveredLeave ? null : (coverOfficerName ?? null),
+          },
         });
+
+      // Chain of cover: hand the covering assignment off to the new cover
+      // officer on the ORIGINAL leave record. .scratch/replit-resync-2026-09-21/issues/25.
+      if (activeCoveredLeave && coverOfficer) {
+        await tx
+          .update(rosterLeavesTable)
+          .set({ coveringOfficerId: coverOfficer.id, coveringOfficerName: coverOfficer.name })
+          .where(eq(rosterLeavesTable.id, activeCoveredLeave.id));
+      }
 
       // Write duty override: actual leave code so summary builder shows correct absence type.
       // Clear any previous override for this slot first (matches original replace-not-merge
@@ -285,18 +381,18 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
       await tx
         .delete(rosterOverridesTable)
         .where(and(eq(rosterOverridesTable.officerId, officer.id), eq(rosterOverridesTable.date, date)));
-      // Also clear any previous auto-generated cover override for this cover officer's slot.
-      if (coverOfficerId) {
-        await tx
-          .delete(rosterOverridesTable)
-          .where(
-            and(
-              eq(rosterOverridesTable.officerId, coverOfficerId),
-              eq(rosterOverridesTable.date, date),
-              isNotNull(rosterOverridesTable.coverForOfficerId),
-            ),
-          );
-      }
+      // Clear any override currently covering officer.id's post, and (if
+      // chained) any override currently covering the chain target's post —
+      // e.g. this officer's own now-stale "covering X" override, about to
+      // be replaced by the new cover officer's override below.
+      await tx
+        .delete(rosterOverridesTable)
+        .where(
+          and(
+            eq(rosterOverridesTable.date, date),
+            inArray(rosterOverridesTable.coverForOfficerId, [officer.id, coveredOfficerId]),
+          ),
+        );
 
       await tx.insert(rosterOverridesTable).values({
         officerId: officer.id,
@@ -305,16 +401,17 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
         coveredByOfficerName: coverOfficerName ?? null,
       });
 
-      // Override the covering officer's duty to match the absent officer's scheduled (cycle)
-      // duty so they are displayed as working the covered unit's shift (e.g. DAY), not their
-      // own home cycle duty (e.g. REST or ND).
-      if (coverOfficer && scheduledDuty && scheduledDuty !== "OFF" && scheduledDuty !== "REST") {
+      // Override the covering officer's duty to match the covered position's
+      // scheduled (cycle) duty — the chain target's when chained, otherwise
+      // this officer's own — so they're displayed as working that unit's
+      // shift (e.g. DAY), not their own home cycle duty (e.g. REST or ND).
+      if (coverOfficer && requiredCoverDuty && requiredCoverDuty !== "OFF" && requiredCoverDuty !== "REST") {
         await tx
           .insert(rosterOverridesTable)
-          .values({ officerId: coverOfficer.id, date, duty: scheduledDuty, coverForOfficerId: officer.id })
+          .values({ officerId: coverOfficer.id, date, duty: requiredCoverDuty, coverForOfficerId: coveredOfficerId })
           .onConflictDoUpdate({
             target: [rosterOverridesTable.officerId, rosterOverridesTable.date],
-            set: { duty: scheduledDuty, coverForOfficerId: officer.id },
+            set: { duty: requiredCoverDuty, coverForOfficerId: coveredOfficerId },
           });
       }
 
@@ -329,6 +426,7 @@ leaveRequestRouter.post("/leave-requests", requireManager, async (req, res) => {
         coverOfficerId: coverOfficerId ?? null,
         coverOfficerName: coverOfficerName ?? null,
         coverStatus: coverOfficerId ? "ACCEPTED" : null,
+        replacementForOfficerId: activeCoveredLeave?.officerId ?? null,
         icAccountId: caller.id,
         icName: callerName,
         icStatus: "APPROVED",
@@ -616,20 +714,48 @@ leaveRequestRouter.delete("/leave-requests/:id", requireManager, async (req, res
       if (request.committedLeaveId) {
         await tx.delete(rosterLeavesTable).where(eq(rosterLeavesTable.id, request.committedLeaveId));
       }
+      // Chain of cover: cancelling a handoff means this officer resumes
+      // covering the original absent officer — hand the covering assignment
+      // back to them on the original leave record.
+      // .scratch/replit-resync-2026-09-21/issues/25.
+      if (request.replacementForOfficerId) {
+        await tx
+          .update(rosterLeavesTable)
+          .set({ coveringOfficerId: request.officerId, coveringOfficerName: request.officerName })
+          .where(
+            and(
+              eq(rosterLeavesTable.officerId, request.replacementForOfficerId),
+              eq(rosterLeavesTable.date, request.date),
+            ),
+          );
+      }
       // Remove the absent officer's override AND any auto-generated cover override
       await tx
         .delete(rosterOverridesTable)
         .where(and(eq(rosterOverridesTable.officerId, request.officerId), eq(rosterOverridesTable.date, request.date)));
-      if (request.coverOfficerId) {
-        await tx
-          .delete(rosterOverridesTable)
-          .where(
-            and(
-              eq(rosterOverridesTable.officerId, request.coverOfficerId),
-              eq(rosterOverridesTable.date, request.date),
-              isNotNull(rosterOverridesTable.coverForOfficerId),
-            ),
-          );
+      await tx
+        .delete(rosterOverridesTable)
+        .where(
+          and(
+            eq(rosterOverridesTable.date, request.date),
+            eq(rosterOverridesTable.coverForOfficerId, request.replacementForOfficerId ?? request.officerId),
+          ),
+        );
+      if (request.replacementForOfficerId) {
+        // Recreate the resumed coverer's duty override for the original
+        // covered position, if their current duty isn't already OFF/REST.
+        const officers = await loadOfficers();
+        const originalOfficer = officers.find(o => o.id === request.replacementForOfficerId);
+        const resumedCoverer = officers.find(o => o.id === request.officerId);
+        const duty = originalOfficer ? await getScheduledDuty(originalOfficer.unitCode, request.date) : null;
+        if (resumedCoverer && duty && duty !== "OFF" && duty !== "REST") {
+          await tx.insert(rosterOverridesTable).values({
+            officerId: resumedCoverer.id,
+            date: request.date,
+            duty,
+            coverForOfficerId: request.replacementForOfficerId,
+          });
+        }
       }
     }
 

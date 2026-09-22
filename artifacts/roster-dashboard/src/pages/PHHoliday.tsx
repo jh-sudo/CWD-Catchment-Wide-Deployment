@@ -8,10 +8,12 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Save, CheckCircle2, AlertCircle, Pencil, X, Wand2, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getContrastColor } from "@/lib/contrast";
-import { useAuth } from "@/context/AuthContext";
+import { useAuth, isManagementRole } from "@/context/AuthContext";
 import { useGetRosterOfficers } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
 import { clearPHCache } from "@/lib/usePHActuals";
+import { phUnitSortKey } from "@/lib/phUnitOrder";
+import { PHBuilder } from "@/components/PHBuilder";
 
 // ── Singapore Public Holiday data ─────────────────────────────────────────────
 interface PHEntry {
@@ -116,18 +118,10 @@ const UNIT_COLORS: Record<string, string> = {
   KG1: "#CAEDFB", KG2: "#CAEDFB", KG3: "#CAEDFB", KG4: "#CAEDFB",
 };
 
-// Canonical unit order — interleaved by number across catchments
-const UNIT_ORDER = [
-  "CP1","KG1","BU1","PJ1","WK1",
-  "CP2","KG2","BU2","PJ2","WK2",
-  "CP3","KG3","BU3","PJ3","WK3",
-  "CP4","KG4","BU4","PJ4",
-  "BU5",
-];
-const unitSortKey = (code: string) => {
-  const idx = UNIT_ORDER.indexOf(code);
-  return idx === -1 ? 999 : idx;
-};
+// Ordering now comes from the shared @/lib/phUnitOrder module (this was the
+// canonical copy other files should have used — see PHActualPanel.tsx's
+// comment). .scratch/replit-resync-2026-09-21/issues/08.
+const unitSortKey = phUnitSortKey;
 
 // ── Tab 1: List of PH ─────────────────────────────────────────────────────────
 function PHList({ onSelectDate }: { onSelectDate: (date: string) => void }) {
@@ -1483,6 +1477,8 @@ function PHCounter() {
 export default function PHHoliday() {
   const [tab, setTab] = useState("list");
   const [jumpDate, setJumpDate] = useState<string | undefined>(undefined);
+  const { user } = useAuth();
+  const canSeeBuilder = isManagementRole(user?.role);
 
   const handleSelectFromList = (date: string) => {
     setJumpDate(date);
@@ -1506,6 +1502,7 @@ export default function PHHoliday() {
               <TabsTrigger value="roster">PH Roster</TabsTrigger>
               <TabsTrigger value="counter">PH Counter</TabsTrigger>
               <TabsTrigger value="faq">FAQ</TabsTrigger>
+              {canSeeBuilder && <TabsTrigger value="builder">PH Builder</TabsTrigger>}
             </TabsList>
 
             <TabsContent value="list" className="mt-0">
@@ -1520,6 +1517,11 @@ export default function PHHoliday() {
             <TabsContent value="faq" className="mt-0">
               <PHFaq />
             </TabsContent>
+            {canSeeBuilder && (
+              <TabsContent value="builder" className="mt-0">
+                <PHBuilder />
+              </TabsContent>
+            )}
           </Tabs>
         </div>
       </div>

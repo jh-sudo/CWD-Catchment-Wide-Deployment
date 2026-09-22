@@ -146,6 +146,52 @@ export interface LocationsResponse {
   locations: PresetLocation[];
 }
 
+export type StrengthBandShiftMinimums = {
+  PD: number;
+  DAY: number;
+  ND: number;
+};
+
+export interface StrengthBand {
+  /** Total headcount below which the day is under-strength */
+  minimum: number;
+  /** Total headcount at/above which the day is at full strength */
+  full: number;
+  shiftMinimums: StrengthBandShiftMinimums;
+}
+
+export type StrengthSpecialRule = StrengthBand & {
+  id: string;
+  name: string;
+  /** ISO dates (YYYY-MM-DD) this named exception applies to */
+  dates: string[];
+};
+
+export type StrengthConfigWeekday = {
+  default: StrengthBand;
+  special: StrengthSpecialRule[];
+};
+
+/** Also applies to public holidays. */
+export type StrengthConfigWeekend = {
+  default: StrengthBand;
+  special: StrengthSpecialRule[];
+};
+
+export type StrengthConfigColors = {
+  below: string;
+  minimum: string;
+  full: string;
+};
+
+/** Per-shift minimum-manning bands used for the 3-tier (below/minimum/full) strength coloring shown across the roster, vehicle, and deployment views. */
+export interface StrengthConfig {
+  weekday: StrengthConfigWeekday;
+  /** Also applies to public holidays. */
+  weekend: StrengthConfigWeekend;
+  colors: StrengthConfigColors;
+}
+
 export type RosterConfigTeamCount =
   (typeof RosterConfigTeamCount)[keyof typeof RosterConfigTeamCount];
 
@@ -161,6 +207,7 @@ export interface RosterConfig {
   cycleStartDate: string;
   /** Current week number within the cycle (1-based) */
   currentWeek: number;
+  strength?: StrengthConfig;
 }
 
 export type RosterConfigInputTeamCount =
@@ -175,6 +222,7 @@ export const RosterConfigInputTeamCount = {
 export interface RosterConfigInput {
   teamCount: RosterConfigInputTeamCount;
   cycleStartDate: string;
+  strength?: StrengthConfig;
 }
 
 export interface RosterOfficer {
