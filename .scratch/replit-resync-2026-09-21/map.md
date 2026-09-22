@@ -10,11 +10,40 @@ Scope: `/lightning`, `/roster` (api-server route + roster-dashboard SPA), `/crew
 only. `apa`, `inspector`, `deployment-tracker`, `mockup-sandbox`, `wls-android-forwarder` stay
 excluded per the original migration decision.
 
-**Status: complete.** All 21 bug-fix tickets and all 14 new-capability scope items below are
-resolved — either ported (11 items, tickets 22-33), deliberately deferred (Partner Reports, not
-internet-facing yet), or declined (AI Flood Scan). Phase 2 (static security review of the whole
-Replit codebase) ran separately — see `.scratch/replit-security-review-2026-09-21/`, not yet
-remediated as of this note.
+**Status: complete.** All 21 bug-fix tickets, all 14 new-capability scope items, and all 3
+post-completion-audit findings below are resolved — either ported (11 new-capability items,
+tickets 22-33), deliberately deferred (Partner Reports, not internet-facing yet), declined (AI
+Flood Scan), or fixed (tickets 34-36). Phase 2 (static security review of the whole Replit
+codebase) ran separately — see `.scratch/replit-security-review-2026-09-21/`, not yet remediated
+as of this note.
+
+## Post-completion audit findings (2026-09-22) — all fixed
+
+User asked, once all 33 tickets were done, to confirm the whole port actually covers every
+function of `/manager`, `/lightning`, `/roster`, `/crew` (excluding the already-deferred Partner
+Portal). Re-diffed the reference repo's actual current state against every file this resync
+touched, rather than trusting each ticket's own completion claim — caught one false-completion
+claim this way. Found 3 real gaps, initially logged only (per user instruction) then implemented
+in a follow-up pass the same day:
+
+| # | Ticket | Severity | Status |
+|---|---|---|---|
+| 34 | [CrewSchedule/MySchedule grid still shows scheduled-over-actual duty](issues/34-crew-schedule-grid-duty-inversion-not-fixed.md) | Medium-high (live bug) | Done |
+| 35 | [Roster-plan "Restore from Backup" never built](issues/35-roster-plan-restore-from-backup-missing.md) | Medium (capability gap, needed design) | Done |
+| 36 | [MyApplications year filter/search missing](issues/36-my-applications-year-filter-search-missing.md) | Low (cosmetic) | Done |
+
+Ticket 34 corrected an incomplete fix: [ticket 14](issues/14-crew-schedule-duty-display-and-partner-bugs.md)
+fixed the detail panel but not the calendar grid cells, which are the primary view — mirrored the
+same `actualDuty ?? targetDuty` + leave-coloring fix into both grids. Ticket 35 needed a real
+design decision reference's own code didn't have to make: reference only ever creates a backup
+automatically, right before its `mode=all` full-wipe action — but that action was removed entirely
+on this side (ticket 19), not hardened, so there's no more destructive event to hook an automatic
+snapshot into. Resolved by making backup creation manual/on-demand (admin/manager-triggered "Create
+backup now") instead — new `roster_plan_backups` Postgres table (jsonb snapshot of
+leaves/overrides/swaps/leave-requests) plus create/list/restore routes and a "Backups" dialog in
+`ApplicationsManage.tsx`. Ticket 36 was a pure miss — no prior ticket touched `MyApplications.tsx`;
+ported the year-filter pills + search box using this repo's own existing field names (which have
+already diverged from reference's), not reference's.
 
 ## Decisions so far
 

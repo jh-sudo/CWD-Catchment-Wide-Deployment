@@ -31,6 +31,7 @@ export * from "./rosterRequirements";
 export * from "./activityLog";
 export * from "./rosterPatterns";
 export * from "./rosterVehicles";
+export * from "./rosterPlanBackups";
 
 // ── Core ops state domain ────────────────────────────────────────────────────
 // See .scratch/govpaas-migration/issues/02-schema-core-ops-state.md

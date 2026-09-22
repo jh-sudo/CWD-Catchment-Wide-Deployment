@@ -261,12 +261,17 @@ export default function MySchedule() {
                 const actualDuty = dutyMap[ds];
                 const targetDuty = targetDutyMap[ds];
                 const leaveType = leaveSet[ds];
-                const primaryDuty = targetDuty ?? actualDuty;
-                const secondaryDuty = (targetDuty && actualDuty && actualDuty !== targetDuty) ? actualDuty : undefined;
-                const primaryClr = DUTY_COLORS[primaryDuty ?? ""] ?? "";
-                const secondaryIsLeave = secondaryDuty != null && (leaveType != null || LEAVE_DUTIES.has(secondaryDuty));
+                // Effective duty is authoritative. The original roster duty
+                // is reference-only when leave/override changes the day.
+                // .scratch/replit-resync-2026-09-21/issues/34.
+                const primaryDuty = actualDuty ?? targetDuty;
+                const secondaryDuty = (targetDuty && actualDuty && actualDuty !== targetDuty) ? targetDuty : undefined;
+                const primaryIsLeave = primaryDuty != null && (leaveType != null || LEAVE_DUTIES.has(primaryDuty));
+                const primaryClr = primaryIsLeave
+                  ? LEAVE_COLOR
+                  : (DUTY_COLORS[primaryDuty ?? ""] ?? "");
                 const secondaryClr = secondaryDuty
-                  ? (secondaryIsLeave ? LEAVE_COLOR : (DUTY_COLORS[secondaryDuty] ?? "bg-muted text-foreground border-border"))
+                  ? (DUTY_COLORS[secondaryDuty] ?? "bg-muted text-foreground border-border")
                   : "";
 
                 return (
