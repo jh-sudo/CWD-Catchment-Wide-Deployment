@@ -1,7 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
-import { randomInt } from "crypto";
+import { randomInt, randomBytes } from "crypto";
 import { eq } from "drizzle-orm";
 import { db, managersTable, appConfigTable, officersTable, type Manager } from "@workspace/db";
 import {
@@ -225,6 +225,10 @@ function generatePin(digits: number): string {
   return randomInt(0, 10 ** digits).toString().padStart(digits, "0");
 }
 
+function generatePassword(): string {
+  return randomBytes(16).toString("base64url");
+}
+
 async function refreshManagersCache(): Promise<void> {
   const rows = await db.select().from(managersTable);
   managers = rows.map(toManagerAccount);
@@ -290,7 +294,11 @@ async function seedAdmin() {
   await refreshAppConfigCache();
 
   if (!managers.find(m => m.role === "admin")) {
-    const passwordHash = await bcrypt.hash("Admin@1234", 10);
+    // Random, not a fixed default — same reasoning as the PINs above: a
+    // hardcoded admin password would be a known working credential for
+    // anyone with repo access.
+    const adminPassword = generatePassword();
+    const passwordHash = await bcrypt.hash(adminPassword, 10);
     await db.insert(managersTable).values({
       id: "admin",
       username: "admin",
@@ -301,7 +309,7 @@ async function seedAdmin() {
       mustChangePassword: true,
     });
     await refreshManagersCache();
-    console.log("[auth] Admin seeded — username: admin  password: Admin@1234 (must be changed on first login)");
+    console.log(`[auth] Admin seeded — username: admin  password: ${adminPassword} (must be changed on first login)`);
   }
 }
 
