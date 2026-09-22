@@ -157,11 +157,13 @@ The API server auto-seeds a fallback admin account **only if the `managers` tabl
 rows** (fresh/empty database):
 
 - Username: `admin`
-- Password: `Admin@1234`
+- Password: randomly generated at seed time (`generatePassword()` in `auth.ts`'s `seedAdmin()`) and
+  printed once to the server's own boot log — never a fixed value, so it isn't a standing credential
+  anyone with repo access could use. `mustChangePassword` is also set, forcing a change on first
+  login. Retrieve it from that boot-time log line if you need to bootstrap a genuinely fresh deploy.
 
-This is a first-run bootstrap default, not a fixed credential — once real manager accounts exist
-(via normal signup/approval, or a data migration), this fallback never fires and won't work.
-Change the seeded password immediately on a genuinely fresh deploy.
+Once real manager accounts exist (via normal signup/approval, or a data migration), this fallback
+never fires again.
 
 ## Crew login
 
