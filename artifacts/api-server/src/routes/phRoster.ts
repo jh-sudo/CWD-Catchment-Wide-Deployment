@@ -255,12 +255,7 @@ phRosterRouter.get("/ph-roster-ref/builder-config", requireManager, async (_req,
 
 phRosterRouter.put("/ph-roster-ref/builder-config", requireManager, async (req, res) => {
   try {
-    const officers = await db.select().from(officersTable).where(eq(officersTable.active, true));
-    const config = normalizePHBuilderConfig(
-      req.body ?? {},
-      new Set(officers.map((o) => o.name)),
-      new Set(officers.map((o) => o.unitCode?.trim().toUpperCase()).filter((u): u is string => !!u && u !== "TBC")),
-    );
+    const config = await loadValidatedPHBuilderConfig(req.body);
     await savePHBuilderConfig(config);
     res.json({ ok: true, config });
   } catch (error) {
@@ -278,12 +273,7 @@ phRosterRouter.post("/ph-roster-ref/builder-presets", requireManager, async (req
     if (!name) throw new Error("Enter a name for these settings");
     if (name.length > 60) throw new Error("Settings name must be 60 characters or fewer");
 
-    const officers = await db.select().from(officersTable).where(eq(officersTable.active, true));
-    const config = normalizePHBuilderConfig(
-      req.body?.config ?? {},
-      new Set(officers.map((o) => o.name)),
-      new Set(officers.map((o) => o.unitCode?.trim().toUpperCase()).filter((u): u is string => !!u && u !== "TBC")),
-    );
+    const config = await loadValidatedPHBuilderConfig(req.body?.config);
     const presets = await loadPHBuilderPresets();
     const existing = presets.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
     const now = new Date().toISOString();
@@ -779,6 +769,17 @@ async function savePHBuilderConfig(config: PHBuilderConfig): Promise<void> {
     .insert(phBuilderConfigTable)
     .values({ id: 1, ...config })
     .onConflictDoUpdate({ target: phBuilderConfigTable.id, set: { ...config } });
+}
+
+// Shared by the builder-config PUT and builder-presets POST routes below —
+// both need the same active-officer/unit sets to validate a submitted config.
+async function loadValidatedPHBuilderConfig(rawConfig: unknown): Promise<PHBuilderConfig> {
+  const officers = await db.select().from(officersTable).where(eq(officersTable.active, true));
+  return normalizePHBuilderConfig(
+    (rawConfig ?? {}) as Partial<PHBuilderConfig>,
+    new Set(officers.map((o) => o.name)),
+    new Set(officers.map((o) => o.unitCode?.trim().toUpperCase()).filter((u): u is string => !!u && u !== "TBC")),
+  );
 }
 
 async function loadPHBuilderPresets(): Promise<PHBuilderPreset[]> {
