@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Save, CheckCircle2, AlertCircle, Pencil, X, Wand2, ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getContrastColor } from "@/lib/contrast";
-import { useAuth } from "@/context/AuthContext";
+import { useAuth, isManagementRole } from "@/context/AuthContext";
 import { useGetRosterOfficers } from "@workspace/api-client-react";
 import { useRosterVersion } from "@/context/RosterVersionContext";
 import { clearPHCache } from "@/lib/usePHActuals";
@@ -1478,7 +1478,7 @@ export default function PHHoliday() {
   const [tab, setTab] = useState("list");
   const [jumpDate, setJumpDate] = useState<string | undefined>(undefined);
   const { user } = useAuth();
-  const canSeeBuilder = user?.role === "admin" || user?.role === "manager" || user?.role === "ic";
+  const canSeeBuilder = isManagementRole(user?.role);
 
   const handleSelectFromList = (date: string) => {
     setJumpDate(date);
