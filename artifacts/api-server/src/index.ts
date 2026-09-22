@@ -1,5 +1,6 @@
 import { logger } from "./lib/logger";
 import { startRadarMonitor } from "./radar-monitor.js";
+import { startLightningCatMonitor } from "./lightning-cat.js";
 import { startLightningMonitor } from "./lightning-monitor.js";
 import { startMeetingReminderMonitor } from "./meeting-reminders.js";
 
@@ -37,6 +38,7 @@ async function main() {
     }
     logger.info({ port }, "Server listening");
     startRadarMonitor();
+    startLightningCatMonitor();
     startLightningMonitor();
     startMeetingReminderMonitor();
   });

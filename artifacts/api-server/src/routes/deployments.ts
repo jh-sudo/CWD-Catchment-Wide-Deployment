@@ -17,6 +17,7 @@ import {
 } from "@workspace/db";
 import { sendToManagers, broadcastToCrew, sendToCrewVehicle } from "./push";
 import { getRadarStatus } from "../radar-monitor.js";
+import { getOneMapToken } from "../lib/oneMapAuth.js";
 import { logger } from "../lib/logger";
 import { requireCrew, requireManager, requireAdminOrManager } from "./auth";
 import { getRosterSummary } from "./rosterPlan.js";
@@ -269,6 +270,49 @@ router.get("/search/sg", async (req, res) => {
   }
 });
 
+interface OneMapGeocodeResult {
+  BUILDINGNAME?: string;
+  BLOCK?: string;
+  ROAD?: string;
+  POSTALCODE?: string;
+}
+
+// OneMap uses the literal string "NIL" as its no-value sentinel across
+// BUILDINGNAME/BLOCK/ROAD/POSTALCODE (confirmed against a live response,
+// not assumed) — normalized away here so nothing downstream has to
+// special-case it.
+function nilToUndefined(v: string | undefined): string | undefined {
+  return v && v !== "NIL" ? v : undefined;
+}
+
+/** Reverse-geocode via OneMap Singapore (official .gov.sg source) instead
+ * of a non-government third party. Requires a bearer token — see
+ * lib/oneMapAuth.ts for the transparent 3-day-refresh handling.
+ * .scratch/replit-resync-2026-09-21 (external-API confidentiality audit,
+ * 2026-09-22). */
+async function reverseGeocodeOneMap(lat: number, lng: number): Promise<OneMapGeocodeResult | null> {
+  try {
+    const token = await getOneMapToken();
+    const url = `https://www.onemap.gov.sg/api/public/revgeocode?location=${lat},${lng}&buffer=40&addressType=All&otherFeatures=N`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, "User-Agent": "CWDFloodOps/1.0 (flood-ops-sg)" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { GeocodeInfo?: OneMapGeocodeResult[] };
+    const info = data.GeocodeInfo?.[0];
+    if (!info) return null;
+    return {
+      BUILDINGNAME: nilToUndefined(info.BUILDINGNAME),
+      BLOCK: nilToUndefined(info.BLOCK),
+      ROAD: nilToUndefined(info.ROAD),
+      POSTALCODE: nilToUndefined(info.POSTALCODE),
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Reverse geocode a point to a human-readable address — used by any
 // map-pin-drop flow that needs an address auto-filled from coordinates.
 // .scratch/replit-resync-2026-09-21/issues/27.
@@ -279,15 +323,11 @@ router.get("/search/sg/reverse", async (req, res) => {
     res.status(400).json({ error: "Valid Singapore coordinates are required" });
     return;
   }
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=${lat}&lon=${lng}&zoom=18`;
-    const response = await fetch(url, { headers: { "User-Agent": "CWDFloodOps/1.0 (flood-ops-sg)" } });
-    if (!response.ok) throw new Error("Reverse geocode failed");
-    const data = await response.json() as { display_name?: string };
-    res.json({ address: data.display_name?.trim() || `${lat.toFixed(6)}, ${lng.toFixed(6)}` });
-  } catch {
-    res.json({ address: `${lat.toFixed(6)}, ${lng.toFixed(6)}` });
-  }
+  const info = await reverseGeocodeOneMap(lat, lng);
+  const blockRoad = [info?.BLOCK, info?.ROAD].filter(Boolean).join(" ");
+  const withPostal = blockRoad && info?.POSTALCODE ? `${blockRoad}, Singapore ${info.POSTALCODE}` : blockRoad;
+  const address = info?.BUILDINGNAME || withPostal || `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+  res.json({ address });
 });
 
 interface PresetLocation {
@@ -435,17 +475,10 @@ function removeVehicleEntries(vehicleId: string, exceptLocationId?: string) {
   }
 }
 
-/** Server-side reverse geocode via Nominatim (no auth required). */
+/** Server-side reverse geocode via OneMap (see reverseGeocodeOneMap above). */
 async function geocodeRoadName(lat: number, lng: number): Promise<string | null> {
-  try {
-    const url = `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`;
-    const res = await fetch(url, { headers: { "User-Agent": "CWDFloodOps/1.0 (flood-ops-sg)" } });
-    if (!res.ok) return null;
-    const json = await res.json() as { address?: { road?: string; pedestrian?: string; path?: string } };
-    return json?.address?.road ?? json?.address?.pedestrian ?? json?.address?.path ?? null;
-  } catch {
-    return null;
-  }
+  const info = await reverseGeocodeOneMap(lat, lng);
+  return info?.ROAD ?? null;
 }
 const customLocations = new Map<string, PresetLocation>(
   PRESET_LOCATIONS.map((l) => [l.id, l])

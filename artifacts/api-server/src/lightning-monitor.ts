@@ -1,16 +1,8 @@
 import { broadcastToCrew, sendLightningToCrew, sendToManagers } from "./routes/push.js";
+import { getLightningSectorStatus, type SectorStatus } from "./lightning-cat.js";
 import { logger } from "./lib/logger.js";
 
 const INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
-
-interface LightningSector {
-  name: string;
-  lat: number;
-  lng: number;
-  cat: string;
-  catStartOn: string | null;
-  catEndOn: string | null;
-}
 
 const SECTOR_NAMES: Record<string, string> = {
   "1N":  "Tuas / Pioneer",
@@ -69,27 +61,9 @@ let lastNotifiedCatStartOn: string | null = null;
 let cat1Active = false;
 let cat1AlertCount = 0; // how many pushes sent for the current CAT 1 event
 
-async function fetchSectors(): Promise<LightningSector[]> {
-  const r = await fetch("https://api.andewmole.com/cat1/getWeatherInfo", {
-    signal: AbortSignal.timeout(10_000),
-    headers: { "User-Agent": "FleetCoordinator/1.0" },
-  });
-  if (!r.ok) throw new Error(`Upstream returned ${r.status}`);
-  const data = await r.json() as any;
-  const armysectors = data?.data?.armysectors ?? {};
-  return Object.values(armysectors).map((s: any) => ({
-    name: (s.sector?.name ?? "Unknown").replace(/^Sector /, ""),
-    lat: s.sector?.latitude as number,
-    lng: s.sector?.longitude as number,
-    cat: String(s.weather?.CAT ?? "3"),
-    catStartOn: s.weather?.cat_start_on ?? null,
-    catEndOn: s.weather?.cat_end_on ?? null,
-  }));
-}
-
 export async function checkLightningAndNotify(): Promise<void> {
   try {
-    const sectors = await fetchSectors();
+    const sectors: SectorStatus[] = getLightningSectorStatus();
     const cat1Sectors = sectors.filter(s => s.cat === "1");
 
     if (cat1Sectors.length === 0) {
@@ -137,7 +111,7 @@ export async function checkLightningAndNotify(): Promise<void> {
 
     // Each sector's own end time, not the first sector's reused for all —
     // .scratch/replit-resync-2026-09-21/issues/17.
-    const formatSectorList = (sectors: LightningSector[]) => sectors.map(s => {
+    const formatSectorList = (sectors: SectorStatus[]) => sectors.map(s => {
       const label = sectorDisplayName(s.name);
       const end = formatCat1End(s.catEndOn);
       return end ? `${label} (${end})` : label;
