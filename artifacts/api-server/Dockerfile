@@ -17,6 +17,15 @@ RUN pnpm --filter @workspace/api-server run build
 FROM node:20-slim AS runtime
 WORKDIR /app
 
+# psql — not needed by the app itself, but GOV PaaS's Postgres addon is
+# private-network-only (see startupMigration.ts / README's Deployment
+# section), so this container's own Shell tab is the only place anyone can
+# ever run ad-hoc SQL against it. Worth the ~10MB: the 2026-09-22
+# lightning_sectors incident hit "psql: command not found" mid-outage
+# because this wasn't here yet.
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 # Run as a non-root user rather than the default root — node:20-slim already
 # ships a low-privilege "node" user/group (uid/gid 1000). --chown here (not a
 # separate `RUN chown -R /app`) sets ownership as part of the copy itself —
