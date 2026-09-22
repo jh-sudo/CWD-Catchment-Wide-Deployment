@@ -26,6 +26,26 @@ Cover with the user: a one-off script vs. a repeatable/idempotent migration tool
 - **Validation strategy**: row counts per table vs. source array/object lengths; spot-check a sample of records per domain against the JSON; for `roster-cycle.json` specifically, an explicit reconciliation report confirming every unit+name entry found a matching `officers.id` (the name/unit → officer_id matching decided in the [roster & leave schema](03-schema-roster-leave.md) ticket is fuzzy enough to warrant checking for orphans, not just row counts). A dry-run mode reports what would be inserted without committing, so mismatches surface before the real cutover run.
 - **Rollback plan**: since the script only reads from JSON/GCS and never mutates the source, and the target is a fresh Postgres database, rollback is simply not switching traffic over (soft cutover) plus dropping/re-running against Postgres if needed — no destructive step to undo on the Replit side.
 
+### Addendum, 2026-09-22: manager/crew PINs are NOT migrated, unlike everything else in this ticket
+
+Found during the external-API confidentiality audit
+(`.scratch/replit-resync-2026-09-21/issues/37-external-api-confidentiality-audit.md`): Replit's
+live `config.json` PINs are still the same default (`123456`/`1234`) already documented as
+compromised in the earlier security review — any account that never manually changed it is still
+on that exact, publicly-known value today. The original version of `02-core-ops-state.ts` copied
+`config.managerPin`/`config.crewPin` straight into the new `app_config` row, same as every other
+domain here — which would have started GOV PaaS production on an already-known credential. This
+is a different situation from the VAPID key decision above (a considered tradeoff to avoid forcing
+device re-subscription) — nobody had actually weighed in on the PINs specifically until now.
+
+**Decision: reset, don't carry forward.** `02-core-ops-state.ts` no longer touches `app_config` at
+all — it leaves no row behind, so `seedAdmin()` (`artifacts/api-server/src/routes/auth.ts`), which
+already generates a fresh random manager/crew PIN pair whenever no `app_config` row exists, handles
+it exactly the way a brand-new install would. No duplicate generation logic added; the script just
+gets out of the way of code that already does this correctly. The new PIN values will be in that
+deployment's first-boot logs — retrieve them from there once cutover happens, the same way a fresh
+install's admin password is already retrieved today.
+
 ### Structure
 
 One migration script per schema domain (matching the four schema tickets), orchestrated by a single entrypoint that runs them in dependency order: core ops state and roster & leave first (since `managers.officer_id` and inspections/push both reference `officers`), then PH roster, then inspections & push (fresh start, no source data to migrate per that ticket's finding).
