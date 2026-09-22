@@ -53,11 +53,12 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Internal-only docs — governance material and migration handover notes
-# not meant to leave this machine (see HANDOVER.md's own header note)
+# Internal-only docs — planning/issue-tracker notes, incident write-ups,
+# governance material. Real project documentation, kept on disk, just never
+# committed — scrubbed from history 2026-09-23 after the repo went public
+# with 108 tracked files including past-vulnerability write-ups.
 /context/
-/.scratch/govpaas-migration/HANDOVER.md
-/.scratch/govpaas-migration/recommendation-memo.md
+/.scratch/
 
 # Key/credential material, in case any ever lands in the working tree
 *.pem
