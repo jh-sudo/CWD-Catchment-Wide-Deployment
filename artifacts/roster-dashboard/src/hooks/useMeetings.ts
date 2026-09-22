@@ -58,6 +58,18 @@ export interface Meeting {
   currentUserRole: "organizer" | "attendee" | "both" | "admin";
 }
 
+// Shared by Layout.tsx's sidebar shortcut, its alert popup, and
+// ManagerDashboard.tsx's pending list — all three need to agree on exactly
+// what "this meeting needs the current user's action" means, so it's
+// centralized here instead of re-derived per call site.
+export function attendeeNeedsToRespond(meeting: Meeting, userId: string): boolean {
+  return meeting.attendeeIds.includes(userId) && !meeting.responses[userId] && meeting.status !== "confirmed";
+}
+
+export function organizerNeedsToConfirm(meeting: Meeting, userId: string): boolean {
+  return meeting.organizerId === userId && meeting.status === "ready";
+}
+
 export interface MeetingGroup {
   id: string;
   name: string;
