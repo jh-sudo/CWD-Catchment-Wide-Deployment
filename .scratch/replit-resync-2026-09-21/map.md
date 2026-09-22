@@ -10,12 +10,28 @@ Scope: `/lightning`, `/roster` (api-server route + roster-dashboard SPA), `/crew
 only. `apa`, `inspector`, `deployment-tracker`, `mockup-sandbox`, `wls-android-forwarder` stay
 excluded per the original migration decision.
 
-**Status: complete.** All 21 bug-fix tickets, all 14 new-capability scope items, and all 3
-post-completion-audit findings below are resolved — either ported (11 new-capability items,
-tickets 22-33), deliberately deferred (Partner Reports, not internet-facing yet), declined (AI
-Flood Scan), or fixed (tickets 34-36). Phase 2 (static security review of the whole Replit
-codebase) ran separately — see `.scratch/replit-security-review-2026-09-21/`, not yet remediated
-as of this note.
+**Status: complete.** All 21 bug-fix tickets, all 14 new-capability scope items, all 3
+post-completion-audit findings, and the external-API confidentiality audit below are resolved —
+either ported (11 new-capability items, tickets 22-33), deliberately deferred (Partner Reports,
+not internet-facing yet), declined (AI Flood Scan), or fixed (tickets 34-37). Phase 2 (static
+security review of the whole Replit codebase, a separate tracker) ran independently — see
+`.scratch/replit-security-review-2026-09-21/`, not yet remediated as of this note.
+
+## External-API confidentiality audit (2026-09-22) — see [37](issues/37-external-api-confidentiality-audit.md)
+
+Ahead of the GOV PaaS push, user asked what external APIs/data this app calls that might expose
+confidential data. Audited every outbound network call in the Replit mirror, cross-checked each
+against this repo directly. Most findings turned out not to apply here (apps like
+`deployment-tracker`/`mockup-sandbox`/`wls-android-forwarder` aren't in this repo at all) or were
+already resolved before this audit started (Maps key already env-var-based, CARTO tiles not raw
+OSM, real Postgres not Replit's storage bucket, WLS ingestion already authenticated). Three real
+gaps got fixed: the CAT1 lightning classification no longer depends on an unofficial third party
+(`api.andewmole.com`) — now computed in-house from NEA's official data.gov.sg feed using SAF's
+SafeGuardian rule; deployment/vehicle GPS reverse-geocoding switched from public Nominatim to
+OneMap Singapore's official API; the Blitzortung.org "nearby strikes" overlay (itself originally
+ported from Replit's own earlier code, later dropped there for an unstated reason) was removed
+per the user's call. Full detail, including exactly how each thing worked on Replit's side versus
+how it was adapted here, is in ticket 37. Committed as `5a0a149`.
 
 ## Post-completion audit findings (2026-09-22) — all fixed
 
