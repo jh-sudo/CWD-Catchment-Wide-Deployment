@@ -2,7 +2,7 @@ import { Switch, Route, Router as WouterRouter, Redirect } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { AuthProvider, useAuth, isManagementRole } from "@/context/AuthContext";
 import { RosterVersionProvider } from "@/context/RosterVersionContext";
 import { Loader2 } from "lucide-react";
 import NotFound from "@/pages/not-found";
@@ -53,7 +53,7 @@ function AppRoutes() {
     );
   }
 
-  const isManagement = user.role === "admin" || user.role === "manager" || user.role === "ic";
+  const isManagement = isManagementRole(user.role);
 
   return (
     <Layout>

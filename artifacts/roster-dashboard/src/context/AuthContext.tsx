@@ -2,6 +2,14 @@ import React, { createContext, useContext, useState, useEffect, useCallback } fr
 
 export type AccountRole = "admin" | "manager" | "ic" | "crew";
 
+// Single source of truth for "is this a management-side role", per ADR 0001
+// (docs/adr/0001-roster-dashboard-navigation-redesign.md) — gating should be
+// checked once against this, not re-derived as a fresh tri-state comparison
+// at each call site.
+export function isManagementRole(role: AccountRole | undefined): boolean {
+  return role === "admin" || role === "manager" || role === "ic";
+}
+
 export interface AuthUser {
   id: string;
   username: string;
