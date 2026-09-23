@@ -2,7 +2,15 @@
 # Mirrors the production build/run commands from
 # artifacts/roster-dashboard/.replit-artifact/artifact.toml.
 
-FROM node:20-slim AS builder
+# alpine, not slim (Debian): verified 2026-09-23 that the app builds,
+# boots, and serves correctly (real docker build + HTTP 200 test) once
+# pnpm-workspace.yaml's lightningcss/@tailwindcss/oxide overrides stop
+# stripping the linux-x64-musl binaries — those were being excluded
+# outright, not genuinely incompatible with musl. Cuts CRITICAL/HIGH OS-
+# package CVEs in the shipped image from 65 to 4 (verified via a real
+# Trivy scan; npm-level findings are unchanged either way, they aren't
+# an OS-layer thing).
+FROM node:20-alpine AS builder
 RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
 WORKDIR /app
 
@@ -22,7 +30,7 @@ RUN pnpm install --frozen-lockfile
 # hadolint ignore=DL3059
 RUN pnpm --filter @workspace/roster-dashboard run build
 
-FROM node:20-slim AS runtime
+FROM node:20-alpine AS runtime
 # COREPACK_HOME pinned to a path outside /app (the /app COPY below would
 # otherwise clobber it) and chowned to node:node so the *runtime* user can
 # actually read the version `corepack prepare` fetched as root here — by
