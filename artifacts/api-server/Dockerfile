@@ -2,7 +2,15 @@
 # Mirrors the production build/run commands from
 # artifacts/api-server/.replit-artifact/artifact.toml.
 
-FROM node:20-slim AS builder
+# alpine, not slim (Debian): verified 2026-09-23 that the bundled
+# dist/index.mjs has no runtime native-addon dependency (esbuild/swc/etc.
+# are build-only, fully inlined at build time — see build.mjs's `external`
+# list), so there's nothing musl-incompatible to worry about here. Cuts
+# CRITICAL/HIGH CVEs in the shipped image from 90 to 4 (verified via a
+# real Trivy scan) — node:20-slim's own upstream tag hadn't been
+# rebuilt in ~5 months, so a plain rebuild wouldn't have helped; the
+# smaller Alpine OS surface is what actually matters here.
+FROM node:20-alpine AS builder
 RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
 WORKDIR /app
 
@@ -19,7 +27,7 @@ RUN pnpm install --frozen-lockfile
 # hadolint ignore=DL3059
 RUN pnpm --filter @workspace/api-server run build
 
-FROM node:20-slim AS runtime
+FROM node:20-alpine AS runtime
 WORKDIR /app
 
 # psql — not needed by the app itself, but GOV PaaS's Postgres addon is
@@ -28,10 +36,9 @@ WORKDIR /app
 # ever run ad-hoc SQL against it. Worth the ~10MB: the 2026-09-22
 # lightning_sectors incident hit "psql: command not found" mid-outage
 # because this wasn't here yet.
-RUN apt-get update && apt-get install -y --no-install-recommends postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache postgresql-client
 
-# Run as a non-root user rather than the default root — node:20-slim already
+# Run as a non-root user rather than the default root — node:20-alpine already
 # ships a low-privilege "node" user/group (uid/gid 1000). --chown here (not a
 # separate `RUN chown -R /app`) sets ownership as part of the copy itself —
 # a follow-up recursive chown over node_modules took ~4 minutes in testing.
@@ -45,7 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-clie
 COPY --from=builder --chown=node:node /app/artifacts/api-server/dist ./artifacts/api-server/dist
 COPY --from=builder --chown=node:node /app/artifacts/api-server/data ./artifacts/api-server/data
 # Named user, not numeric uid, deliberately: self-documents as
-# node:20-slim's own pre-existing low-privilege user (uid/gid 1000) rather
+# node:20-alpine's own pre-existing low-privilege user (uid/gid 1000) rather
 # than a bare "1000" a reader has to go look up. No security difference
 # either way — non-root is the actual point, not which spelling.
 # hadolint ignore=DL3066
