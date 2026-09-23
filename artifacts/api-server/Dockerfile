@@ -11,7 +11,12 @@ COPY lib lib
 COPY scripts scripts
 COPY artifacts artifacts
 
+# Deliberately separate layers, not two RUNs left uncombined by oversight:
+# keeps `pnpm install` cached and skipped when only app source changes,
+# not just dependencies. Consolidating would force a full reinstall on
+# every source-only rebuild.
 RUN pnpm install --frozen-lockfile
+# hadolint ignore=DL3059
 RUN pnpm --filter @workspace/api-server run build
 
 FROM node:20-slim AS runtime
@@ -39,6 +44,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-clie
 # no source, no devDependency packages ship in the final image at all.
 COPY --from=builder --chown=node:node /app/artifacts/api-server/dist ./artifacts/api-server/dist
 COPY --from=builder --chown=node:node /app/artifacts/api-server/data ./artifacts/api-server/data
+# Named user, not numeric uid, deliberately: self-documents as
+# node:20-slim's own pre-existing low-privilege user (uid/gid 1000) rather
+# than a bare "1000" a reader has to go look up. No security difference
+# either way — non-root is the actual point, not which spelling.
+# hadolint ignore=DL3066
 USER node
 
 ENV NODE_ENV=production

@@ -14,7 +14,12 @@ COPY artifacts artifacts
 ENV PORT=20315
 ENV BASE_PATH=/roster/
 
+# Deliberately separate layers, not two RUNs left uncombined by oversight:
+# keeps `pnpm install` cached and skipped when only app source changes,
+# not just dependencies. Consolidating would force a full reinstall on
+# every source-only rebuild.
 RUN pnpm install --frozen-lockfile
+# hadolint ignore=DL3059
 RUN pnpm --filter @workspace/roster-dashboard run build
 
 FROM node:20-slim AS runtime
@@ -37,6 +42,9 @@ WORKDIR /app
 # itself a devDependency, so the whole /app tree (incl. node_modules) still
 # needs to ship here — there's no equivalent dist-only trim available.
 COPY --from=builder --chown=node:node /app /app
+# Named user, not numeric uid — see api-server/Dockerfile's comment for
+# the same choice/reasoning.
+# hadolint ignore=DL3066
 USER node
 
 ENV NODE_ENV=production
