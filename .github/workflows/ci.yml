@@ -14,13 +14,25 @@
 # build, a critical-only dependency-audit threshold — see the "Dependency
 # hygiene pass ahead of CI" commit, which got real findings from 41 down to
 # 2 first) are blocking from day one. Jobs relying on external scanners this
-# environment couldn't dry-run locally (hadolint, trivy, gitleaks) run in
-# report-only mode for their first real pass — `continue-on-error: true`,
-# clearly marked below — so this workflow doesn't repeat the mistake a
-# same-day typecheck gate would have made (immediately and permanently red
-# from pre-existing findings nobody had triaged yet). Once a human reviews
-# that first run's actual findings, flip continue-on-error to false on each
-# job as it's confirmed clean or triaged.
+# environment couldn't dry-run locally (hadolint, trivy, gitleaks, semgrep)
+# run in report-only mode for their first real pass — `continue-on-error:
+# true`, clearly marked below — so this workflow doesn't repeat the mistake
+# a same-day typecheck gate would have made (immediately and permanently
+# red from pre-existing findings nobody had triaged yet). Once a human
+# reviews that first run's actual findings, flip continue-on-error to false
+# on each job as it's confirmed clean or triaged.
+#
+# STATUS (2026-09-23): that review step didn't actually happen for months —
+# gitleaks and Semgrep both sat green-but-unreviewed since this file was
+# written (a real hardcoded secret and 17 Semgrep findings both went
+# undetected as a result; see those jobs' own comments for what was found
+# and fixed). Both are triaged and blocking now. hadolint's one pass found
+# only 2 info-level Dockerfile style notes — low priority, still
+# report-only. Trivy's first pass found 90+65 CRITICAL/HIGH CVEs, almost
+# entirely in the node:20-slim base image's OS packages rather than this
+# repo's own dependencies (pnpm audit covers those separately and is
+# clean) — genuinely needs its own triage pass (likely "rebase to a
+# freshly-patched base image", not a per-CVE fix), not a quick flip.
 #
 # Every third-party action below is pinned to a full commit SHA, not a
 # floating tag (sc-4/sc-6-style dependency pinning applied to the pipeline
@@ -128,7 +140,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run Semgrep
-        continue-on-error: true # first real pass — see header
+        # 2026-09-23: the first real pass found 17 findings, sitting
+        # unreviewed since this job was written (same root cause as the
+        # secret-scan gap next to it). Triaged — 5 real fixes, 12 false
+        # positives suppressed or scoped out below. Confirmed 0 findings
+        # on a real run before removing continue-on-error here.
         run: |
           python3 -m pip install --quiet semgrep
           semgrep scan --config auto --error \
