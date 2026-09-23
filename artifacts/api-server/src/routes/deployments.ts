@@ -156,10 +156,9 @@ router.get("/rain-radar", async (req, res) => {
       }
       const buf = await r.arrayBuffer();
       res.set({ "Content-Type": "image/png", "Access-Control-Allow-Origin": "*", "Cache-Control": "public,max-age=3600", "X-Radar-Timestamp": label });
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
       // buf is a binary PNG fetched from NEA's radar API, sent with an
       // explicit image/png Content-Type above — not HTML, no escaping applies.
-      res.send(Buffer.from(buf)); return;
+      res.send(Buffer.from(buf)); return; // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     } catch { res.status(502).json({ error: "radar fetch failed" }); return; }
   }
 
@@ -171,10 +170,9 @@ router.get("/rain-radar", async (req, res) => {
       if (!r.ok || !r.headers.get("content-type")?.startsWith("image")) continue;
       const buf = await r.arrayBuffer();
       res.set({ "Content-Type": "image/png", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache,no-store", "X-Radar-Timestamp": label, "X-Radar-At": at });
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
       // buf is a binary PNG fetched from NEA's radar API, sent with an
       // explicit image/png Content-Type above — not HTML, no escaping applies.
-      res.send(Buffer.from(buf)); return;
+      res.send(Buffer.from(buf)); return; // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     }
     res.status(502).json({ error: "radar unavailable" });
   } catch {
@@ -230,10 +228,9 @@ router.get("/rain-radar-wide", async (req, res) => {
       }
       const buf = await r.arrayBuffer();
       res.set({ "Content-Type": "image/png", "Access-Control-Allow-Origin": "*", "Cache-Control": "public,max-age=3600", "X-Radar-Timestamp": label });
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
       // buf is a binary PNG fetched from NEA's radar API, sent with an
       // explicit image/png Content-Type above — not HTML, no escaping applies.
-      res.send(Buffer.from(buf)); return;
+      res.send(Buffer.from(buf)); return; // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     } catch { res.status(502).json({ error: "radar fetch failed" }); return; }
   }
 
@@ -245,10 +242,9 @@ router.get("/rain-radar-wide", async (req, res) => {
       if (!r.ok || !r.headers.get("content-type")?.startsWith("image")) continue;
       const buf = await r.arrayBuffer();
       res.set({ "Content-Type": "image/png", "Access-Control-Allow-Origin": "*", "Cache-Control": "no-cache,no-store", "X-Radar-Timestamp": label, "X-Radar-At": at });
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
       // buf is a binary PNG fetched from NEA's radar API, sent with an
       // explicit image/png Content-Type above — not HTML, no escaping applies.
-      res.send(Buffer.from(buf)); return;
+      res.send(Buffer.from(buf)); return; // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     }
     res.status(502).json({ error: "radar unavailable" });
   } catch {

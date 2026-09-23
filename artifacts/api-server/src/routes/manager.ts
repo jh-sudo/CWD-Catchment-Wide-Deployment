@@ -48,13 +48,14 @@ self.addEventListener('notificationclick', event => {
 
 router.get("/manager", requireManager, (req, res) => {
   const me = getManager(req.session.managerId!);
-  const currentUser = jsonForScriptTag({ username: me?.username ?? "", role: me?.role ?? "manager", mfaEnabled: me?.mfaEnabled ?? false });
-  // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
+  // Escaped via jsonForScriptTag (</script> can't break out of the tag
+  // below), so this is deliberately not a bare JSON.stringify.
+  const currentUser = jsonForScriptTag({ username: me?.username ?? "", role: me?.role ?? "manager", mfaEnabled: me?.mfaEnabled ?? false }); // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
   // me.role only ever drives a boolean branch between two hardcoded button
   // strings below — not embedded as data, nothing to inject. Pulled out of
   // the page template (a giant backtick string) so this comment can attach
   // to real source instead of ending up as literal page content.
-  const autoDeployButton = me?.role === "admin" || me?.role === "manager"
+  const autoDeployButton = me?.role === "admin" || me?.role === "manager" // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
     ? `<button id="auto-deploy-btn" class="btn btn-outline btn-sm" onclick="toggleAutoDeployment()" title="Auto-refresh the roster and broadcast an alert when a Heavy Rain Warning is pasted in — off by default">🌧️ Auto Deploy: …</button>`
     : "";
   res.setHeader("Content-Type", "text/html; charset=utf-8");
