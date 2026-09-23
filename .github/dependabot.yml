@@ -11,6 +11,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
+    # Same reasoning as pnpm-workspace.yaml's minimumReleaseAge: a newly
+    # published version can be malicious or unstable before the ecosystem
+    # has had a chance to flag it.
+    cooldown:
+      default-days: 7
     groups:
       # One PR per pnpm-workspace catalog/override bump instead of a flood
       # of individual ones across every workspace package that shares it.
@@ -22,3 +27,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

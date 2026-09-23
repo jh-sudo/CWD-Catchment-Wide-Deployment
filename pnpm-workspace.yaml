@@ -27,7 +27,16 @@ catalog:
   wouter: ^3.11.0
   zod: ^4.6.5
 
-minimumReleaseAge: 1440
+# 7 days (10080 min) — matches dependabot.yml's cooldown and .npmrc's
+# min-release-age, all guarding against the same newly-published-malicious-
+# version window. Was 1440 (1 day), too short to give the ecosystem a
+# real chance to flag a bad release.
+minimumReleaseAge: 10080
+
+# Blocks transitive deps from resolving to untrusted/exotic sources, and
+# refuses a package update that would silently weaken these settings.
+blockExoticSubdeps: true
+trustPolicy: no-downgrade
 
 onlyBuiltDependencies:
   - '@swc/core'

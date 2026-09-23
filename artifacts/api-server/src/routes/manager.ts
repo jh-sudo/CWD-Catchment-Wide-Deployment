@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireManager, getManager } from "./auth";
 import { logger } from "../lib/logger";
+import { jsonForScriptTag } from "../lib/inlineJson";
 
 const router = Router();
 
@@ -47,7 +48,15 @@ self.addEventListener('notificationclick', event => {
 
 router.get("/manager", requireManager, (req, res) => {
   const me = getManager(req.session.managerId!);
-  const currentUser = JSON.stringify({ username: me?.username ?? "", role: me?.role ?? "manager", mfaEnabled: me?.mfaEnabled ?? false });
+  const currentUser = jsonForScriptTag({ username: me?.username ?? "", role: me?.role ?? "manager", mfaEnabled: me?.mfaEnabled ?? false });
+  // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
+  // me.role only ever drives a boolean branch between two hardcoded button
+  // strings below — not embedded as data, nothing to inject. Pulled out of
+  // the page template (a giant backtick string) so this comment can attach
+  // to real source instead of ending up as literal page content.
+  const autoDeployButton = me?.role === "admin" || me?.role === "manager"
+    ? `<button id="auto-deploy-btn" class="btn btn-outline btn-sm" onclick="toggleAutoDeployment()" title="Auto-refresh the roster and broadcast an alert when a Heavy Rain Warning is pasted in — off by default">🌧️ Auto Deploy: …</button>`
+    : "";
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -613,7 +622,7 @@ router.get("/manager", requireManager, (req, res) => {
       <span id="header-username"></span>
     </div>
     <button id="theme-btn" class="btn btn-outline btn-sm" onclick="toggleTheme()" title="Toggle light/dark mode" style="font-size:16px;padding:5px 10px;">🌙</button>
-    ${me?.role === "admin" || me?.role === "manager" ? `<button id="auto-deploy-btn" class="btn btn-outline btn-sm" onclick="toggleAutoDeployment()" title="Auto-refresh the roster and broadcast an alert when a Heavy Rain Warning is pasted in — off by default">🌧️ Auto Deploy: …</button>` : ""}
+    ${autoDeployButton}
     <button class="logout-btn" onclick="openModal('chpw-modal')" title="Change password" style="margin-right:2px;">🔑</button>
     <button id="mfa-header-btn" class="logout-btn" onclick="openMfaModal()" title="Two-factor authentication" style="margin-right:2px;">🛡️</button>
     <button class="logout-btn" onclick="logOut()">Sign out</button>

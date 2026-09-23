@@ -30,11 +30,15 @@ if (key.length !== 32) {
 
 const ALGO = "aes-256-gcm";
 const IV_LENGTH = 12; // recommended nonce length for GCM
+// 16 bytes (128 bits) is already Node's default for GCM when unspecified —
+// pinning it explicitly on both ends so a stored value can never be
+// misread with a shorter, weaker tag.
+const AUTH_TAG_LENGTH = 16;
 
 /** Encrypts a TOTP secret for storage in managers.mfa_secret. */
 export function encryptMfaSecret(plaintext: string): string {
   const iv = randomBytes(IV_LENGTH);
-  const cipher = createCipheriv(ALGO, key, iv);
+  const cipher = createCipheriv(ALGO, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
   // Store iv:authTag:ciphertext, each base64 — self-contained, no separate
@@ -52,7 +56,7 @@ export function decryptMfaSecret(stored: string): string {
   const iv = Buffer.from(ivB64, "base64");
   const authTag = Buffer.from(tagB64, "base64");
   const ciphertext = Buffer.from(ctB64, "base64");
-  const decipher = createDecipheriv(ALGO, key, iv);
+  const decipher = createDecipheriv(ALGO, key, iv, { authTagLength: AUTH_TAG_LENGTH });
   decipher.setAuthTag(authTag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
 }

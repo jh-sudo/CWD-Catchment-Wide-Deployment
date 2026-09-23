@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { requireCrew } from "./auth";
+import { jsonForScriptTag } from "../lib/inlineJson";
 
 const router = Router();
 
@@ -205,7 +206,7 @@ router.get("/crew/login", (_req, res) => {
 
 // ── Crew main page ───────────────────────────────────────────────────────────
 router.get("/crew", requireCrew, (req, res) => {
-  const officer = JSON.stringify(req.officer);
+  const officer = jsonForScriptTag(req.officer);
   res.setHeader("Content-Type", "text/html; charset=utf-8");
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
   res.send(/* html */ `<!DOCTYPE html>

@@ -73,6 +73,10 @@ export default function StrengthTab() {
       const next = { ...prev };
       const newStrength = JSON.parse(JSON.stringify(prev.strength)); // deep clone
       let curr = newStrength;
+      // nosemgrep: javascript.lang.security.audit.prototype-pollution.prototype-pollution-loop.prototype-pollution-loop
+      // path is always a hardcoded literal array at every call site below
+      // (["weekday","special"], ["colors","below"], …), never user input —
+      // and this is client-side React state, not a shared server object.
       for (let i = 0; i < path.length - 1; i++) {
         curr = curr[path[i]];
       }

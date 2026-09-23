@@ -13,6 +13,10 @@ export const DATA_DIR = path.resolve(__dirname, "../../../../artifacts/api-serve
 
 /** Reads and parses a JSON file from the data dir. Missing file -> fallback (not an error — several of these files are "currently empty" and were never written to disk at all). */
 export function readJson<T>(filename: string, fallback: T): T {
+  // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+  // Every call site passes a hardcoded literal filename ("managers.json",
+  // "roster-officers.json", …) — this is a one-off local CLI backfill
+  // script with no network listener or user input, not a server route.
   const filePath = path.join(DATA_DIR, filename);
   if (!fs.existsSync(filePath)) return fallback;
   const raw = fs.readFileSync(filePath, "utf8");
