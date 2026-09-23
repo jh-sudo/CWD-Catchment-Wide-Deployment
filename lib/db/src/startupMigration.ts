@@ -48,11 +48,10 @@ export async function runStartupMigration(pool: pg.Pool): Promise<void> {
       await target.query(sql);
       console.log(`[startup-migration] ok: ${label}`);
     } catch (err) {
-      // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
       // label is always a hardcoded literal at every call site below, and
       // err is a separate, non-interpolated argument — no format-specifier
       // substitution happens here regardless of label's content.
-      console.error(`[startup-migration] FAILED: ${label}`, err);
+      console.error(`[startup-migration] FAILED: ${label}`, err); // nosemgrep: javascript.lang.security.audit.unsafe-formatstring.unsafe-formatstring
     }
   };
 

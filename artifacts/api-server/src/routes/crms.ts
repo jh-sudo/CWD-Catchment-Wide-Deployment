@@ -580,10 +580,9 @@ router.put("/crms/:id", requireManager, async (req, res) => {
     if (k === "updateProvidedToFP") {
       patch.updateProvidedToFp = updates.updateProvidedToFP ?? null;
     } else {
-      // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
       // k only ever comes from the ALLOWED literal array above, never from
       // Object.keys(updates)/user-controlled input — can't be __proto__ etc.
-      (patch as any)[k] = (updates as any)[k];
+      (patch as any)[k] = (updates as any)[k]; // nosemgrep: javascript.express.security.audit.remote-property-injection.remote-property-injection
     }
   }
   const now = new Date();
