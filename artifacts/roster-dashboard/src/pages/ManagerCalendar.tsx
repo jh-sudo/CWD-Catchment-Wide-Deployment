@@ -190,7 +190,7 @@ export default function ManagerCalendar() {
                     root: "w-full",
                     months: "w-full flex flex-col gap-4",
                     month: "w-full flex flex-col gap-4",
-                    table: "w-full border-collapse",
+                    month_grid: "w-full border-collapse",
                     weekdays: "flex w-full",
                     weekday: "text-muted-foreground flex-1 select-none text-[0.8rem] font-normal text-center",
                     week: "mt-2 flex w-full",
