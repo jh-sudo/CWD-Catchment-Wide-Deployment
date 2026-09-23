@@ -85,30 +85,39 @@ jobs:
       # to remember to run `pnpm audit` by hand.
       - run: pnpm audit || true
 
-  # ── sd-6: secret detection ──────────────────────────────────────────────────
+  # ── sd-6: secret detection (new commits) ────────────────────────────────────
   # GitHub's native secret scanning/push protection requires GitHub Advanced
-  # Security, which isn't available on this repo's plan for a private repo
-  # (verified: security_and_analysis is null, branch protection API itself
-  # 403s asking for a Pro/Team+ plan) — gitleaks is the real substitute, not
-  # a downgrade. fetch-depth: 0 so it can see full history, since this repo
-  # has 30+ commits nobody has audited with this tool yet — but always
-  # report-only (not just "first pass", unlike the other jobs above): a
-  # finding somewhere in existing history can't be fixed by editing the
-  # current tree, only by rewriting it, which is a call for a human to make
-  # deliberately, never something this job should be able to force by going
-  # red. Once a human has triaged the existing history, a *second*,
-  # narrower job scoped to just the new commits in a push/PR (e.g. via
-  # GITLEAKS_ENABLE_UPLOAD_ARTIFACT / a --log-opts commit range) would be
-  # the one worth making blocking — not this one.
+  # Security — not available while this repo was private, but the repo is
+  # public now (2026-09-23) and both are enabled natively at the GitHub level
+  # too. gitleaks stays as a second, independent layer.
+  #
+  # CORRECTION (2026-09-23): despite `fetch-depth: 0` below, gitleaks-action
+  # does NOT scan full history here — it auto-scopes to just the current
+  # push/PR's commit range (confirmed from an actual run's command line:
+  # `--log-opts=--no-merges --first-parent <before>^..<after>`). fetch-depth:
+  # 0 only makes that range resolvable when a push has many commits; it
+  # doesn't broaden the scan. This comment previously claimed otherwise —
+  # that was wrong, and is exactly how a real hardcoded Google Maps key
+  # (introduced in this repo's very first commit, 2026-08-04) went
+  # undetected through 200+ CI runs: every run only ever checked what was
+  # new since the last one, never the existing history. A one-off full-
+  # history run (manual `gitleaks detect --source=.`, no log-opts) finally
+  # caught it. See `secret-scan-full-history.yml` for the job that now
+  # actually covers that gap, on a schedule instead of every push.
+  #
+  # Now that history has had that one real pass, this job (which only ever
+  # covered new commits anyway) is promoted to blocking — no more
+  # continue-on-error. A finding here is always in a commit from *this*
+  # push/PR, so it can always be fixed by editing the current tree before
+  # merging, unlike a historical finding.
   secret-scan:
-    name: Secret Detection
+    name: Secret Detection (new commits)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
