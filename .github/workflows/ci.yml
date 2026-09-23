@@ -26,9 +26,10 @@
 # gitleaks and Semgrep both sat green-but-unreviewed since this file was
 # written (a real hardcoded secret and 17 Semgrep findings both went
 # undetected as a result; see those jobs' own comments for what was found
-# and fixed). Both are triaged and blocking now. hadolint's one pass found
-# only 2 info-level Dockerfile style notes — low priority, still
-# report-only. Trivy's first pass found 90+65 CRITICAL/HIGH CVEs, almost
+# and fixed). All three are triaged and blocking now — hadolint's one
+# pass found only 2 info-level Dockerfile style notes, both deliberate
+# choices, suppressed with justified `# hadolint ignore=` comments.
+# Trivy's first pass found 90+65 CRITICAL/HIGH CVEs, almost
 # entirely in the node:20-slim base image's OS packages rather than this
 # repo's own dependencies (pnpm audit covers those separately and is
 # clean) — genuinely needs its own triage pass (likely "rebase to a
@@ -177,7 +178,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
-        continue-on-error: true # first real pass — see header
+        # 2026-09-23: DL3059/DL3066 (the only 2 findings) suppressed with
+        # justified `# hadolint ignore=` comments in both Dockerfiles —
+        # confirmed 0 findings on a real run before removing
+        # continue-on-error here.
         with:
           dockerfile: artifacts/${{ matrix.service }}/Dockerfile
 
