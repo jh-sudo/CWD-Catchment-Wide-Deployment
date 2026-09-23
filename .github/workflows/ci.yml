@@ -29,11 +29,16 @@
 # and fixed). All three are triaged and blocking now — hadolint's one
 # pass found only 2 info-level Dockerfile style notes, both deliberate
 # choices, suppressed with justified `# hadolint ignore=` comments.
-# Trivy's first pass found 90+65 CRITICAL/HIGH CVEs, almost
-# entirely in the node:20-slim base image's OS packages rather than this
-# repo's own dependencies (pnpm audit covers those separately and is
-# clean) — genuinely needs its own triage pass (likely "rebase to a
-# freshly-patched base image", not a per-CVE fix), not a quick flip.
+# Trivy's first pass found 90+65 CRITICAL/HIGH CVEs, almost entirely in
+# the node:20-slim base image's OS packages rather than this repo's own
+# dependencies (pnpm audit covers those separately and is clean).
+# UPDATE: both Dockerfiles switched to node:20-alpine — 90/65 -> 4/4,
+# confirmed via real CI runs. Still report-only, though: that switch
+# only ever targeted the OS-package headline count, not the separate
+# ~20-61-finding tail from Node's own bundled npm client and
+# roster-dashboard's real npm deps (identical before/after the switch,
+# never triaged) — flipping continue-on-error now would just make this
+# job permanently red on findings nobody's reviewed yet.
 #
 # Every third-party action below is pinned to a full commit SHA, not a
 # floating tag (sc-4/sc-6-style dependency pinning applied to the pipeline
