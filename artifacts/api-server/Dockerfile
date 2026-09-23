@@ -36,6 +36,14 @@ WORKDIR /app
 # ever run ad-hoc SQL against it. Worth the ~10MB: the 2026-09-22
 # lightning_sectors incident hit "psql: command not found" mid-outage
 # because this wasn't here yet.
+# Deliberately unpinned: `FROM node:20-alpine` above is itself a floating
+# tag, not pinned to a digest, so a version+revision pin here (e.g.
+# postgresql-client=18.6-r0) could silently vanish from Alpine's repo
+# snapshot on a future base-image update and break the build — a worse
+# fragility than the supply-chain risk this rule guards against. Also
+# only ever used for manual operator debugging via the Shell tab, never
+# part of the app's own request-handling attack surface.
+# hadolint ignore=DL3018
 RUN apk add --no-cache postgresql-client
 
 # Run as a non-root user rather than the default root — node:20-alpine already
@@ -63,6 +71,6 @@ ENV PORT=8080
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:'+(process.env.PORT||8080)+'/api/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+  CMD ["node", "-e", "require('http').get('http://localhost:'+(process.env.PORT||8080)+'/api/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
 
 CMD ["node", "artifacts/api-server/dist/index.mjs"]
