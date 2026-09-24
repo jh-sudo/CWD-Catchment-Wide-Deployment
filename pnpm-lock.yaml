@@ -159,8 +159,8 @@ importers:
         specifier: ^1.33.0
         version: 1.33.0
       prettier:
-        specifier: ^3.9.6
-        version: 3.9.6
+        specifier: ^3.9.7
+        version: 3.9.7
       typescript:
         specifier: ~7.0.2
         version: 7.0.2
@@ -254,10 +254,10 @@ importers:
         version: 1.5.6
       esbuild:
         specifier: 0.28.1
-        version: 0.28.1
+        version: 0.28.2
       esbuild-plugin-pino:
         specifier: ^2.3.3
-        version: 2.3.3(esbuild@0.28.1)(pino-pretty@13.1.3)(pino@10.3.1)(thread-stream@4.2.0)
+        version: 2.3.3(esbuild@0.28.2)(pino-pretty@13.1.3)(pino@10.3.1)(thread-stream@4.2.0)
       pino-pretty:
         specifier: ^13.1.3
         version: 13.1.3
@@ -390,7 +390,7 @@ importers:
     devDependencies:
       orval:
         specifier: ^8.33.0
-        version: 8.33.0(@tanstack/react-query@5.103.1(react@19.3.0))(prettier@3.9.6)(typescript@7.0.2)(zod@4.6.5)
+        version: 8.33.0(@tanstack/react-query@5.103.1(react@19.3.0))(prettier@3.9.7)(typescript@7.0.2)(zod@4.6.5)
 
   lib/api-zod:
     dependencies:
@@ -459,6 +459,12 @@ packages:
 
   '@esbuild/linux-x64@0.28.1':
     resolution: {integrity: sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [linux]
+
+  '@esbuild/linux-x64@0.28.2':
+    resolution: {integrity: sha512-4xTZr1FUmSoQW4XIWmit3tzQrUTZM+N3P0XV8xROKYF50XfI7xeO90+1bZvNwxIufQ9hDQVRJH5YhgPVF8A/HQ==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [linux]
@@ -1951,6 +1957,11 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  esbuild@0.28.2:
+    resolution: {integrity: sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==}
+    engines: {node: '>=18'}
+    hasBin: true
+
   escape-html@1.0.3:
     resolution: {integrity: sha512-NiSupZ4OeuGwr68lGIeym/ksIZMJodUGOSCZ/FSnTxcrekbvqrgdUxlJOMpijaKZVjAJrWrGs/6Jy8OMuyj9ow==}
 
@@ -2597,8 +2608,8 @@ packages:
     resolution: {integrity: sha512-9ZhXKM/rw350N1ovuWHbGxnGh/SNJ4cnxHiM0rxE4VN41wsg8P8zWn9hv/buK00RP4WvlOyr/RBDiptyxVbkZQ==}
     engines: {node: '>=0.10.0'}
 
-  prettier@3.9.6:
-    resolution: {integrity: sha512-OpN0zzVdiaiAhxpuuj5efpIS4sY9j7bY6uR5mnj5yPzGkdkjNKSJeUThPb60Jw29QuAZgA4o+/iB49kFiaBX6g==}
+  prettier@3.9.7:
+    resolution: {integrity: sha512-T3mF5P7HFzZVLDQuCUNtJj6WK1pcpLMweMNUVwGb01bLNkH9AkKxtZvmInw8K6bnn2O3d6/5RHl6zSHiBAD0Og==}
     engines: {node: '>=14'}
     hasBin: true
 
@@ -3138,6 +3149,9 @@ snapshots:
   '@e965/xlsx@0.20.3': {}
 
   '@esbuild/linux-x64@0.28.1':
+    optional: true
+
+  '@esbuild/linux-x64@0.28.2':
     optional: true
 
   '@fast-csv/format@4.3.5':
@@ -4494,9 +4508,9 @@ snapshots:
     dependencies:
       es-errors: 1.3.0
 
-  esbuild-plugin-pino@2.3.3(esbuild@0.28.1)(pino-pretty@13.1.3)(pino@10.3.1)(thread-stream@4.2.0):
+  esbuild-plugin-pino@2.3.3(esbuild@0.28.2)(pino-pretty@13.1.3)(pino@10.3.1)(thread-stream@4.2.0):
     dependencies:
-      esbuild: 0.28.1
+      esbuild: 0.28.2
       pino: 10.3.1
     optionalDependencies:
       pino-pretty: 13.1.3
@@ -4505,6 +4519,10 @@ snapshots:
   esbuild@0.28.1:
     optionalDependencies:
       '@esbuild/linux-x64': 0.28.1
+
+  esbuild@0.28.2:
+    optionalDependencies:
+      '@esbuild/linux-x64': 0.28.2
 
   escape-html@1.0.3: {}
 
@@ -4991,7 +5009,7 @@ snapshots:
     dependencies:
       wrappy: 1.0.2
 
-  orval@8.33.0(@tanstack/react-query@5.103.1(react@19.3.0))(prettier@3.9.6)(typescript@7.0.2)(zod@4.6.5):
+  orval@8.33.0(@tanstack/react-query@5.103.1(react@19.3.0))(prettier@3.9.7)(typescript@7.0.2)(zod@4.6.5):
     dependencies:
       '@commander-js/extra-typings': 15.0.0(commander@15.0.0)
       '@orval/angular': 8.33.0(typescript@7.0.2)
@@ -5025,7 +5043,7 @@ snapshots:
       typedoc-plugin-coverage: 4.0.3(typedoc@0.28.20(typescript@7.0.2))
       typedoc-plugin-markdown: 4.13.0(typedoc@0.28.20(typescript@7.0.2))
     optionalDependencies:
-      prettier: 3.9.6
+      prettier: 3.9.7
     transitivePeerDependencies:
       - '@faker-js/faker'
       - '@modelcontextprotocol/sdk'
@@ -5194,7 +5212,7 @@ snapshots:
     dependencies:
       xtend: 4.0.2
 
-  prettier@3.9.6: {}
+  prettier@3.9.7: {}
 
   pretty-ms@9.3.1:
     dependencies:
